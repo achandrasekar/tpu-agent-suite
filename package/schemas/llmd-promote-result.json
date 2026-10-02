@@ -1,0 +1,151 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "llmd-promote-result.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "status",
+    "summary"
+  ],
+  "description": "What llmd-productionizer returns. `promoted` means the production release is applied, ready, re-measured inside its gates, drilled, and the bundle under <llmd>/production/ is complete. Everything the bundle could not verify is listed in `unverified`, never implied as a pass.",
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": [
+        "promoted",
+        "refused",
+        "acceptance_failed",
+        "failed",
+        "invalid_input",
+        "needs_input"
+      ],
+      "description": "'refused' is the guard: promotion_approved was not true, or a production release already serves the fleet. 'acceptance_failed' means the release was applied but did not pass its gates or a drill; it is left up and reported, never silently torn down."
+    },
+    "release_name": {
+      "type": "string"
+    },
+    "namespace": {
+      "type": "string"
+    },
+    "endpoint": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "The front door clients send to, e.g. http://<release>-ingress.<ns>.svc.cluster.local:80."
+    },
+    "bundle_path": {
+      "type": "string",
+      "description": "Directory holding the production bundle (design doc §9)."
+    },
+    "config_digest": {
+      "type": "string"
+    },
+    "acceptance": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "execution_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "metric": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": true
+        },
+        "gates": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "drills": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "passed": {
+          "type": "boolean"
+        }
+      }
+    },
+    "unverified": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Each thing the design asks for that this promotion could not establish on this cluster (autoscaling under soak, zonal failover, model-server drills on an adopted fleet, ...)."
+    },
+    "summary": {
+      "type": "string"
+    },
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    }
+  },
+  "examples": [
+    {
+      "status": "promoted",
+      "release_name": "acme-chat-prod",
+      "namespace": "serving",
+      "endpoint": "http://acme-chat-prod-ingress.serving.svc.cluster.local:80",
+      "bundle_path": "artifacts/llmd/production/bundle",
+      "config_digest": "9c1e0b2d4f6a8e10",
+      "acceptance": {
+        "execution_id": "20260914T153000Z-1a2b3c4d",
+        "metric": {
+          "value": 0.74,
+          "unit": "rps/chip"
+        },
+        "gates": [
+          {
+            "check": "gate interactive.ttft_p90_ms",
+            "passed": true,
+            "detail": "412.0 lte 500 ms"
+          },
+          {
+            "check": "goodput_at_slo_per_chip vs incumbent measurement",
+            "passed": true,
+            "detail": "0.74 vs 0.75 (-1.3%, floor -5%)"
+          },
+          {
+            "check": "drill epp-pod-kill",
+            "passed": true,
+            "detail": "killed acme-chat-prod-epp-7c9d; recovered in 14.2 s; front door ok"
+          }
+        ],
+        "drills": [
+          {
+            "drill": "epp-pod-kill",
+            "passed": true,
+            "recovery_s": 14.2,
+            "front_door_ok": true
+          }
+        ],
+        "passed": true
+      },
+      "unverified": [
+        "autoscaling: no ScaledObject/HPA is rendered",
+        "zonal failover: not exercised (single cluster, single zone)"
+      ],
+      "summary": "acme-chat-prod applied to serving; acceptance passed (3/3 checks); 2 item(s) UNVERIFIED; bundle at artifacts/llmd/production/bundle",
+      "artifacts": {
+        "bundle": "artifacts/llmd/production/bundle",
+        "acceptance_report": "artifacts/llmd/production/bundle/acceptance-report.md",
+        "runbook": "artifacts/llmd/production/bundle/RUNBOOK.md",
+        "config": "artifacts/llmd/production/bundle/llmd-config.json"
+      }
+    }
+  ]
+}

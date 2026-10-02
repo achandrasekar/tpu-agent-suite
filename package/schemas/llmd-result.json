@@ -30,9 +30,10 @@
       "enum": [
         "open",
         "closed",
-        "ready_to_promote"
+        "ready_to_promote",
+        "promoted"
       ],
-      "description": "'ready_to_promote' is 'closed' plus an admissible incumbent that beat the baseline; production still needs a separate request with promotion_approved."
+      "description": "'ready_to_promote' is 'closed' plus an admissible incumbent that beat the baseline; production still needs a separate request with promotion_approved. 'promoted' means a later request with promotion_approved moved the incumbent to production and the bundle exists."
     },
     "incumbent": {
       "type": "object",
@@ -105,6 +106,44 @@
       "items": {
         "type": "string"
       }
+    },
+    "production": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "promoted",
+            "refused",
+            "acceptance_failed",
+            "failed"
+          ],
+          "description": "llmd-productionizer's status, copied verbatim."
+        },
+        "release_name": {
+          "type": "string"
+        },
+        "namespace": {
+          "type": "string"
+        },
+        "endpoint": {
+          "type": "string"
+        },
+        "bundle_path": {
+          "type": "string"
+        },
+        "unverified": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "description": "Present only on a request that carried promotion_approved: true. Where the production release and its handoff bundle are, or why promotion did not happen."
     }
   },
   "examples": [

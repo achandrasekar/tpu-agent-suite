@@ -125,6 +125,37 @@
         "scope": "session",
         "approval": "never"
       }
+    },
+    {
+      "name": "llmd-production-guard",
+      "event": "PreToolUse",
+      "action": "script:scripts/tpu-llmd/llmd_production_guard.py",
+      "timeout": 10,
+      "on_failure": "allow",
+      "visibility": "external",
+      "description": "Keeps production llm-d releases out of agents' hands: denies `deploy teardown --include-production` unless the user placed a .teardown-approved marker in the bundle, and denies raw kubectl/helm mutations that name the production label or namespace. Removal of a serving release is a user action.",
+      "action_level": {
+        "effect": "read",
+        "scope": "session",
+        "approval": "never"
+      }
+    },
+    {
+      "name": "llmd-chip-budget-guard",
+      "event": "PreToolUse",
+      "matchers": [
+        "delegate"
+      ],
+      "action": "script:scripts/tpu-llmd/llmd_chip_budget_guard.py",
+      "timeout": 10,
+      "on_failure": "allow",
+      "visibility": "external",
+      "description": "Denies an llmd-arm-request whose rendered fleet would hold more chips than the workload spec's budget.max_chips less what production releases already hold, with the arithmetic in the reason. Adopted fleets cost nothing and always pass.",
+      "action_level": {
+        "effect": "read",
+        "scope": "session",
+        "approval": "never"
+      }
     }
   ],
   "compatibility_targets": [

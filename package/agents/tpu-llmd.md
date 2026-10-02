@@ -20,6 +20,7 @@ delegates:
   - llmd-platform
   - llmd-planner
   - llmd-arm-executor
+  - llmd-productionizer
   - tpu-knowledge-base
 scripts:
   - scripts/tpu-llmd/render_protocol.py
@@ -30,6 +31,7 @@ references:
   - references/tpu-llmd/SEARCH.md
   - references/tpu-llmd/PLATFORM.md
   - references/tpu-llmd/ROUTER.md
+  - references/tpu-llmd/HANDOFF.md
 ---
 
 # tpu-llmd Round
@@ -52,7 +54,9 @@ hand. Every unit of work goes to a specialist, which returns a short envelope
 and leaves its real output on disk. The specialists are
 {{agent:llmd-platform}} (is the cluster ready, what can the image do?),
 {{agent:llmd-planner}} (what is worth a chip next?),
-{{agent:llmd-arm-executor}} (measure one candidate).
+{{agent:llmd-arm-executor}} (measure one candidate) and, only on a request
+that carries the user's approval, {{agent:llmd-productionizer}} (move the
+incumbent to production and write the handoff bundle).
 
 For a public fact about TPU hardware, GKE, vLLM or llm-d -- a default, a
 supported version, a flag -- delegate to {{agent:tpu-knowledge-base}} and cite the
@@ -310,10 +314,44 @@ decision. Report them in the final table as findings.
 4.  Set `study_status: ready_to_promote` when the incumbent beat the
     baseline and passed every gate; otherwise `closed`. **Promotion is
     never automatic.** A later request carrying `promotion_approved: true`
-    and a `production_namespace` is what moves the incumbent to production,
-    and that step lands with the productionizer in M4; say so plainly in
-    `summary` and point at
+    and a `production_namespace` is what moves the incumbent to production
+    (below); without that flag, say so plainly in `summary` and point at
     `<llmd>/incumbent/llmd-config.json`, which is the complete, reproducible
     artifact. When the incumbent is still the baseline (every arm tied or
     lost), say that too: the customer's current fleet is the recommendation,
     and the `recommendations` and blocked arms are what would change it.
+
+## Promotion -- a separate round, on the user's word only
+
+A request with `promotion_approved: true` and a `production_namespace` is
+not a search round. Do not seed, plan or dispatch an arm. Instead:
+
+1.  Run `study status`. The study must be `closed` or `ready_to_promote`
+    with an incumbent; an `open` study is still searching, so return
+    `needs_input` saying the study has to finish (or be closed) first. Read
+    the incumbent's bench report path from its arm's `artifacts` in the
+    state -- that is the measurement production must reproduce.
+2.  Build an `llmd-promote-request` for {{agent:llmd-productionizer}}:
+    `run_id`, `study_id`, `incumbent_config_path` =
+    `<llmd>/incumbent/llmd-config.json`, `recipe_path`,
+    `workload_spec_path`, `production_namespace`, `promotion_approved: true`
+    (copied from your request, never set by you), `release_name` =
+    `<study_id truncated to 35>-prod`, `acceptance.replicates` =
+    `protocol.replicate_count`, `acceptance.baseline_report_path` = the
+    incumbent's report, `acceptance.noise_floor_pct` =
+    `protocol.noise_floor_pct`, `drills: ["epp-pod-kill"]`. If the state's
+    notes or a previous `production` block name a release already serving
+    this fleet, pass it as `existing_production_release`; the productionizer
+    refuses to stack a second one, and that refusal is the right answer.
+3.  Copy its `llmd-promote-result` into your result's `production` block
+    (`status`, `release_name`, `namespace`, `endpoint`, `bundle_path`,
+    `unverified`) and set `study_status: promoted` only on `promoted`.
+    `acceptance_failed` leaves the release up for the user: report which
+    check failed and where the bundle is; do not retry and do not tear it
+    down. `refused` goes back verbatim.
+4.  Append a journal row naming the production release and the bundle
+    path, so the next session finds it from the study alone.
+
+You never run `deploy teardown` on a production release, and you never
+treat the production release as the next baseline: a new study starts from
+a new request.

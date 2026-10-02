@@ -64,9 +64,12 @@ QUERIES: dict[str, str] = {
     "ttft_p90_server_s":
         ('histogram_quantile(0.9, sum by (le)'
          ' (rate(vllm:time_to_first_token_seconds_bucket{{{sel}}}[{w}])))'),
+    # vLLM renamed this histogram to `inter_token_latency` (the fleet found
+    # live exports only the new name); `or` takes whichever the server has.
     "tpot_p90_server_s":
         ('histogram_quantile(0.9, sum by (le)'
-         ' (rate(vllm:time_per_output_token_seconds_bucket{{{sel}}}[{w}])))'),
+         ' (rate(vllm:inter_token_latency_seconds_bucket{{{sel}}}[{w}])'
+         ' or rate(vllm:time_per_output_token_seconds_bucket{{{sel}}}[{w}])))'),
     "generation_tokens_per_s":
         'sum(rate(vllm:generation_tokens_total{{{sel}}}[{w}]))',
     "prompt_tokens_per_s":
@@ -124,8 +127,13 @@ def collect(env: DeployEnv,
         token = gcloud_access_token(runner or default_runner)
     query = query_fn or (lambda promql: _query(url, token, promql))
     namespace = release["namespace"]
+    # Managed Prometheus labels every sample a PodMonitoring scrapes with
+    # `job=<PodMonitoring name>`; the release's model-server PodMonitoring
+    # is `<name>-modelserver` for a managed fleet (every pool, prefill
+    # included) and for an adopted one (whose pods carry the customer's
+    # names, which a `<name>-decode-.*` regex would never match).
     sel = (f'namespace="{namespace}",'
-           f'pod=~"{release["name"]}-decode-.*"')
+           f'job="{render.modelserver_monitoring_name(release["name"])}"')
     metrics: dict[str, Any] = {}
     for name, template in QUERIES.items():
         promql = template.format(w=window, ns=namespace, sel=sel)

@@ -245,22 +245,37 @@ def tools_present() -> dict[str, str | None]:
     return {tool: shutil.which(tool) for tool in ("kubectl", "helm", "gcloud")}
 
 
+TOKEN_COMMANDS = (
+    ["gcloud", "auth", "application-default", "print-access-token"],
+    ["gcloud", "auth", "print-access-token"],
+)
+
+
 def gcloud_access_token(runner: Runner = default_runner) -> str:
     """A bearer token for Google APIs from the caller's gcloud login.
 
     Managed Prometheus is queried over HTTPS with this token; `collect`
     never shells out to anything else, and never stores the token.
+
+    Application Default Credentials are tried first, the user login second:
+    found live, a corp workstation's user token was rejected by the
+    Monitoring API (401 UNAUTHENTICATED) while its ADC token was accepted,
+    and a plain workstation often has only the user login. The first
+    command that prints a token wins; the error names both when neither does.
     """
-    cmd = ["gcloud", "auth", "print-access-token"]
-    try:
-        proc = runner(cmd, stdin=None, timeout=READ_TIMEOUT_SEC)
-    except FileNotFoundError as exc:
-        raise DeployError("gcloud is not on PATH",
-                          error_code="TOOL_MISSING",
-                          detail=str(exc)) from exc
-    except subprocess.TimeoutExpired as exc:
-        raise CommandError(cmd, "no answer within 60s") from exc
-    if proc.returncode != 0 or not (proc.stdout or "").strip():
-        raise CommandError(cmd, proc.stderr or "no token printed")
-    return proc.stdout.strip()
+    errors: list[str] = []
+    for cmd in TOKEN_COMMANDS:
+        try:
+            proc = runner(cmd, stdin=None, timeout=READ_TIMEOUT_SEC)
+        except FileNotFoundError as exc:
+            raise DeployError("gcloud is not on PATH",
+                              error_code="TOOL_MISSING",
+                              detail=str(exc)) from exc
+        except subprocess.TimeoutExpired as exc:
+            raise CommandError(cmd, "no answer within 60s") from exc
+        if proc.returncode == 0 and (proc.stdout or "").strip():
+            return proc.stdout.strip()
+        errors.append(f"{' '.join(cmd)}: "
+                      f"{(proc.stderr or 'no token printed').strip()[:200]}")
+    raise CommandError(list(TOKEN_COMMANDS[-1]), "; ".join(errors))
 

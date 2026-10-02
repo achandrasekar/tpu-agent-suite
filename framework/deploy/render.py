@@ -1173,6 +1173,12 @@ def router_values(name: str, config: dict[str, Any],
             "--concurrency", "8", "--drain-strategy", "immediate",
             "--drain-time-s", "60", "-c", "/etc/envoy/envoy.yaml"
         ],
+        # The chart's envoy preset names its ConfigMap a bare `envoy`, so a
+        # second release in the namespace (a production router beside a
+        # study arm, as found live) fails Helm's ownership check. The chart
+        # deep-merges `router.proxy` over the preset, so naming it here
+        # keeps the preset's envoy.yaml and makes it per-release.
+        "configMap": {"name": proxy_configmap_name(name)},
         "resources": sizing_for("proxy", env),
     }
     if router.get("proxy_replicas"):
@@ -1202,17 +1208,33 @@ def router_values(name: str, config: dict[str, Any],
             pins.RELEASE_LABEL: name, pins.LLMD_SERVING_LABEL: "true"}
     if router.get("predicted_latency"):
         values["router"]["latencyPredictor"] = {"enabled": True}
-    objectives = [{"name": t["name"], "priority": int(t.get("priority") or 0)}
+    # An InferenceObjective is a namespaced object named here, so a tenant
+    # name alone collides as soon as two releases share a namespace (a
+    # study arm beside the production router, found live); the bench Job
+    # sends the same release-scoped name in the objective header.
+    objectives = [{"name": objective_name(name, t["name"]),
+                   "priority": int(t.get("priority") or 0)}
                   for t in (tenants or []) if t.get("priority") is not None]
     if objectives:
         values["router"]["inferenceObjectives"] = objectives
     return values
 
 
+def objective_name(name: str, tenant: str) -> str:
+    """The release-scoped InferenceObjective for a tenant."""
+    return f"{name.lower()[:40]}-{str(tenant).lower()}"
+
+
 def router_service(name: str, namespace: str) -> str:
     """The in-cluster host benchmarks send to: the standalone chart's EPP
     Service, with `extraServicePorts` exposing the Envoy sidecar on 80."""
     return f"{epp_deployment(name)}.{namespace}.svc.cluster.local"
+
+
+def proxy_configmap_name(name: str) -> str:
+    """The release's Envoy ConfigMap; per-release so two routers (a study
+    arm and the production release) can share a namespace."""
+    return f"{epp_deployment(name)}-envoy"
 
 
 def exposure_service(name: str) -> str:
@@ -1311,6 +1333,16 @@ def bench_base_url(name: str, namespace: str, config: dict[str, Any],
 # -- monitoring ----------------------------------------------------------------
 
 
+def modelserver_monitoring_name(name: str) -> str:
+    """Name of the release's model-server PodMonitoring.
+
+    Managed Prometheus labels every scraped sample with `job=<PodMonitoring
+    name>`, so the collector filters on this exact string; defining it once
+    keeps the renderer and the collector from drifting apart.
+    """
+    return f"{name}-modelserver"
+
+
 def monitoring_manifests(name: str, production: bool,
                          fleet: dict[str, Any] | None = None
                          ) -> dict[str, Any]:
@@ -1329,7 +1361,8 @@ def monitoring_manifests(name: str, production: bool,
             {
                 "apiVersion": "monitoring.googleapis.com/v1",
                 "kind": "PodMonitoring",
-                "metadata": {"name": f"{name}-modelserver", "labels": labels},
+                "metadata": {"name": modelserver_monitoring_name(name),
+                             "labels": labels},
                 "spec": {
                     "selector": {
                         "matchLabels": modelserver_selector(name, fleet)
@@ -1549,7 +1582,8 @@ def render_release(*,
                 duration_s=int(env.get("slo_stage_duration_s")
                                or workload.DEFAULT_SLO_STAGE_DURATION_S),
                 report_dir=BENCH_REPORT_DIR,
-                objective_header=router_installed,
+                objective=(objective_name(name, tenant["name"])
+                           if router_installed else None),
                 sweep_stage_s=int(env.get("sweep_stage_duration_s")
                                   or workload.DEFAULT_SWEEP_STAGE_DURATION_S))
             key = f"{tenant['name']}.{stage}"

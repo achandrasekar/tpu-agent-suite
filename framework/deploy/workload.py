@@ -348,7 +348,7 @@ def render_inference_perf(profile: dict[str, Any],
                           model_name: str,
                           duration_s: int = DEFAULT_SLO_STAGE_DURATION_S,
                           report_dir: str = "/reports",
-                          objective_header: bool = False,
+                          objective: str | None = None,
                           sweep_stage_s: int = DEFAULT_SWEEP_STAGE_DURATION_S
                           ) -> dict[str, Any]:
     """The inference-perf config one tenant's benchmark Job runs.
@@ -366,9 +366,11 @@ def render_inference_perf(profile: dict[str, Any],
     rate below the requested one. Both are sized from the rate here, and a
     source config may still raise them.
 
-    `objective_header` sends `x-llm-d-inference-objective: <tenant>` so the
-    router's flow control places the tenant in the band its priority maps
-    to; without a router the header is inert, so it is only set when asked.
+    `objective` sends `x-llm-d-inference-objective: <objective>` -- the
+    release-scoped InferenceObjective the router created for this tenant --
+    so the router's flow control places the tenant in the band its priority
+    maps to; without a router the header is inert, so it is only set when
+    given.
     """
     if stage not in ("sweep", "slo"):
         raise DeployError("stage must be sweep or slo",
@@ -386,9 +388,9 @@ def render_inference_perf(profile: dict[str, Any],
     if "streaming" in profile.get("overrides", {}):
         api["streaming"] = bool(profile["overrides"]["streaming"])
     api.setdefault("type", "completion")
-    if objective_header:
+    if objective:
         headers = dict(api.get("headers") or {})
-        headers.setdefault(OBJECTIVE_HEADER, str(tenant["name"]))
+        headers.setdefault(OBJECTIVE_HEADER, str(objective))
         api["headers"] = headers
     config["api"] = api
 

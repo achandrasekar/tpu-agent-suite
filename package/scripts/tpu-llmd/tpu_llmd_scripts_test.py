@@ -42,6 +42,9 @@ render_protocol = _load("render_protocol")
 seed_arms = _load("seed_arms")
 evaluate_llmd_arm = _load("evaluate_llmd_arm")
 plan_arms = _load("plan_arms")
+promote_release = _load("promote_release")
+production_guard = _load("llmd_production_guard")
+chip_budget_guard = _load("llmd_chip_budget_guard")
 
 
 class _Quiet(unittest.TestCase):
@@ -458,3 +461,431 @@ class PlanArmsTest(_Quiet):
             self.assertEqual(plan_arms.main(["--request", str(tmp / "bad.json"),
                                              "--out", str(tmp / "out2")]), 2)
 
+
+# -- M4: promotion and the two guards ------------------------------------------------
+
+
+def _production_release(tmp: pathlib.Path, *, profile: str = "sticky-until-saturated",
+                        production: bool = True) -> pathlib.Path:
+    """A release directory the way `deploy render --production` writes it.
+
+    Rendered through the framework rather than hand-written so the bundle
+    test reads the same `release.json`/`files` layout the runtime produces.
+    """
+    import os  # noqa: PLC0415
+    from framework.deploy import pins, render, workload  # noqa: PLC0415
+    os.environ.setdefault("TPU_AGENT_SUITE_HOME", str(tmp / "home"))
+    cfg = render.default_config(RECIPE, replicas=2)
+    cfg["router"]["profile"] = profile
+    if profile != render.PASSTHROUGH_PROFILE:
+        cfg["router"]["epp_replicas"] = 2
+        cfg["router"]["epp_ha_mode"] = "active-passive"
+    env = {"namespace": "prod", "hf_token_secret": "hf-token",
+           "inference_perf_image": pins.INFERENCE_PERF_IMAGE,
+           "gateway_mode": "standalone", "exposure": "cluster-ip"}
+    out = tmp / "release"
+    render.render_release(name="acme-prod", config=cfg, recipe=RECIPE,
+                          profile=workload.resolve_workload(json.loads(
+                              json.dumps(SPEC))),
+                          env=env, out_dir=out, production=production,
+                          now="2026-10-01T00:00:00+00:00")
+    return out
+
+
+def _promote_request(tmp: pathlib.Path, incumbent: dict, **overrides) -> dict:
+    (tmp / "incumbent.json").write_text(json.dumps(incumbent))
+    (tmp / "spec.json").write_text(json.dumps(SPEC))
+    (tmp / "recipe.json").write_text(json.dumps(RECIPE))
+    req = {
+        "run_id": "run-1",
+        "study_id": "acme-chat-study",
+        "incumbent_config_path": str(tmp / "incumbent.json"),
+        "recipe_path": str(tmp / "recipe.json"),
+        "workload_spec_path": str(tmp / "spec.json"),
+        "production_namespace": "prod",
+        "promotion_approved": True,
+    }
+    req.update(overrides)
+    (tmp / "promote-request.json").write_text(json.dumps(req))
+    return req
+
+
+class PromoteReleaseTest(_Quiet):
+
+    def _incumbent(self, profile="sticky-until-saturated"):
+        from framework.deploy import render  # noqa: PLC0415
+        cfg = render.default_config(RECIPE, replicas=2)
+        cfg["router"]["profile"] = profile
+        return cfg
+
+    def test_prepare_refuses_without_explicit_approval(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = pathlib.Path(d)
+            for value in (False, "yes", 1, None):
+                _promote_request(tmp, self._incumbent(), promotion_approved=value)
+                rc = promote_release.main([
+                    "prepare", "--request", str(tmp / "promote-request.json"),
+                    "--out", str(tmp / "out")])
+                self.assertEqual(rc, promote_release.EXIT_REFUSED, value)
+                result = json.loads(
+                    (tmp / "out" / promote_release.RESULT_FILE).read_text())
+                self.assertEqual(result["status"], "refused")
+                self.assertFalse(
+                    (tmp / "out" / promote_release.PRODUCTION_CONFIG_FILE)
+                    .exists())
+
+    def test_prepare_refuses_when_production_already_exists(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = pathlib.Path(d)
+            _promote_request(tmp, self._incumbent(),
+                             existing_production_release="old-prod")
+            rc = promote_release.main([
+                "prepare", "--request", str(tmp / "promote-request.json"),
+                "--out", str(tmp / "out")])
+            self.assertEqual(rc, promote_release.EXIT_REFUSED)
+            result = json.loads(
+                (tmp / "out" / promote_release.RESULT_FILE).read_text())
+        self.assertIn("old-prod", result["summary"])
+
+    def test_prepare_adds_only_epp_ha_to_a_router_incumbent(self):
+        incumbent = self._incumbent()
+        with tempfile.TemporaryDirectory() as d:
+            tmp = pathlib.Path(d)
+            _promote_request(tmp, incumbent, epp_replicas=3)
+            rc = promote_release.main([
+                "prepare", "--request", str(tmp / "promote-request.json"),
+                "--out", str(tmp / "out")])
+            self.assertEqual(rc, 0)
+            config = json.loads(
+                (tmp / "out" / promote_release.PRODUCTION_CONFIG_FILE)
+                .read_text())
+            self.assertFalse((tmp / "out" / promote_release.RESULT_FILE)
+                             .exists())
+        self.assertEqual(config["router"]["epp_replicas"], 3)
+        self.assertEqual(config["router"]["epp_ha_mode"], "active-passive")
+        promoted = config["provenance"]["promoted_from"]
+        self.assertEqual(promoted["study_id"], "acme-chat-study")
+        self.assertEqual(promoted["production_changes"],
+                         ["router.epp_replicas", "router.epp_ha_mode"])
+        # Everything else is the incumbent byte-for-byte.
+        for key in ("topology", "kv", "engine"):
+            self.assertEqual(config[key], incumbent[key])
+        self.assertEqual(config["router"]["profile"],
+                         incumbent["router"]["profile"])
+
+    def test_prepare_leaves_a_passthrough_incumbent_alone(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = pathlib.Path(d)
+            _promote_request(tmp, self._incumbent("passthrough"))
+            rc = promote_release.main([
+                "prepare", "--request", str(tmp / "promote-request.json"),
+                "--out", str(tmp / "out")])
+            self.assertEqual(rc, 0)
+            config = json.loads(
+                (tmp / "out" / promote_release.PRODUCTION_CONFIG_FILE)
+                .read_text())
+        self.assertEqual(config["router"]["epp_replicas"], 1)
+        self.assertNotIn("epp_ha_mode", config["router"])
+        self.assertEqual(
+            config["provenance"]["promoted_from"]["production_changes"], [])
+
+    def _drill_row(self, passed=True):
+        return {"drill": "epp-pod-kill", "release": "acme-prod",
+                "killed": "acme-prod-epp-abc", "recovered": passed,
+                "recovery_s": 12.5, "front_door_ok": passed, "passed": passed}
+
+    def _bundle(self, tmp, *, acceptance, baseline, drill=None,
+                profile="sticky-until-saturated", study=None):
+        release_dir = _production_release(tmp, profile=profile)
+        incumbent = json.loads((release_dir / "llmd-config.json").read_text())
+        _promote_request(tmp, incumbent)
+        (tmp / "acceptance.json").write_text(json.dumps(acceptance))
+        (tmp / "baseline.json").write_text(json.dumps(baseline))
+        argv = ["bundle", "--request", str(tmp / "promote-request.json"),
+                "--out", str(tmp / "bundle"), "--release-dir", str(release_dir),
+                "--acceptance", str(tmp / "acceptance.json"),
+                "--baseline-report", str(tmp / "baseline.json")]
+        if drill is not None:
+            (tmp / "drill.json").write_text(json.dumps(drill))
+            argv += ["--drill", str(tmp / "drill.json")]
+        if study is not None:
+            (tmp / "study.json").write_text(json.dumps(study))
+            argv += ["--study-state", str(tmp / "study.json")]
+        rc = promote_release.main(argv)
+        result = json.loads(
+            (tmp / "bundle" / promote_release.RESULT_FILE).read_text())
+        return rc, result
+
+    def test_bundle_writes_the_handoff_and_accepts_within_noise(self):
+        from framework import utils  # noqa: PLC0415
+        study = {
+            "study_id": "acme-chat-study", "status": "converged",
+            "protocol": {"primary_metric": {
+                "name": "goodput_at_slo_per_chip", "direction": "maximize",
+                "unit": "rps/chip"}, "noise_floor_pct": 5,
+                "replicate_count": 3},
+            "baseline": {"metric": {"value": 2.5, "unit": "rps/chip"},
+                         "execution_id": "e0"},
+            "arms": [
+                {"arm": "a1", "kind": "routing-policy", "status": "decided",
+                 "claim": "sticky routing | keeps prefix", "result": {
+                     "verdict": "win", "execution_id": "e1",
+                     "metric": {"value": 2.6, "delta_pct": 4.0}}},
+                {"arm": "a2", "kind": "fleet-topology", "status": "blocked",
+                 "claim": "P/D", "blocked_on": "blocked_on_adopted_fleet"},
+            ],
+        }
+        with tempfile.TemporaryDirectory() as d:
+            tmp = pathlib.Path(d)
+            rc, result = self._bundle(
+                tmp, acceptance=_report("e2", 2.55), baseline=_report("e1", 2.6),
+                drill=self._drill_row(), study=study)
+            self.assertEqual(rc, 0, result)
+            bundle = tmp / "bundle"
+            for rel in ("llmd-config.json", "serving-recipe.json",
+                        "search-ledger.md", "router.values.yaml",
+                        "epp-config.yaml", "inference-objectives.yaml",
+                        "exposure.yaml", "workload/workload-spec.json",
+                        "workload/workload_profile.json",
+                        "observability/podmonitoring.yaml",
+                        "observability/README.md", "autoscaling/README.md",
+                        "acceptance-report.md", "RUNBOOK.md", "release.json",
+                        "release/release.json"):
+                self.assertTrue((bundle / rel).is_file(), rel)
+            ledger = (bundle / "search-ledger.md").read_text()
+            report = (bundle / "acceptance-report.md").read_text()
+            runbook = (bundle / "RUNBOOK.md").read_text()
+            manifest = json.loads((bundle / "release.json").read_text())
+            schema = json.loads(
+                (_HERE.parents[1] / "schemas" / "llmd-promote-result.json")
+                .read_text())
+        self.assertEqual(result["status"], "promoted")
+        self.assertEqual(utils.validate_instance(result, schema), [])
+        self.assertTrue(result["acceptance"]["passed"])
+        self.assertEqual(result["endpoint"],
+                         "http://acme-prod-ingress.prod.svc.cluster.local:80")
+        self.assertIn("a1 **(incumbent)**", ledger)
+        self.assertIn("Blocked arms", ledger)
+        self.assertIn("ACCEPTED", report)
+        self.assertIn("-1.9%", report)
+        self.assertIn("UNVERIFIED: autoscaling", report)
+        self.assertIn("deploy teardown", runbook)
+        # The runbook's objective names match the chart's InferenceObjectives.
+        from framework.deploy import render  # noqa: PLC0415
+        for tenant in ("interactive", "batch"):
+            self.assertIn("x-llm-d-inference-objective: "
+                          + render.objective_name("acme-prod", tenant), runbook)
+        self.assertTrue(manifest["accepted"])
+        self.assertEqual(manifest["router"]["epp_ha"]["replicas"], 2)
+        self.assertNotIn("release/release.json", manifest["files"])
+
+    def test_bundle_fails_acceptance_on_regression_or_failed_drill(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = pathlib.Path(d)
+            rc, result = self._bundle(
+                tmp, acceptance=_report("e2", 2.2), baseline=_report("e1", 2.6),
+                drill=self._drill_row())
+        self.assertEqual(rc, promote_release.EXIT_ACCEPTANCE_FAILED)
+        self.assertEqual(result["status"], "acceptance_failed")
+        failed = [r["check"] for r in result["acceptance"]["gates"]
+                  if not r["passed"]]
+        self.assertEqual(failed,
+                         ["goodput_at_slo_per_chip vs incumbent measurement"])
+        with tempfile.TemporaryDirectory() as d:
+            tmp = pathlib.Path(d)
+            rc, result = self._bundle(
+                tmp, acceptance=_report("e2", 2.6), baseline=_report("e1", 2.6),
+                drill=self._drill_row(passed=False))
+        self.assertEqual(result["status"], "acceptance_failed")
+        self.assertIn("drill epp-pod-kill",
+                      [r["check"] for r in result["acceptance"]["gates"]
+                       if not r["passed"]])
+
+    def test_bundle_requires_a_drill_when_a_router_is_installed(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = pathlib.Path(d)
+            rc, result = self._bundle(
+                tmp, acceptance=_report("e2", 2.6), baseline=_report("e1", 2.6))
+        self.assertEqual(result["status"], "acceptance_failed")
+        self.assertIn({"check": "drill epp-pod-kill", "passed": False,
+                       "detail": "not run"}, result["acceptance"]["gates"])
+
+    def test_bundle_of_passthrough_skips_router_files_and_says_so(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = pathlib.Path(d)
+            rc, result = self._bundle(
+                tmp, acceptance=_report("e2", 2.6), baseline=_report("e1", 2.6),
+                profile="passthrough")
+            self.assertEqual(rc, 0, result)
+            self.assertFalse((tmp / "bundle" / "router.values.yaml").exists())
+            self.assertFalse((tmp / "bundle" / "exposure.yaml").exists())
+        self.assertEqual(result["status"], "promoted")
+        self.assertTrue(any("passthrough" in u for u in result["unverified"]))
+
+    def test_bundle_refuses_a_study_render(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = pathlib.Path(d)
+            release_dir = _production_release(tmp, production=False)
+            incumbent = json.loads(
+                (release_dir / "llmd-config.json").read_text())
+            _promote_request(tmp, incumbent)
+            with self.assertRaises(SystemExit):
+                promote_release.main([
+                    "bundle", "--request", str(tmp / "promote-request.json"),
+                    "--out", str(tmp / "bundle"),
+                    "--release-dir", str(release_dir)])
+
+
+class ProductionGuardTest(unittest.TestCase):
+
+    def _shell(self, command, tool="run_shell_command"):
+        return {"tool": tool, "args": {"command": command}}
+
+    def test_denies_include_production_teardown_without_marker(self):
+        verdict = production_guard.decide(self._shell(
+            "python3 runtime.py deploy teardown --name p --release /tmp/x"
+            " --include-production"))
+        self.assertEqual(verdict["decision"], "deny")
+        self.assertIn("user action", verdict["reason"])
+        # The flag is what is denied, not teardown itself.
+        self.assertEqual(production_guard.decide(self._shell(
+            "python3 runtime.py deploy teardown --name p --release /tmp/x"))
+            ["decision"], "allow")
+
+    def test_marker_in_the_bundle_lifts_the_teardown_rule(self):
+        with tempfile.TemporaryDirectory() as d:
+            bundle = pathlib.Path(d)
+            (bundle / "release").mkdir()
+            cmd = (f"runtime deploy teardown --name p --release"
+                   f" {bundle / 'release'} --include-production")
+            self.assertEqual(production_guard.decide(self._shell(cmd))
+                             ["decision"], "deny")
+            (bundle / production_guard.APPROVAL_MARKER).write_text("")
+            self.assertEqual(production_guard.decide(self._shell(cmd))
+                             ["decision"], "allow")
+
+    def test_denies_raw_mutations_that_name_production(self):
+        label = production_guard.PRODUCTION_LABEL
+        self.assertEqual(production_guard.decide(self._shell(
+            f"kubectl delete deploy -l {label}=true"))["decision"], "deny")
+        self.assertEqual(production_guard.decide(self._shell(
+            f"helm uninstall acme-prod -l {label}=true"))["decision"], "deny")
+        # A read naming the label is fine; so is a mutation elsewhere.
+        self.assertEqual(production_guard.decide(self._shell(
+            f"kubectl get pods -l {label}=true"))["decision"], "allow")
+        self.assertEqual(production_guard.decide(self._shell(
+            "kubectl delete job bench-r0 -n llmd-study"))["decision"], "allow")
+
+    def test_production_namespace_comes_from_the_environment(self):
+        import os  # noqa: PLC0415
+        from unittest import mock  # noqa: PLC0415
+        with tempfile.TemporaryDirectory() as d:
+            env_path = pathlib.Path(d) / "environment.json"
+            env_path.write_text(json.dumps(
+                {"llmd": {"production_namespace": "serving-prod"}}))
+            with mock.patch.dict(os.environ,
+                                 {"TPU_AGENT_SUITE_ENVIRONMENT": str(env_path)}):
+                deny = production_guard.decide(self._shell(
+                    "kubectl scale deploy x --replicas=0 -n serving-prod"))
+                allow = production_guard.decide(self._shell(
+                    "kubectl scale deploy x --replicas=0 -n serving-prod-2"))
+        self.assertEqual(deny["decision"], "deny")
+        self.assertEqual(allow["decision"], "allow")
+
+    def test_non_shell_tools_and_empty_payloads_pass(self):
+        self.assertEqual(production_guard.decide(self._shell(
+            "deploy teardown --include-production", tool="read_file"))
+            ["decision"], "allow")
+        self.assertEqual(production_guard.decide({})["decision"], "allow")
+
+
+class ChipBudgetGuardTest(unittest.TestCase):
+
+    def _payload(self, tmp, sets, *, recipe=RECIPE, budget=64,
+                 subagent="llmd-arm-executor"):
+        from framework.deploy import render  # noqa: PLC0415
+        spec = json.loads(json.dumps(SPEC))
+        spec["budget"]["max_chips"] = budget
+        (tmp / "spec.json").write_text(json.dumps(spec))
+        (tmp / "recipe.json").write_text(json.dumps(recipe))
+        (tmp / "incumbent.json").write_text(
+            json.dumps(render.default_config(recipe, replicas=3)))
+        request = {"arm": "a9", "sets": sets,
+                   "incumbent_config_path": str(tmp / "incumbent.json"),
+                   "recipe_path": str(tmp / "recipe.json"),
+                   "workload_spec_path": str(tmp / "spec.json")}
+        prompt = ("Evaluate this arm. Request:\n```json\n"
+                  + json.dumps(request, indent=2) + "\n```\nReport back.")
+        return {"tool": "delegate", "subagent": subagent,
+                "args": {"prompt": prompt}}
+
+    def test_only_executor_delegations_are_examined(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = pathlib.Path(d)
+            huge = {"topology.decode.replicas": 100}
+            self.assertEqual(chip_budget_guard.decide(self._payload(
+                tmp, huge, subagent="llmd-planner"))["decision"], "allow")
+            self.assertEqual(chip_budget_guard.decide(
+                {"tool": "shell", "args": {"command": "ls"}})["decision"],
+                "allow")
+            self.assertEqual(chip_budget_guard.decide(self._payload(
+                tmp, huge))["decision"], "deny")
+
+    def test_arm_arithmetic_counts_prefill_under_pd(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = pathlib.Path(d)
+            # 2x2x1 = 4 chips per replica; 16 decode x 4 = 64 fits exactly.
+            self.assertEqual(chip_budget_guard.decide(self._payload(
+                tmp, {"topology.decode.replicas": 16}))["decision"], "allow")
+            verdict = chip_budget_guard.decide(self._payload(
+                tmp, {"topology.mode": "disaggregated",
+                      "topology.decode.replicas": 14,
+                      "topology.prefill": {"replicas": 3, "tp": 4}}))
+        self.assertEqual(verdict["decision"], "deny")
+        self.assertIn("68 chips", verdict["reason"])
+        self.assertIn("14 decode + 3 prefill", verdict["reason"])
+        self.assertIn("not pruned", verdict["reason"])
+
+    def test_adopted_fleets_cost_nothing(self):
+        recipe = dict(RECIPE)
+        recipe["fleet"] = {"mode": "adopted", "selector": {"app": "ds"},
+                           "service": "ds", "port": 8000, "replicas": 2}
+        with tempfile.TemporaryDirectory() as d:
+            tmp = pathlib.Path(d)
+            self.assertEqual(chip_budget_guard.decide(self._payload(
+                tmp, {"topology.decode.replicas": 100}, recipe=recipe))
+                ["decision"], "allow")
+
+    def test_production_holdings_shrink_the_budget(self):
+        import os  # noqa: PLC0415
+        from unittest import mock  # noqa: PLC0415
+        with tempfile.TemporaryDirectory() as d:
+            tmp = pathlib.Path(d)
+            home = tmp / "home"
+            for job, extra, status in (
+                ("j1", {"production": True, "chips_held": 48}, "RUNNING"),
+                ("j2", {"production": True, "chips_held": 48}, "CANCELLED"),
+                ("j3", {"production": False, "chips_held": 48}, "RUNNING"),
+            ):
+                path = home / "runs" / "jobs" / job / "job.json"
+                path.parent.mkdir(parents=True)
+                path.write_text(json.dumps({"backend": "gke_release",
+                                            "status": status, "extra": extra}))
+            with mock.patch.dict(os.environ, {"TPU_AGENT_SUITE_HOME": str(home)}):
+                self.assertEqual(chip_budget_guard.production_chips(), 48)
+                ok = chip_budget_guard.decide(self._payload(
+                    tmp, {"topology.decode.replicas": 4}))
+                over = chip_budget_guard.decide(self._payload(
+                    tmp, {"topology.decode.replicas": 5}))
+        self.assertEqual(ok["decision"], "allow")
+        self.assertEqual(over["decision"], "deny")
+        self.assertIn("production holds 48", over["reason"])
+
+    def test_unreadable_inputs_fail_open(self):
+        payload = {"tool": "delegate", "subagent": "llmd-arm-executor",
+                   "args": {"prompt": json.dumps({
+                       "incumbent_config_path": "/nonexistent/i.json",
+                       "recipe_path": "/nonexistent/r.json",
+                       "workload_spec_path": "/nonexistent/s.json",
+                       "sets": {"topology.decode.replicas": 999}})}}
+        self.assertEqual(chip_budget_guard.decide(payload)["decision"], "allow")

@@ -525,10 +525,16 @@ class AdvancedArmRenderTest(unittest.TestCase):
         det = [p for p in epp["plugins"]
                if p["type"] == "utilization-detector"][0]
         self.assertEqual(det["parameters"]["queueDepthThreshold"], 8)
-        # Tenant priorities become InferenceObjectives.
+        # Tenant priorities become InferenceObjectives, named per release
+        # so two routers can share a namespace.
         self.assertEqual(values["router"]["inferenceObjectives"],
-                         [{"name": "interactive", "priority": 10},
-                          {"name": "batch", "priority": -5}])
+                         [{"name": "adv-interactive", "priority": 10},
+                          {"name": "adv-batch", "priority": -5}])
+        slo_cm = json.loads(
+            (out / "bench/interactive.slo.configmap.json").read_text())
+        ip_cfg = json.loads(slo_cm["data"]["config.json"])
+        self.assertEqual(ip_cfg["api"]["headers"][workload.OBJECTIVE_HEADER],
+                         "adv-interactive")
 
     def test_predicted_latency_adds_plugins_and_predictor(self):
         def edit(cfg):
@@ -578,6 +584,20 @@ class AdvancedArmRenderTest(unittest.TestCase):
         values, _ = self._epp(out)
         self.assertNotIn("ha-enable-leader-election",
                          values["router"]["epp"]["flags"])
+
+    def test_envoy_configmap_is_named_per_release(self):
+        # The chart's preset names it a bare `envoy`; installing the
+        # production router next to a study arm failed Helm's ownership
+        # check on it live. The name is the only field overridden so the
+        # preset's envoy.yaml still applies.
+        out, _, _ = self._rendered(lambda cfg: None)
+        values, _ = self._epp(out)
+        proxy = values["router"]["proxy"]
+        self.assertEqual(proxy["configMap"],
+                         {"name": render.proxy_configmap_name("adv")})
+        self.assertNotEqual(proxy["configMap"]["name"], "envoy")
+        self.assertNotEqual(render.proxy_configmap_name("a"),
+                            render.proxy_configmap_name("b"))
 
     def test_every_advanced_arm_is_refused_on_an_adopted_fleet(self):
         edits = {
@@ -1217,7 +1237,7 @@ class BenchTest(unittest.TestCase):
         tenant = profile["tenants"][0]
         cfg = workload.render_inference_perf(
             profile, tenant, stage="slo", base_url="http://x:8000",
-            model_name="m", objective_header=True)
+            model_name="m", objective="acme-r1-chat")
         self.assertGreaterEqual(cfg["load"]["num_workers"], 1)
         self.assertIn("worker_max_concurrency", cfg["load"])
         self.assertEqual(cfg["load"]["request_retries"],
@@ -1230,7 +1250,7 @@ class BenchTest(unittest.TestCase):
         self.assertEqual(hardened["request_retries"], 0)
         self.assertIn("request_timeout", hardened)
         self.assertEqual(cfg["api"]["headers"][workload.OBJECTIVE_HEADER],
-                         tenant["name"])
+                         "acme-r1-chat")
         cfg = workload.render_inference_perf(
             profile, tenant, stage="slo", base_url="http://x:8000",
             model_name="m")
@@ -1343,6 +1363,82 @@ class BenchTest(unittest.TestCase):
             self.assertFalse(report["telemetry_valid"])
             self.assertFalse(report["admissible"])
             self.assertEqual(len(report["job_failures"]), 2)
+
+
+class CollectTest(unittest.TestCase):
+    """Fleet-metrics collection: the selector and the token path.
+
+    Both pins come from the live spike: a `pod=~"<name>-decode-.*"` selector
+    matched nothing for an adopted fleet (its pods carry the customer's
+    names), and the workstation's user token was rejected by the
+    Monitoring API while its ADC token was accepted.
+    """
+
+    def _release_dir(self, tmp: str) -> pathlib.Path:
+        out = pathlib.Path(tmp) / "rel"
+        _render(out)
+        return out
+
+    def test_queries_select_by_the_podmonitoring_job_label(self):
+        from framework.deploy import collect
+        seen: list[str] = []
+
+        def query(promql):
+            seen.append(promql)
+            return {"status": "success", "data": {"resultType": "vector",
+                    "result": [{"value": [0, "0.42"]}]}}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            env = config.DeployEnv(namespace="llmd-study",
+                                   prometheus_url="http://prom.local")
+            doc = collect.collect(env, self._release_dir(tmp), window="10m",
+                                  out_dir=pathlib.Path(tmp) / "profile",
+                                  query_fn=query)
+        self.assertEqual(len(seen), len(collect.QUERIES))
+        expected = (f'namespace="llmd-study",'
+                    f'job="{render.modelserver_monitoring_name("acme-r1")}"')
+        for promql in seen:
+            self.assertIn(expected, promql)
+            self.assertNotIn("pod=~", promql)
+        self.assertEqual(doc["metrics"]["kv_util_mean"]["value"], 0.42)
+
+    def test_rendered_podmonitoring_name_matches_the_collector(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = self._release_dir(tmp)
+            mon = json.loads((out / render.MONITORING_FILE).read_text())
+        names = [item["metadata"]["name"] for item in mon["items"]]
+        self.assertIn(render.modelserver_monitoring_name("acme-r1"), names)
+
+    def test_token_prefers_adc_and_falls_back_to_the_user_login(self):
+        from framework.deploy import kube
+
+        class TokenRunner(FakeRunner):
+            def __call__(self, cmd, *, stdin=None, timeout=None):
+                self.calls.append(list(cmd))
+                if "application-default" in cmd:
+                    return subprocess.CompletedProcess(cmd, 1, "", "no ADC")
+                return subprocess.CompletedProcess(cmd, 0, "user-tok\n", "")
+
+        runner = TokenRunner()
+        self.assertEqual(kube.gcloud_access_token(runner), "user-tok")
+        self.assertEqual(runner.calls, [list(c) for c in kube.TOKEN_COMMANDS])
+
+        adc_calls: list[list[str]] = []
+
+        def adc_runner(cmd, *, stdin=None, timeout=None):
+            adc_calls.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, 0, "adc-tok", "")
+        self.assertEqual(kube.gcloud_access_token(adc_runner), "adc-tok")
+        self.assertEqual(adc_calls, [list(kube.TOKEN_COMMANDS[0])])
+
+    def test_token_error_names_both_commands(self):
+        from framework.deploy import kube
+        runner = FakeRunner(fail={"print-access-token": "not logged in"})
+        with self.assertRaises(kube.CommandError) as ctx:
+            kube.gcloud_access_token(runner)
+        self.assertIn("application-default", ctx.exception.stderr)
+        self.assertIn("gcloud auth print-access-token", ctx.exception.stderr)
+        self.assertIn("not logged in", ctx.exception.stderr)
 
 
 class ProbeTest(unittest.TestCase):

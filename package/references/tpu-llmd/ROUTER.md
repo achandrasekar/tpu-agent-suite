@@ -87,9 +87,12 @@ The renderer emits the gate, a `flowControl` block and the detector from
 | `max_requests`, `max_bytes`, `default_request_ttl`, `enable_eviction` | `flowControl.maxRequests` ... | 0 (unlimited), 0, client deadline, false |
 | `priority_bands[].priority` | `flowControl.priorityBands[]` and one `InferenceObjective` per tenant priority (`router.inferenceObjectives` in the chart) | -- |
 
-Clients select a band with the `x-llm-d-inference-objective` header; the
-bench Job sets it per tenant from the workload spec's `priority`. The two
-detector thresholds are hot paths.
+Clients select a band with the `x-llm-d-inference-objective` header. The
+objective is named `<release>-<tenant>` (an `InferenceObjective` is a
+namespaced object, and a tenant name alone collided when a study arm and
+the production router shared a namespace); the bench Job sets that name
+per tenant, and the HANDOFF runbook tells production clients the same.
+The two detector thresholds are hot paths.
 
 ## Predicted latency (`router.predicted_latency: true`)
 

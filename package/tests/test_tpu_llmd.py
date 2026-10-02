@@ -69,6 +69,18 @@ class TestTpuLlmdPlanArms(_scripts_test.PlanArmsTest):
     """Wire the plan_arms tests into package discovery."""
 
 
+class TestTpuLlmdPromoteRelease(_scripts_test.PromoteReleaseTest):
+    """Wire the promote_release tests into package discovery."""
+
+
+class TestTpuLlmdProductionGuard(_scripts_test.ProductionGuardTest):
+    """Wire the llmd-production-guard hook tests into package discovery."""
+
+
+class TestTpuLlmdChipBudgetGuard(_scripts_test.ChipBudgetGuardTest):
+    """Wire the llmd-chip-budget-guard hook tests into package discovery."""
+
+
 LLMD_SCHEMAS = (
     "llmd-request.json",
     "llmd-result.json",
@@ -82,6 +94,8 @@ LLMD_SCHEMAS = (
     "engine-capabilities.json",
     "llmd-plan-request.json",
     "llmd-plan-result.json",
+    "llmd-promote-request.json",
+    "llmd-promote-result.json",
 )
 
 
@@ -121,11 +135,24 @@ class TestTpuLlmdSchemas(unittest.TestCase):
 
     def test_request_schemas_carry_prompt_and_results_carry_status(self):
         for name in ("llmd-request.json", "llmd-platform-request.json",
-                     "llmd-arm-request.json", "llmd-plan-request.json"):
+                     "llmd-arm-request.json", "llmd-plan-request.json",
+                     "llmd-promote-request.json"):
             self.assertIn("prompt", _schema(name)["properties"])
         for name in ("llmd-result.json", "llmd-platform-result.json",
-                     "llmd-plan-result.json"):
+                     "llmd-plan-result.json", "llmd-promote-result.json"):
             self.assertIn("status", _schema(name)["required"])
+
+    def test_promotion_needs_the_explicit_flag_in_both_schemas(self):
+        # The orchestrator's request and the productionizer's both carry
+        # `promotion_approved`; the productionizer requires it so a prompt
+        # cannot forget to pass it along.
+        self.assertIn("promotion_approved",
+                      _schema("llmd-request.json")["properties"])
+        promote = _schema("llmd-promote-request.json")
+        self.assertIn("promotion_approved", promote["required"])
+        self.assertIn("promoted",
+                      _schema("llmd-result.json")["properties"]["study_status"]
+                      ["enum"])
 
     def test_arm_kinds_are_one_list_across_framework_and_package(self):
         round_kinds = tuple(
@@ -184,18 +211,17 @@ class TestTpuLlmdWiring(unittest.TestCase):
         text = (_PACKAGE_ROOT / rel).read_text(encoding="utf-8")
         return frontmatter.parse_frontmatter_document(text)[0]
 
-    def test_agents_json_lists_the_four_agents(self):
-        agents = json.loads((_PACKAGE_ROOT / "tpu-llmd" /
-                             "agents.json").read_text(encoding="utf-8"))
-        self.assertEqual(agents["agents"], [
-            "instructions/tpu-llmd.md",
-            "instructions/llmd-platform.md",
-            "instructions/llmd-planner.md",
-            "instructions/llmd-arm-executor.md",
-        ])
-        manifest = json.loads(
-            (_PACKAGE_ROOT / "package.release.json").read_text(encoding="utf-8"))
-        self.assertIn("tpu-llmd/agents.json", manifest["include"])
+    def test_agents_json_lists_the_five_agents(self):
+        manifest = compiler.load_package(_PACKAGE_ROOT)
+        discovered = [a["instructions"] for a in manifest["agents"]]
+        for expected in (
+            "agents/tpu-llmd.md",
+            "agents/llmd-platform.md",
+            "agents/llmd-planner.md",
+            "agents/llmd-arm-executor.md",
+            "agents/llmd-productionizer.md",
+        ):
+            self.assertIn(expected, discovered)
 
     def test_orchestrator_delegates_only_to_its_specialists(self):
         fm = self._frontmatter("agents/tpu-llmd.md")
@@ -203,7 +229,8 @@ class TestTpuLlmdWiring(unittest.TestCase):
         self.assertEqual(fm["produces"], "schemas/llmd-result.json")
         self.assertEqual(set(fm["delegates"]),
                          {"llmd-platform", "llmd-arm-executor",
-                          "llmd-planner", "tpu-knowledge-base"})
+                          "llmd-planner", "llmd-productionizer",
+                          "tpu-knowledge-base"})
         # Recommend-only toward the engine domains: never a delegation.
         self.assertNotIn("tpu-performance-optimization", fm["delegates"])
         self.assertNotIn("tpu-model-onboarding", fm["delegates"])
@@ -216,6 +243,8 @@ class TestTpuLlmdWiring(unittest.TestCase):
              "schemas/llmd-arm-request.json"),
             ("agents/llmd-planner.md",
              "schemas/llmd-plan-request.json"),
+            ("agents/llmd-productionizer.md",
+             "schemas/llmd-promote-request.json"),
         ):
             fm = self._frontmatter(rel)
             self.assertEqual(fm["accepts"], accepts)
@@ -240,6 +269,32 @@ class TestTpuLlmdWiring(unittest.TestCase):
                     "llmd-arm-executor.md").read_text(encoding="utf-8")
         self.assertIn("{{runtime}} deploy teardown", executor)
 
+    def test_productionizer_applies_with_the_production_flag_and_never_removes(self):
+        body = (_PACKAGE_ROOT / "agents" /
+                "llmd-productionizer.md").read_text(encoding="utf-8")
+        self.assertIn("deploy apply", body)
+        self.assertIn("--production", body)
+        self.assertIn("deploy drill", body)
+        self.assertNotIn("{{runtime}} deploy teardown", body)
+
+    def test_hooks_are_registered_with_their_scripts(self):
+        manifest = json.loads(
+            (_PACKAGE_ROOT / "package.release.json").read_text(encoding="utf-8"))
+        hooks = {h["name"]: h for h in manifest["hooks"]}
+        for name, script in (
+            ("llmd-production-guard", "llmd_production_guard.py"),
+            ("llmd-chip-budget-guard", "llmd_chip_budget_guard.py"),
+        ):
+            with self.subTest(hook=name):
+                self.assertIn(name, hooks)
+                self.assertEqual(hooks[name]["event"], "PreToolUse")
+                action = hooks[name]["action"]
+                self.assertTrue(action.startswith("script:"), action)
+                path = action.split(":", 1)[1]
+                self.assertTrue((_PACKAGE_ROOT / path).is_file(), path)
+                self.assertTrue(path.endswith(script))
+        self.assertEqual(hooks["llmd-chip-budget-guard"]["matchers"],
+                         ["delegate"])
 
 
 if __name__ == "__main__":

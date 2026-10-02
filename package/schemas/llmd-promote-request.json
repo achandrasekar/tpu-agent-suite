@@ -1,0 +1,138 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "llmd-promote-request.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "prompt",
+    "run_id",
+    "study_id",
+    "incumbent_config_path",
+    "recipe_path",
+    "workload_spec_path",
+    "production_namespace",
+    "promotion_approved"
+  ],
+  "description": "What tpu-llmd hands llmd-productionizer once the user has approved promoting a study's incumbent. The incumbent is the complete configuration; this request only says where it goes, how it is exposed, and what acceptance must show. Nothing here can change the configuration that was measured.",
+  "properties": {
+    "prompt": {
+      "type": "string",
+      "description": "The promotion the user approved, in a sentence: which incumbent, into which namespace."
+    },
+    "run_id": {
+      "type": "string",
+      "description": "The session run; the production bundle is filed under its llmd artifacts."
+    },
+    "study_id": {
+      "type": "string",
+      "description": "The study whose incumbent is promoted; its rounds become the search ledger."
+    },
+    "incumbent_config_path": {
+      "type": "string",
+      "description": "The llmd-config.json the study ended on. Promoted byte-for-byte except for the production settings the productionizer is allowed to add (EPP replicas, HA mode)."
+    },
+    "recipe_path": {
+      "type": "string"
+    },
+    "workload_spec_path": {
+      "type": "string"
+    },
+    "production_namespace": {
+      "type": "string",
+      "description": "Where the production release is applied. On an adopted fleet this must be the fleet's own namespace."
+    },
+    "promotion_approved": {
+      "type": "boolean",
+      "description": "Must be true. The user said, in this session, that the incumbent goes to production. The productionizer refuses anything else and the orchestrator never sets it on its own."
+    },
+    "release_name": {
+      "type": "string",
+      "pattern": "^[a-z0-9]([-a-z0-9]{0,38}[a-z0-9])?$",
+      "description": "DNS label for the production release; default `<study_id>-prod` truncated to 40."
+    },
+    "exposure": {
+      "type": "string",
+      "enum": [
+        "cluster-ip",
+        "internal-lb"
+      ],
+      "default": "cluster-ip",
+      "description": "Front door in front of the router. cluster-ip adds nothing a shared cluster must approve; internal-lb asks GKE for an internal passthrough load balancer."
+    },
+    "epp_replicas": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 2,
+      "description": "EPP replicas for production; 2 gives an active-passive pair under the chart's leader election."
+    },
+    "epp_ha_mode": {
+      "type": "string",
+      "enum": [
+        "active-passive",
+        "active-active"
+      ],
+      "description": "Only read when epp_replicas > 1. Default active-passive; active-active only when every tuned plugin reads model-server-pulled state."
+    },
+    "acceptance": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "replicates": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 1
+        },
+        "baseline_report_path": {
+          "type": "string",
+          "description": "The incumbent arm's bench report; acceptance must land inside the noise floor of it or better."
+        },
+        "noise_floor_pct": {
+          "type": "number",
+          "default": 5
+        }
+      },
+      "description": "How the promoted release is re-measured in its production namespace before the bundle calls it accepted."
+    },
+    "drills": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "epp-pod-kill"
+        ]
+      },
+      "default": [
+        "epp-pod-kill"
+      ],
+      "description": "Fault drills to run after acceptance. Only drills the runtime implements are listed; anything else the design names is reported UNVERIFIED."
+    },
+    "existing_production_release": {
+      "type": "string",
+      "description": "Name of a production release already serving this fleet, if any. The productionizer refuses to apply a second one over it without the user saying what happens to the first."
+    }
+  },
+  "examples": [
+    {
+      "prompt": "Promote the acme-chat-tpu7x incumbent to the serving namespace.",
+      "run_id": "20260914T120000Z-000000000000",
+      "study_id": "acme-chat-tpu7x",
+      "incumbent_config_path": "artifacts/llmd/incumbent/llmd-config.json",
+      "recipe_path": "artifacts/onboarding/serving-recipe.json",
+      "workload_spec_path": "specs/acme-chat.json",
+      "production_namespace": "serving",
+      "promotion_approved": true,
+      "release_name": "acme-chat-prod",
+      "exposure": "cluster-ip",
+      "epp_replicas": 2,
+      "epp_ha_mode": "active-passive",
+      "acceptance": {
+        "replicates": 1,
+        "baseline_report_path": "artifacts/llmd/bench/a1-slo/llmd-bench-report.json",
+        "noise_floor_pct": 5
+      },
+      "drills": [
+        "epp-pod-kill"
+      ]
+    }
+  ]
+}
