@@ -257,6 +257,103 @@
           "type": "integer",
           "minimum": 1,
           "description": "Chip budget a workload spec without budget.max_chips gets."
+        },
+        "tpu_accelerator": {
+          "type": "string",
+          "description": "Value of the cloud.google.com/gke-tpu-accelerator node label the fleet runs on (e.g. tpu7x). Empty means compute.params.tpu_accelerator; set it when the compute backend (such as gke_pod) does not carry one."
+        },
+        "tpu_topology": {
+          "type": "string",
+          "description": "Value of the cloud.google.com/gke-tpu-topology node label (e.g. 2x2x1). Empty means compute.params.tpu_topology."
+        },
+        "sizing": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Pod sizes for the CPU parts of a release. Defaults are the llm-d guides' (4 CPU / 8Gi requests, 16Gi limit) for each; a shared cluster whose CPU pools are nearly full sets smaller ones here instead of leaving bench Jobs and the EPP Pending.",
+          "properties": {
+            "bench": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "requests": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": [
+                      "string",
+                      "number"
+                    ]
+                  }
+                },
+                "limits": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": [
+                      "string",
+                      "number"
+                    ]
+                  }
+                }
+              }
+            },
+            "epp": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "requests": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": [
+                      "string",
+                      "number"
+                    ]
+                  }
+                },
+                "limits": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": [
+                      "string",
+                      "number"
+                    ]
+                  }
+                }
+              }
+            },
+            "proxy": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "requests": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": [
+                      "string",
+                      "number"
+                    ]
+                  }
+                },
+                "limits": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": [
+                      "string",
+                      "number"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "control_plane_affinity": {
+          "type": "object",
+          "description": "Pod affinity for the EPP (the standalone chart has no nodeSelector key), e.g. to pin it to a CPU pool."
+        },
+        "control_plane_tolerations": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
         }
       },
       "additionalProperties": false

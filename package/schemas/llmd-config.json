@@ -22,8 +22,9 @@
           "type": "string",
           "enum": [
             "aggregated",
-            "pd"
-          ]
+            "disaggregated"
+          ],
+          "description": "disaggregated renders a prefill pool and a decode pool; decode pods carry the llm-d routing sidecar and the EPP runs the disagg-profile-handler."
         },
         "decode": {
           "type": "object",
@@ -62,7 +63,32 @@
             "slice": {
               "type": "string"
             }
-          }
+          },
+          "additionalProperties": false
+        },
+        "pd_decider": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "always-disagg-pd-decider",
+                "prefix-based-pd-decider"
+              ]
+            },
+            "parameters": {
+              "type": "object",
+              "description": "Decider parameters, e.g. prefix-based-pd-decider's nonCachedTokens / promptTokens."
+            }
+          },
+          "description": "Which requests take the prefill hop. Default always-disagg-pd-decider (the llm-d P/D guide); prefix-based-pd-decider with nonCachedTokens is the inner-sweep knob."
         }
       }
     },
@@ -85,25 +111,73 @@
             "object",
             "null"
           ],
+          "additionalProperties": false,
           "properties": {
-            "num_cpu_chunks": {
-              "type": "integer"
+            "cpu_chunks": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "TPU_OFFLOAD_NUM_CPU_CHUNKS (tpu-inference); host KV capacity in chunks."
             },
             "staging_blocks": {
-              "type": "integer"
+              "type": "integer",
+              "minimum": 1,
+              "description": "TPU_OFFLOAD_NUM_STAGING_BLOCKS (tpu-inference)."
+            },
+            "module": {
+              "type": "string",
+              "description": "kv_connector_module_path override; default from the recipe's engine_flavor."
+            },
+            "connector": {
+              "type": "string",
+              "description": "kv_connector class override."
+            },
+            "extra_config": {
+              "type": "object",
+              "description": "kv_connector_extra_config passed verbatim (e.g. the torchtpu raiden connector's cpu_bytes_to_use)."
+            },
+            "env": {
+              "type": "object",
+              "additionalProperties": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ]
+              },
+              "description": "Extra pod env the connector reads."
             }
-          }
+          },
+          "description": "Host-tier KV offload. Null means HBM only."
         },
         "pd_connector": {
           "type": [
-            "string",
+            "object",
             "null"
           ],
-          "enum": [
-            "tpu_connector",
-            "tpu_connector_hma",
-            null
-          ]
+          "additionalProperties": false,
+          "properties": {
+            "module": {
+              "type": "string"
+            },
+            "connector": {
+              "type": "string"
+            },
+            "sidecar_connector": {
+              "type": "string",
+              "enum": [
+                "nixlv2",
+                "shared-storage",
+                "sglang",
+                "mooncake",
+                "offloading"
+              ],
+              "description": "The routing sidecar's --kv-connector; the TPU guide leaves the default nixlv2."
+            },
+            "extra_config": {
+              "type": "object"
+            }
+          },
+          "description": "P/D KV connector override; defaults come from the recipe's engine_flavor."
         }
       }
     },
@@ -117,11 +191,13 @@
         "profile": {
           "type": "string",
           "enum": [
+            "passthrough",
             "sticky-until-saturated",
             "prefix-weighted",
             "load-only",
             "session-sticky"
-          ]
+          ],
+          "description": "passthrough: no EPP; requests go to the model-server Service and kube-proxy spreads them. It is the control every router arm is measured against and the baseline of an adopted fleet. The others name an EndpointPickerConfig the renderer carries."
         },
         "plugins": {
           "type": "object",
@@ -131,13 +207,94 @@
           "type": [
             "object",
             "null"
-          ]
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "saturation_detector": {
+              "type": "object",
+              "description": "{type: utilization-detector|concurrency-detector|max-saturation-detector, ...parameters} e.g. {type: utilization-detector, queueDepthThreshold: 5, kvCacheUtilThreshold: 0.8}."
+            },
+            "max_requests": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "max_bytes": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "default_request_ttl": {
+              "type": "string",
+              "description": "Go duration, e.g. 60s."
+            },
+            "enable_eviction": {
+              "type": "boolean"
+            },
+            "priority_bands": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "priority"
+                ],
+                "properties": {
+                  "priority": {
+                    "type": "integer"
+                  },
+                  "max_requests": {
+                    "type": "integer"
+                  },
+                  "max_bytes": {
+                    "type": "integer"
+                  },
+                  "ordering_policy": {
+                    "type": "string"
+                  },
+                  "fairness_policy": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "description": "EPP flow control (featureGates: [flowControl] + flowControl block). Null means off: a saturated pool only sheds negative-priority requests."
         },
         "predicted_latency": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "Adds the predicted-latency producer, latency scorer, SLO headroom filter and admitter, and enables the chart's latencyPredictor sidecars. Alpha in router v0.11.0."
         },
         "epp_replicas": {
           "type": "integer",
+          "minimum": 1
+        },
+        "epp_ha_mode": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "active-passive",
+            "active-active",
+            null
+          ],
+          "description": "With epp_replicas > 1 the chart enables leader election (active-passive) by itself; active-active turns it off."
+        },
+        "proxy_mode": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "sidecar",
+            "service",
+            null
+          ]
+        },
+        "proxy_replicas": {
+          "type": [
+            "integer",
+            "null"
+          ],
           "minimum": 1
         }
       }

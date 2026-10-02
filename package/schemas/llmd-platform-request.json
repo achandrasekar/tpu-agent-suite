@@ -38,6 +38,13 @@
       "type": "boolean",
       "default": true,
       "description": "Let preflight create the namespace and install GAIE CRDs."
+    },
+    "selector": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "Pod labels of an adopted fleet. When present the probe runs inside one matching pod (`deploy probe --selector`) instead of a Job, because the fleet already holds the chips and the running pod is the image under study."
     }
   },
   "examples": [

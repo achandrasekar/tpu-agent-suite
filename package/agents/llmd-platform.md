@@ -63,19 +63,35 @@ When the request carries `image` and preflight passed:
 {{runtime}} deploy probe --image <image> --out <work>
 ```
 
-This runs one short TPU Job that imports the P/D and offload connector
-modules inside the image and writes `<work>/engine-capabilities.json`
-(`{{schema:engine-capabilities.json}}`). Put its `capabilities` (`pd_connector`,
-`offload_connector`, `kv_events`, `tpu_inference`, `vllm`, each a boolean)
-and `versions` into your result's `capabilities`. **The probe is a sanity
-check, not a
-gate**: the study assumes the vllm-torchtpu image carries the connectors
-llm-d's guides name, so a connector reported absent is a line in `summary`
-and a `blockers[]` entry tagged `informational`, never a reason to fail.
+When the request also carries `selector` (an adopted fleet: the model
+servers are already running), probe inside one of those pods instead --
+no chip is free to run a Job, and the running pod *is* the image under
+study:
 
-If the probe Job cannot be scheduled (no free chip), report
-`capabilities: {}` and say why; preflight already told the study how many
-chips are free.
+```bash
+{{runtime}} deploy probe --selector <key=value,...> --out <work>
+```
+
+Either way the runtime imports the KV-events, P/D and offload connector
+modules with JAX and torch pinned to CPU, never touching the TPU, and
+writes `<work>/engine-capabilities.json` (`{{schema:engine-capabilities.json}}`)
+with `mode` (`job` or `exec`), the `pod` it used, `capabilities`
+(`pd_connector`, `offload_connector`, `kv_events`, `tpu_inference`,
+`vllm_torchtpu`, `vllm`, each a boolean), `versions`, and for each
+capability the module it found. Put `capabilities` and `versions` into
+your result's `capabilities` and name the file in `artifacts`.
+
+**The probe gates arms; it never prunes them.** The seeder and the planner
+read this file and write an arm whose connector is `false` as `blocked`
+with `blocked_on_engine_capability`, so the study's report says what the
+image lacks. A connector reported absent is therefore a line in `summary`
+and a `blockers[]` entry tagged `informational`, never a reason to fail
+the platform check.
+
+If the probe cannot run (no free chip for a Job and no pod matching the
+selector), report `capabilities: {}` and say why; with no probe every
+connector arm stays open, on the assumption that the vllm-torchtpu image
+carries what llm-d's guides name (`{{reference:tpu-llmd/PLATFORM.md}}`).
 
 ## 3. Report
 

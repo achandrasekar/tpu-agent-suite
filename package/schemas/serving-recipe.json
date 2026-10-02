@@ -28,6 +28,48 @@
     "env": {
       "type": "object"
     },
+    "fleet": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "How the study relates to the model servers. Absent or mode=managed: the study deploys them from this recipe. mode=adopted: they are already running and owned by someone else; the study only adds the router and benchmarks around them, selects them by these labels, and never applies, scales, restarts or deletes them. Any incumbent path that would change them is refused with ADOPTED_FLEET_IMMUTABLE.",
+      "required": [
+        "mode"
+      ],
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "managed",
+            "adopted"
+          ]
+        },
+        "selector": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Pod labels that select the adopted servers (required when adopted)."
+        },
+        "service": {
+          "type": "string",
+          "description": "ClusterIP Service in front of the adopted pods; the passthrough control benchmarks against it (required when adopted)."
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Port the adopted servers listen on. Default 8000."
+        },
+        "replicas": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Pods the selector is expected to match; `wait` requires this many Ready (required when adopted)."
+        },
+        "role": {
+          "type": "string",
+          "description": "llm-d role of the adopted pods. Default decode."
+        }
+      }
+    },
     "accelerator": {
       "type": "object",
       "additionalProperties": false,
@@ -132,6 +174,15 @@
     "source": {
       "type": "object",
       "description": "Where this recipe came from (run ids, report paths)."
+    },
+    "engine_flavor": {
+      "type": "string",
+      "enum": [
+        "tpu_inference",
+        "torchtpu"
+      ],
+      "default": "tpu_inference",
+      "description": "Which connector modules the image carries, as `deploy probe` reports them: tpu-inference's (TPUConnectorHMA / TPUOffloadConnector) or the torchtpu image's own (vllm_torchtpu.*). Picks the kv_connector names the renderer writes for P/D and host-offload arms."
     }
   },
   "examples": [

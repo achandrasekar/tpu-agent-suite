@@ -18,6 +18,21 @@
     "image": {
       "type": "string"
     },
+    "mode": {
+      "type": "string",
+      "enum": [
+        "job",
+        "exec"
+      ],
+      "description": "`job` ran a probe Job on a TPU node (managed fleet); `exec` ran inside a serving pod (adopted fleet)."
+    },
+    "pod": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Pod the exec-mode probe ran in."
+    },
     "accelerator": {
       "type": "object"
     },
@@ -45,6 +60,9 @@
           "type": "boolean"
         },
         "vllm": {
+          "type": "boolean"
+        },
+        "vllm_torchtpu": {
           "type": "boolean"
         }
       }

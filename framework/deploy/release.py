@@ -102,6 +102,15 @@ def _history(release: dict[str, Any], action: str, **fields: Any) -> None:
 # -- apply ---------------------------------------------------------------------
 
 
+def _adopted(release: dict[str, Any]) -> bool:
+    return (release.get("fleet") or {}).get("mode") == render.FLEET_ADOPTED
+
+
+def _router_installed(release: dict[str, Any]) -> bool:
+    # Releases rendered before the field existed always carried a router.
+    return bool(release["router"].get("installed", True))
+
+
 def apply(env: DeployEnv,
           release_dir: pathlib.Path,
           *,
@@ -114,6 +123,11 @@ def apply(env: DeployEnv,
     monitoring, then the router, so the EPP's pool watch finds pods already
     coming up. Monitoring is best-effort: a cluster without Managed
     Prometheus still serves, it just cannot be `collect`ed from.
+
+    An adopted fleet's servers are not applied -- they are running and not
+    the release's -- and the passthrough profile installs no chart. Either
+    way the release is still filed, so teardown and the reaper clean up
+    whatever it did create (monitoring, bench Jobs, the chart).
     """
     release_dir = pathlib.Path(release_dir)
     release = render.load_release(release_dir)
@@ -124,19 +138,25 @@ def apply(env: DeployEnv,
             error_code="NOT_PRODUCTION_RENDER")
     kube = _kube_for(env, release, runner)
 
-    kube.apply(_read(release_dir, release["files"]["modelserver"]))
+    adopted = _adopted(release)
+    if release["files"].get("modelserver"):
+        kube.apply(_read(release_dir, release["files"]["modelserver"]))
     warnings: list[str] = []
     try:
         kube.apply(_read(release_dir, release["files"]["monitoring"]))
     except DeployError as exc:
         warnings.append(f"monitoring not applied: {exc.message};"
                         f" {exc.detail[:200]}")
-    kube.helm_upgrade_install(
-        release["router"]["helm_release"],
-        release["router"]["chart"],
-        release["router"]["chart_version"],
-        [str(release_dir / release["files"]["router_values"])])
+    if _router_installed(release):
+        kube.helm_upgrade_install(
+            release["router"]["helm_release"],
+            release["router"]["chart"],
+            release["router"]["chart_version"],
+            [str(release_dir / release["files"]["router_values"])])
+    if release["files"].get("exposure"):
+        kube.apply(_read(release_dir, release["files"]["exposure"]))
 
+    chips_held = 0 if adopted else release["chips"]["total"]
     record = jobs.JobRecord.create(
         job_name=release["name"],
         run_id=run_id,
@@ -147,8 +167,12 @@ def apply(env: DeployEnv,
             "release_dir": str(release_dir),
             "namespace": release["namespace"],
             "helm_release": release["router"]["helm_release"],
+            "router_installed": _router_installed(release),
+            "fleet_mode": (release.get("fleet") or {}).get(
+                "mode", render.FLEET_MANAGED),
             "production": bool(production),
             "chips_total": release["chips"]["total"],
+            "chips_held": chips_held,
             "config_digest": release["config_digest"],
         },
     )
@@ -166,8 +190,13 @@ def apply(env: DeployEnv,
         "name": release["name"],
         "namespace": release["namespace"],
         "job_id": record.job_id,
+        "fleet_mode": (release.get("fleet") or {}).get(
+            "mode", render.FLEET_MANAGED),
         "chips_total": release["chips"]["total"],
+        "chips_held": chips_held,
+        "router_installed": _router_installed(release),
         "router_service": release["router"]["service"],
+        "bench_base_url": (release.get("bench") or {}).get("base_url"),
         "warnings": warnings,
     }
 
@@ -184,6 +213,28 @@ def _deployment_ready(doc: dict[str, Any]) -> tuple[bool, int, int]:
     updated = int(status.get("updatedReplicas") or 0)
     return (generation_ok and ready >= spec and updated >= spec
             and spec > 0), ready, spec
+
+
+def _epp_ready(doc: dict[str, Any],
+               release: dict[str, Any]) -> tuple[bool, int, int]:
+    """EPP readiness that knows about leader election.
+
+    The chart's active-passive pair keeps the standby deliberately not
+    Ready so the Service routes only to the leader; `release.json` records
+    `epp_ha.min_ready` for that case and `_deployment_ready`'s full-count
+    rule would otherwise wait forever on it.
+    """
+    ha = (release.get("router") or {}).get("epp_ha") or {}
+    min_ready = int(ha.get("min_ready") or 0)
+    ready_all, ready, spec = _deployment_ready(doc)
+    if min_ready and min_ready < spec:
+        status = doc.get("status") or {}
+        generation_ok = int(status.get("observedGeneration") or 0) >= int(
+            (doc.get("metadata") or {}).get("generation") or 0)
+        updated = int(status.get("updatedReplicas") or 0)
+        return (generation_ok and updated >= spec
+                and ready >= min_ready), ready, spec
+    return ready_all, ready, spec
 
 
 def _fatal_pod(pods: dict[str, Any], started: float) -> str | None:
@@ -204,6 +255,34 @@ def _fatal_pod(pods: dict[str, Any], started: float) -> str | None:
         if phase == "Failed":
             return f"{name}: pod Failed"
     return None
+
+
+def _selector_text(selector: dict[str, str]) -> str:
+    return ",".join(f"{k}={v}" for k, v in sorted(selector.items()))
+
+
+def _pod_ready(pod: dict[str, Any]) -> bool:
+    for cond in (pod.get("status") or {}).get("conditions", []) or []:
+        if cond.get("type") == "Ready":
+            return cond.get("status") == "True"
+    return False
+
+
+def _adopted_ready(kube: Kube, release: dict[str, Any]
+                   ) -> tuple[bool, int, int]:
+    """Ready pods of an adopted fleet against the count the recipe promised.
+
+    More pods than promised is not an error -- the owner may have scaled
+    up -- but fewer means the fleet is not what the study was told it is,
+    and the measurement would be of something else.
+    """
+    fleet = release["fleet"]
+    pods = kube.kubectl_json(
+        ["get", "pods", "-l", _selector_text(fleet["selector"])], check=False)
+    items = pods.get("items", []) if pods else []
+    ready = sum(1 for p in items if _pod_ready(p))
+    want = int(fleet["replicas"])
+    return ready >= want, ready, want
 
 
 def wait(env: DeployEnv,
@@ -227,6 +306,10 @@ def wait(env: DeployEnv,
     name = release["name"]
     started = clock()
     last: dict[str, Any] = {}
+    adopted = _adopted(release)
+    router_installed = _router_installed(release)
+    epp_name = release["router"].get("epp_deployment",
+                                     render.epp_deployment(name))
     while True:
         last = {"deployments": {}, "epp": {}}
         all_ready = True
@@ -236,20 +319,22 @@ def wait(env: DeployEnv,
                                                                      0)
             last["deployments"][dep] = {"ready": have, "want": want}
             all_ready = all_ready and ready
-        epp = kube.kubectl_json([
-            "get", "deployment", "-l", f"app.kubernetes.io/instance={name}"
-        ], check=False)
-        epp_items = epp.get("items", []) if epp else []
-        if not epp_items:
-            all_ready = False
-            last["epp"] = {"found": False}
-        for item in epp_items:
-            ready, have, want = _deployment_ready(item)
-            last["epp"][item["metadata"]["name"]] = {
-                "ready": have,
-                "want": want
-            }
+        if adopted:
+            ready, have, want = _adopted_ready(kube, release)
+            last["adopted"] = {"ready": have, "want": want}
             all_ready = all_ready and ready
+        if router_installed:
+            epp = kube.kubectl_json(["get", "deployment", epp_name],
+                                    check=False)
+            if not epp:
+                all_ready = False
+                last["epp"] = {"found": False}
+            else:
+                ready, have, want = _epp_ready(epp, release)
+                last["epp"][epp_name] = {"ready": have, "want": want}
+                all_ready = all_ready and ready
+        else:
+            last["epp"] = {"installed": False}
         if all_ready:
             release["state"] = "ready"
             release["ready_at"] = _now()
@@ -265,6 +350,12 @@ def wait(env: DeployEnv,
             ["get", "pods", "-l", f"{pins.RELEASE_LABEL}={name}"],
             check=False)
         fatal = _fatal_pod(pods, started) if pods else None
+        if not fatal and router_installed:
+            epp_pods = kube.kubectl_json(
+                ["get", "pods", "-l", release["router"].get(
+                    "epp_selector", render.epp_selector(name))],
+                check=False)
+            fatal = _fatal_pod(epp_pods, started) if epp_pods else None
         if fatal:
             release["state"] = "failed"
             _history(release, "failed", reason=fatal)
@@ -338,8 +429,18 @@ def reconfigure(env: DeployEnv,
             error_code="COLD_PATH")
     config = json.loads(_read(release_dir, release["files"]["config"]))
     before = render.config_digest(render.normalize_config(config))
+    hot = [p for p, c in classes.items() if c == "hot"]
+    if hot and not _router_installed(release):
+        raise DeployError(
+            f"{sorted(hot)} are router paths but this release runs the"
+            " passthrough profile with no EPP; render a release with a"
+            " router profile first",
+            error_code="NO_ROUTER")
     for path, value in sets.items():
         set_path(config, path, value)
+    # rerender validates against the fleet: a warm (engine) path on an
+    # adopted fleet is refused here with ADOPTED_FLEET_IMMUTABLE before
+    # anything is applied.
     new_release = render.rerender(release_dir, config)
     kube = _kube_for(env, new_release, runner)
 
@@ -413,11 +514,24 @@ def status(env: DeployEnv, release_dir: pathlib.Path,
                             for cs in statuses),
         })
     out["router"] = {
+        "profile": release["router"].get("profile"),
+        "expected": _router_installed(release),
         "helm_release": release["router"]["helm_release"],
-        "installed": kube.helm_release_exists(
-            release["router"]["helm_release"]),
+        "installed": (kube.helm_release_exists(
+            release["router"]["helm_release"])
+                      if _router_installed(release) else False),
         "service": release["router"]["service"],
+        "epp_ha": release["router"].get("epp_ha"),
     }
+    out["exposure"] = release.get("exposure")
+    if _adopted(release):
+        ready, have, want = _adopted_ready(kube, release)
+        out["adopted"] = {
+            "selector": release["fleet"]["selector"],
+            "ready": have,
+            "want": want,
+            "ok": ready,
+        }
     bench = kube.kubectl_json(
         ["get", "jobs", "-l", f"{pins.RELEASE_LABEL}={name}"], check=False)
     for job in (bench.get("items", []) if bench else []):
@@ -437,12 +551,19 @@ def logs(env: DeployEnv, release_dir: pathlib.Path, *, component: str,
     kube = _kube_for(env, release, runner)
     name = release["name"]
     if component == "modelserver":
+        if _adopted(release):
+            # Reading the adopted pods' logs is a read; the container name
+            # is theirs, not ours, so no container filter is applied.
+            return kube.logs(_selector_text(release["fleet"]["selector"]),
+                             tail=tail)
         return kube.logs(f"{pins.RELEASE_LABEL}={name},"
                          f"{pins.LLMD_ROLE_LABEL}=decode",
                          container=render.MODELSERVER_CONTAINER,
                          tail=tail)
     if component == "epp":
-        return kube.logs(f"app.kubernetes.io/instance={name}", tail=tail)
+        return kube.logs(release["router"].get("epp_selector",
+                                               render.epp_selector(name)),
+                         container="epp", tail=tail)
     if component == "bench":
         return kube.logs(f"{pins.RELEASE_LABEL}={name},"
                          "tpu-coworker.llmd/bench-stage",
@@ -472,6 +593,121 @@ def events(env: DeployEnv, release_dir: pathlib.Path,
             "message": (ev.get("message") or "")[:300],
         })
     return out[-100:]
+
+
+# -- drills -----------------------------------------------------------------------
+
+DRILL_EPP_POD_KILL = "epp-pod-kill"
+DRILLS = (DRILL_EPP_POD_KILL,)
+DEFAULT_DRILL_TIMEOUT_S = 300
+
+
+def _probe_front_door(kube: Kube, release: dict[str, Any]) -> bool | None:
+    """One `/v1/models` against the release's front door from inside the
+    cluster, or None when there is nothing to probe (passthrough)."""
+    if not _router_installed(release):
+        return None
+    host = (release.get("exposure") or {}).get("host") or release["router"][
+        "service"]
+    port = (release.get("exposure") or {}).get("port") or release["router"][
+        "port"]
+    url = f"http://{host}:{port}/v1/models"
+    name = f"{release['name'][:30]}-probe-{int(time.time()) % 100000}"
+    try:
+        proc = kube.kubectl([
+            "run", name, "--rm", "-i", "--restart=Never", "--quiet",
+            f"--image={pins.PROBE_CURL_IMAGE}", "--command", "--", "curl",
+            "-fsS", "--max-time", "10", url
+        ], check=False, timeout=90)
+    except DeployError:
+        return False
+    return proc.returncode == 0 and "data" in (proc.stdout or "")
+
+
+def drill(env: DeployEnv,
+          release_dir: pathlib.Path,
+          *,
+          name: str,
+          timeout_s: int = DEFAULT_DRILL_TIMEOUT_S,
+          poll_s: int = DEFAULT_POLL_S,
+          runner: Any = None,
+          sleep: Callable[[float], None] = time.sleep,
+          clock: Callable[[], float] = time.monotonic) -> dict[str, Any]:
+    """Run one named fault drill against a release and measure recovery.
+
+    `epp-pod-kill` deletes one EPP pod (the Ready one when there is a
+    leader) and waits until the EPP Deployment is back to its HA-aware
+    readiness and the front door answers `/v1/models`. The result is a
+    row for the acceptance report: what was killed, how long until
+    recovered, and whether the front door was reachable afterwards.
+
+    Model-server drills do not exist here on purpose: an adopted fleet's
+    pods are not the release's to kill, and a managed fleet's chips are
+    too expensive to drill without the user asking for it by name.
+    """
+    if name not in DRILLS:
+        raise DeployError(f"drill must be one of {', '.join(DRILLS)}",
+                          error_code="INVALID_FIELD")
+    release_dir = pathlib.Path(release_dir)
+    release = render.load_release(release_dir)
+    if not _router_installed(release):
+        raise DeployError(
+            "the release has no router to drill (passthrough profile)",
+            error_code="NOTHING_TO_DRILL")
+    kube = _kube_for(env, release, runner)
+    epp_name = release["router"].get("epp_deployment",
+                                     render.epp_deployment(release["name"]))
+    selector = release["router"].get("epp_selector",
+                                     render.epp_selector(release["name"]))
+    pods = kube.kubectl_json(["get", "pods", "-l", selector], check=False)
+    items = (pods or {}).get("items", [])
+    if not items:
+        raise DeployError("no EPP pods match the release's selector",
+                          error_code="RELEASE_NOT_FOUND")
+    victims = [p for p in items if _pod_ready(p)] or items
+    victim = victims[0]["metadata"]["name"]
+    before = kube.kubectl_json(["get", "deployment", epp_name], check=False)
+    _, ready_before, want = _epp_ready(before, release) if before else (
+        False, 0, 0)
+
+    started = clock()
+    kube.delete(["pod", victim])
+    recovered_at: float | None = None
+    last: dict[str, Any] = {}
+    while True:
+        doc = kube.kubectl_json(["get", "deployment", epp_name], check=False)
+        ready, have, spec = _epp_ready(doc, release) if doc else (False, 0,
+                                                                  0)
+        live = kube.kubectl_json(["get", "pods", "-l", selector], check=False)
+        names = [p["metadata"]["name"] for p in (live or {}).get("items", [])]
+        last = {"ready": have, "want": spec, "pods": names}
+        if ready and victim not in names:
+            recovered_at = clock()
+            break
+        if clock() - started >= timeout_s:
+            break
+        sleep(poll_s)
+
+    front_door = (_probe_front_door(kube, release)
+                  if recovered_at is not None else False)
+    result = {
+        "drill": name,
+        "release": release["name"],
+        "killed": victim,
+        "epp_ha": release["router"].get("epp_ha"),
+        "ready_before": ready_before,
+        "want": want,
+        "recovered": recovered_at is not None,
+        "recovery_s": (round(recovered_at - started, 1)
+                       if recovered_at is not None else None),
+        "front_door_ok": front_door,
+        "passed": bool(recovered_at is not None and front_door is not False),
+        "last": last,
+    }
+    _history(release, "drill", **{k: v for k, v in result.items()
+                                  if k not in ("last", "release")})
+    render.save_release(release_dir, release)
+    return result
 
 
 # -- teardown -----------------------------------------------------------------------
@@ -505,6 +741,10 @@ def teardown(env: DeployEnv,
                  if release else record.extra.get("namespace", env.namespace))
     helm_release = (release["router"]["helm_release"]
                     if release else record.extra.get("helm_release", name))
+    router_installed = (_router_installed(release) if release else bool(
+        record.extra.get("router_installed", True)))  # type: ignore
+    fleet_mode = ((release.get("fleet") or {}).get("mode") if release else
+                  record.extra.get("fleet_mode")) or render.FLEET_MANAGED
     production = bool(release.get("production") if release else record.extra.
                       get("production"))
     if production and not include_production:
@@ -520,6 +760,9 @@ def teardown(env: DeployEnv,
     if runner is not None:
         kwargs["runner"] = runner
     kube = Kube(**kwargs)
+    # Everything goes by the release label. An adopted fleet's pods never
+    # carry it, which is what makes teardown safe to run next to them: there
+    # is no code path here that could name them.
     selector = f"{pins.RELEASE_LABEL}={name}"
     removed: list[str] = []
     problems: list[str] = []
@@ -533,11 +776,14 @@ def teardown(env: DeployEnv,
             if kind == "podmonitoring":
                 continue
             problems.append(f"{kind}: {exc.message} {exc.detail[:200]}")
-    try:
-        kube.helm_uninstall(helm_release)
-        removed.append(f"helm: {helm_release}")
-    except DeployError as exc:
-        problems.append(f"helm: {exc.message} {exc.detail[:200]}")
+    if router_installed:
+        try:
+            kube.helm_uninstall(helm_release)
+            removed.append(f"helm: {helm_release}")
+        except DeployError as exc:
+            problems.append(f"helm: {exc.message} {exc.detail[:200]}")
+    else:
+        removed.append("helm: not installed (passthrough)")
 
     if record is not None:
         record.mark("CANCELLED" if not problems else "FAILED",
@@ -551,7 +797,13 @@ def teardown(env: DeployEnv,
         raise DeployError(f"teardown of {name} left resources behind",
                           error_code="TEARDOWN_INCOMPLETE",
                           detail="; ".join(problems))
-    return {"name": name, "namespace": namespace, "removed": removed}
+    return {
+        "name": name,
+        "namespace": namespace,
+        "fleet_mode": fleet_mode,
+        "adopted_fleet_touched": False,
+        "removed": removed,
+    }
 
 
 # -- reaper integration ---------------------------------------------------------------

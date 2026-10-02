@@ -138,7 +138,10 @@ def summarize_report(doc: dict[str, Any], tenant: dict[str, Any],
     bad = int(failures.get("count") or 0)
     total = ok + bad
     throughput = successes.get("throughput") or {}
-    goodput = doc.get("goodput_metrics") or {}
+    # The pinned inference-perf writes goodput_metrics under `successes`;
+    # earlier builds wrote it at the top level. Accept either.
+    goodput = (successes.get("goodput_metrics")
+               or doc.get("goodput_metrics") or {})
 
     slo: dict[str, Any] = {}
     attains = total > 0
@@ -175,6 +178,7 @@ def summarize_report(doc: dict[str, Any], tenant: dict[str, Any],
     if good_tps is None:
         good_tps = tps if attains else 0.0
 
+    load_summary = doc.get("load_summary") or {}
     return {
         "requests": {"ok": ok, "failed": bad},
         "error_rate": round(error_rate, 6),
@@ -191,8 +195,32 @@ def summarize_report(doc: dict[str, Any], tenant: dict[str, Any],
             k: int((v or {}).get("count") or 0)
             for k, v in (failures.get("by_label") or {}).items()
         },
-        "load_summary": doc.get("load_summary"),
+        "load_summary": load_summary or None,
+        "client_limited": client_limited(load_summary),
     }
+
+
+# An open-loop load generator that sends later than it scheduled is the
+# bottleneck, not the server. inference-perf reports the requested and
+# achieved rates and the per-request schedule delay; either signal alone
+# marks the replicate (the first M0 baseline showed 17 of 20 rps with a
+# 25 s mean schedule delay before the worker pool was sized).
+CLIENT_RATE_TOLERANCE = 0.90
+CLIENT_SCHEDULE_DELAY_MAX_S = 1.0
+
+
+def client_limited(load_summary: dict[str, Any] | None) -> bool:
+    """True when the load generator fell behind its own schedule."""
+    if not load_summary:
+        return False
+    requested = load_summary.get("requested_rate")
+    achieved = load_summary.get("achieved_rate")
+    if requested and achieved is not None and float(requested) > 0:
+        if float(achieved) < CLIENT_RATE_TOLERANCE * float(requested):
+            return True
+    delay = load_summary.get("schedule_delay") or {}
+    mean = delay.get("mean") if isinstance(delay, dict) else None
+    return mean is not None and float(mean) > CLIENT_SCHEDULE_DELAY_MAX_S
 
 
 # -- scoring ----------------------------------------------------------------------
@@ -313,10 +341,26 @@ def score(release: dict[str, Any], profile: dict[str, Any],
             "passed": chips <= int(max_chips),
             "same_execution": True,
         })
+    limited = [
+        f"{name}/r{idx}"
+        for idx, rep in enumerate(per_replicate)
+        for name, row in rep.items() if row.get("client_limited")
+    ]
+    gates.append({
+        "name": "load.client_limited",
+        "metric": "client_limited_replicates",
+        "comparator": "lte",
+        "bound": 0,
+        "unit": "replicates",
+        "value": len(limited),
+        "passed": not limited,
+        "same_execution": True,
+    })
     return {
         "metrics": metrics,
         "tenants": tenants,
         "gates": gates,
+        "client_limited": limited,
         "admissible": all(g["passed"] for g in gates) and bool(per_replicate),
     }
 

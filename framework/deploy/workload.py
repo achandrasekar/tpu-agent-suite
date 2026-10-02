@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import pathlib
 import re
 from typing import Any
@@ -54,6 +55,9 @@ SLO_METRIC_FIELD = {
 
 DEFAULT_SWEEP_FRACTIONS = (0.25, 0.5, 0.75, 1.0, 1.25, 1.5)
 DEFAULT_SLO_STAGE_DURATION_S = 300
+# A rate-ladder stage: long enough for a multi-turn replay to reach steady
+# state at the new rate, short enough that a five-rung sweep fits an arm.
+DEFAULT_SWEEP_STAGE_DURATION_S = 120
 DEFAULT_ERROR_RATE_MAX = 0.001
 
 
@@ -247,7 +251,8 @@ def resolve_workload(spec: dict[str, Any],
             error_code="INVALID_FIELD")
     target_qps = float(target_qps)
     peak_qps = float(rate.get("peak_qps") or target_qps)
-    sweep = rate.get("sweep") or [
+    sweep_explicit = [float(x) for x in (rate.get("sweep") or [])]
+    sweep = sweep_explicit or [
         round(target_qps * f, 3) for f in DEFAULT_SWEEP_FRACTIONS
     ]
 
@@ -281,6 +286,10 @@ def resolve_workload(spec: dict[str, Any],
             "target_qps": target_qps,
             "peak_qps": peak_qps,
             "sweep": [float(x) for x in sweep],
+            # Only an explicit list turns the sweep stage into a rate
+            # ladder; the derived one is informational and the catalog's
+            # own stages are kept.
+            "sweep_explicit": sweep_explicit,
         },
         "tenants": tenants,
         "objective": objective,
@@ -320,6 +329,17 @@ def _goodput_constraints(slo: dict[str, Any]) -> dict[str, float]:
     return bounds
 
 
+def _deep_merge(base: dict[str, Any], extra: dict[str, Any]) -> dict[str, Any]:
+    """`extra` over `base`, recursing into mappings; lists are replaced."""
+    out = dict(base)
+    for key, value in extra.items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = _deep_merge(out[key], value)
+        else:
+            out[key] = copy.deepcopy(value)
+    return out
+
+
 def render_inference_perf(profile: dict[str, Any],
                           tenant: dict[str, Any],
                           *,
@@ -327,13 +347,28 @@ def render_inference_perf(profile: dict[str, Any],
                           base_url: str,
                           model_name: str,
                           duration_s: int = DEFAULT_SLO_STAGE_DURATION_S,
-                          report_dir: str = "/reports") -> dict[str, Any]:
+                          report_dir: str = "/reports",
+                          objective_header: bool = False,
+                          sweep_stage_s: int = DEFAULT_SWEEP_STAGE_DURATION_S
+                          ) -> dict[str, Any]:
     """The inference-perf config one tenant's benchmark Job runs.
 
     `sweep` keeps the source's own load stages (the catalog's are concurrency
     ladders) so the knee is found the way the catalog authors measured it.
     `slo` replaces them with an open-loop Poisson arrival at this tenant's
     share of `target_qps`, which is the load the SLO is a promise about.
+
+    The load generator must never be the bottleneck it is measuring. With
+    the pinned inference-perf, requests in flight are capped at
+    `num_workers x worker_max_concurrency` (1 x 100 by default), which an
+    open-loop rate of 20 rps with 5 s streaming responses already exceeds;
+    the symptom is a growing `load_summary.schedule_delay` and an achieved
+    rate below the requested one. Both are sized from the rate here, and a
+    source config may still raise them.
+
+    `objective_header` sends `x-llm-d-inference-objective: <tenant>` so the
+    router's flow control places the tenant in the band its priority maps
+    to; without a router the header is inert, so it is only set when asked.
     """
     if stage not in ("sweep", "slo"):
         raise DeployError("stage must be sweep or slo",
@@ -351,26 +386,60 @@ def render_inference_perf(profile: dict[str, Any],
     if "streaming" in profile.get("overrides", {}):
         api["streaming"] = bool(profile["overrides"]["streaming"])
     api.setdefault("type", "completion")
+    if objective_header:
+        headers = dict(api.get("headers") or {})
+        headers.setdefault(OBJECTIVE_HEADER, str(tenant["name"]))
+        api["headers"] = headers
     config["api"] = api
+
+    data_overrides = (profile.get("overrides") or {}).get("data")
+    if data_overrides:
+        config["data"] = _deep_merge(dict(config.get("data") or {}),
+                                     data_overrides)
 
     if stage == "slo":
         rate = profile["rate"]["target_qps"] * float(tenant["share"])
+        source_load = dict(config.get("load") or {})
+        workers, concurrency = loadgen_sizing(rate)
         config["load"] = {
             "type": "poisson",
             "stages": [{
                 "rate": round(rate, 4),
                 "duration": int(duration_s)
             }],
-            "num_workers": max(1, int(config.get("load", {}).get(
-                "num_workers", 1))),
+            "num_workers": max(workers, int(source_load.get("num_workers")
+                                            or 1)),
+            "worker_max_concurrency": max(
+                concurrency, int(source_load.get("worker_max_concurrency")
+                                 or 0)),
         }
     else:
         load = dict(config.get("load") or {})
+        explicit = (profile.get("rate") or {}).get("sweep_explicit")
+        if explicit:
+            # The spec named the rates: an open-loop ladder, each stage long
+            # enough for the multi-turn replay to settle, sized for its top
+            # rate so the client never shapes the knee.
+            top = max(float(r) for r in explicit) * float(tenant["share"])
+            workers, concurrency = loadgen_sizing(top)
+            load = {
+                "type": "poisson",
+                "stages": [{
+                    "rate": round(float(r) * float(tenant["share"]), 4),
+                    "duration": int(sweep_stage_s),
+                } for r in explicit],
+                "num_workers": max(workers, int(load.get("num_workers")
+                                                or 1)),
+                "worker_max_concurrency": max(
+                    concurrency, int(load.get("worker_max_concurrency")
+                                     or 0)),
+            }
         if not load.get("stages"):
             raise DeployError(
                 "workload source has no load.stages to sweep",
                 error_code="INVALID_FIELD")
         config["load"] = load
+    config["load"] = harden_load(config["load"])
 
     report = dict(config.get("report") or {})
     report["request_lifecycle"] = {
@@ -390,6 +459,59 @@ def render_inference_perf(profile: dict[str, Any],
     }
     config.pop("metrics", None)  # fleet metrics come from `deploy collect`
     return config
+
+
+# Header the llm-d router reads to pick a tenant's InferenceObjective
+# (https://github.com/llm-d/llm-d/blob/main/docs/architecture/core/router/epp/flow-control.md).
+OBJECTIVE_HEADER = "x-llm-d-inference-objective"
+
+# Load-generator sizing. The in-flight ceiling (`num_workers x
+# worker_max_concurrency`) is what throttles an open-loop rate; worker
+# count matters less and is kept low on purpose. Each worker is an aiohttp
+# process with its own connection pool, and a pool whose connections idle
+# past the server's keep-alive timeout reuses stale sockets: eight workers
+# at 2 rps each produced ~0.5% `ServerDisconnected` against the same
+# fleet that one worker at 20 rps drove with zero failures. So one worker
+# per ~10 rps, and the concurrency sized to hold 30 s of arrivals open.
+LOADGEN_RPS_PER_WORKER = 10.0
+LOADGEN_MAX_WORKERS = 8
+LOADGEN_INFLIGHT_SECONDS = 30.0
+LOADGEN_MIN_CONCURRENCY = 100
+
+
+def loadgen_sizing(rate: float) -> tuple[int, int]:
+    """(num_workers, worker_max_concurrency) that keep `rate` client-free.
+
+    Workers scale with the rate; the per-worker concurrency is sized so the
+    whole pool can hold `rate x LOADGEN_INFLIGHT_SECONDS` requests open.
+    """
+    workers = max(1, min(LOADGEN_MAX_WORKERS,
+                         math.ceil(rate / LOADGEN_RPS_PER_WORKER)))
+    inflight = math.ceil(rate * LOADGEN_INFLIGHT_SECONDS)
+    concurrency = max(LOADGEN_MIN_CONCURRENCY,
+                      math.ceil(inflight / workers))
+    return workers, concurrency
+
+
+# Request-level hardening. inference-perf retries only faults raised before
+# response headers arrive (a connection refused, reset or dropped from the
+# pool), never anything after first byte, so a retry cannot mix two
+# measurements; that is exactly the stale keep-alive case above. The timeout
+# bounds a half-open socket that would otherwise hold a stage open past its
+# drain, and the grace bounds the drain itself (default 120 s in the pinned
+# release) so report generation always runs.
+LOADGEN_REQUEST_TIMEOUT_S = 120.0
+LOADGEN_REQUEST_RETRIES = 2
+LOADGEN_TEARDOWN_GRACE_S = 60.0
+
+
+def harden_load(load: dict[str, Any]) -> dict[str, Any]:
+    """Fill the request-level safety fields a source config left unset."""
+    out = dict(load)
+    out.setdefault("request_timeout", LOADGEN_REQUEST_TIMEOUT_S)
+    out.setdefault("request_retries", LOADGEN_REQUEST_RETRIES)
+    out.setdefault("stage_teardown_grace_seconds", LOADGEN_TEARDOWN_GRACE_S)
+    return out
 
 
 def slo_targets(tenant: dict[str, Any]) -> list[dict[str, Any]]:

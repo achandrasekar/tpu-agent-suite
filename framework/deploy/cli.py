@@ -97,7 +97,13 @@ def register_deploy_parser(sub: Any) -> None:
 
     v = verbs.add_parser("probe", parents=[common],
                          help="Report what the serving image can do")
-    v.add_argument("--image", required=True)
+    v.add_argument("--image", help="Run a probe Job with this image "
+                   "(managed fleets)")
+    v.add_argument("--pod", help="Run the probe inside this serving pod "
+                   "(adopted fleets)")
+    v.add_argument("--selector", help="Run the probe inside the first Ready"
+                   " pod matching this label selector")
+    v.add_argument("--container")
     v.add_argument("--out", required=True, type=pathlib.Path)
     v.add_argument("--timeout", type=int, default=probe_mod.PROBE_TIMEOUT_S)
 
@@ -122,6 +128,16 @@ def register_deploy_parser(sub: Any) -> None:
     v.add_argument("--production", action="store_true")
     v.add_argument("--namespace", default=None,
                    help="Override the environment's namespace")
+    v.add_argument("--slo-duration", type=int, default=None,
+                   help="Seconds per SLO-stage benchmark run; default"
+                   f" {workload.DEFAULT_SLO_STAGE_DURATION_S}")
+    v.add_argument("--sweep-duration", type=int, default=None,
+                   help="Seconds per rung of an explicit rate.sweep ladder;"
+                   f" default {workload.DEFAULT_SWEEP_STAGE_DURATION_S}")
+    v.add_argument("--exposure", choices=list(render.EXPOSURE_MODES),
+                   default=None,
+                   help="Front door of a --production release; default"
+                   f" {render.EXPOSURE_CLUSTER_IP}")
 
     v = verbs.add_parser("apply", parents=[common],
                          help="Apply a rendered release")
@@ -160,6 +176,17 @@ def register_deploy_parser(sub: Any) -> None:
     v.add_argument("--release", default=None)
     v.add_argument("--window", default="10m")
     v.add_argument("--out", required=True, type=pathlib.Path)
+
+    v = verbs.add_parser("drill", parents=[common],
+                         help="Run one fault drill and measure recovery")
+    v.add_argument("--name", required=True)
+    v.add_argument("--release", default=None)
+    v.add_argument("--drill", choices=list(release_mod.DRILLS),
+                   default=release_mod.DRILL_EPP_POD_KILL)
+    v.add_argument("--timeout", type=int,
+                   default=release_mod.DEFAULT_DRILL_TIMEOUT_S)
+    v.add_argument("--out", type=pathlib.Path, default=None,
+                   help="Also write the drill row to this JSON file")
 
     for verb, help_text in (("status", "Release state on the cluster"),
                             ("events", "Recent events for the release")):
@@ -204,6 +231,9 @@ def dispatch(args: argparse.Namespace) -> dict[str, Any] | str:
         return probe_mod.run_probe(env,
                                    image=args.image,
                                    out_dir=args.out,
+                                   pod=args.pod,
+                                   selector=args.selector,
+                                   container=args.container,
                                    timeout_s=args.timeout)
 
     if action == "workload":
@@ -246,6 +276,17 @@ def dispatch(args: argparse.Namespace) -> dict[str, Any] | str:
             "inference_perf_image": env.inference_perf_image,
             "gateway_mode": env.gateway_mode,
         }
+        if env.sizing:
+            env_subset["sizing"] = env.sizing
+        if getattr(args, "slo_duration", None):
+            env_subset["slo_stage_duration_s"] = int(args.slo_duration)
+        if getattr(args, "sweep_duration", None):
+            env_subset["sweep_stage_duration_s"] = int(args.sweep_duration)
+        if getattr(args, "exposure", None):
+            if not args.production:
+                raise DeployError("--exposure only applies to a --production"
+                                  " render", error_code="INVALID_FIELD")
+            env_subset["exposure"] = args.exposure
         return render.render_release(name=args.name,
                                      config=config,
                                      recipe=recipe,
@@ -265,6 +306,14 @@ def dispatch(args: argparse.Namespace) -> dict[str, Any] | str:
     if action == "wait":
         return release_mod.wait(env, rd, timeout_s=args.timeout,
                                 poll_s=args.poll)
+    if action == "drill":
+        row = release_mod.drill(env, rd, name=args.drill,
+                                timeout_s=args.timeout)
+        if args.out:
+            args.out.parent.mkdir(parents=True, exist_ok=True)
+            args.out.write_text(json.dumps(row, indent=2) + "\n",
+                                encoding="utf-8")
+        return row
     if action == "reconfigure":
         sets: dict[str, Any] = {}
         for item in args.set:

@@ -36,6 +36,7 @@ needs beyond job submission.
 | `namespace.<ns>` | the study namespace is missing | **creates it** | -- |
 | `crd.gateway` | Gateway API CRDs absent (`gke_gateway` mode only) | no | enable the GKE Gateway controller on the cluster |
 | `crd.inferencepool` | `inferencepools.inference.networking.k8s.io` absent | **applies the pinned GAIE CRD manifest** | the router's EPP registers an InferencePool even in standalone mode |
+| `crd.inferenceobjective` | `inferenceobjectives.llm-d.ai` absent | **applies the pinned llm-d-router CRD manifest** (the release's `manifests.yaml`) | the chart renders one `InferenceObjective` (`llm-d.ai/v1alpha2`) per tenant; GAIE's bundle does not carry that group, so a GKE cluster with the Inference Gateway CRDs still fails the install without it |
 | `secret.hf_token` | the token secret is not in the namespace | no | create it; a model-server pod without it fails on weight download, after the chips were scheduled |
 | `tpu.nodes` | no nodes carry the recipe's accelerator label, or fewer free chips than one replica needs | no | add or resize the TPU node pool; `chips_free` is reported for the orchestrator's budget |
 | `crd.podmonitoring` | Managed Prometheus CRD absent (warn) | no | enable managed collection on the cluster; without it `collect` has nothing to read |
@@ -59,20 +60,33 @@ on the GKE Inference Gateway
 ## The probe
 
 `deploy probe --image <recipe image> --out <dir>` runs one short TPU Job on
-the image that imports the connector modules llm-d's TPU guides configure
-for P/D and KV offload (the `tpu_connector` for prefill/decode transfer and
-the offloading connector for a host-memory tier, per
-https://github.com/llm-d/llm-d/tree/main/guides) and writes
-`engine-capabilities.json` (`{{schema:engine-capabilities.json}}`): each
-connector `present` or not, and the vLLM / tpu-inference versions the image
-reports.
+the image; `deploy probe --selector <labels> --out <dir>` runs the same
+check inside a pod that is already serving (an adopted fleet, where no
+chip is free for a Job). Both import the connector modules llm-d's TPU
+guides configure for KV events, P/D and KV offload with JAX and torch
+pinned to CPU (`JAX_PLATFORMS=cpu`), so a running server is never
+disturbed, and write `engine-capabilities.json`
+(`{{schema:engine-capabilities.json}}`): each capability true or false, the
+module that satisfied it, and the vLLM / tpu-inference / vllm-torchtpu
+versions.
 
-The study **assumes** the vllm-torchtpu image carries those connectors, as
-the guides describe. The probe exists so that an image that does not is
-reported on round one rather than discovered when a P/D arm is finally
-opened; it changes nothing about which arms are seeded or open. A connector
-reported absent is a `blockers[]` line tagged informational and a sentence
-in the study summary.
+The modules looked for, per the guides at the pinned release
+(https://github.com/llm-d/llm-d/tree/v0.10.0/guides): for `tpu_inference`
+images `tpu_inference.distributed.tpu_connector_hma` (P/D) and
+`tpu_inference.offload.tpu_offload_connector` (host tier); for
+vllm-torchtpu images `vllm_torchtpu.distributed.kv_transfer.tpu_connector`
+and `vllm_torchtpu.offload.raiden_connector`; and vLLM's own
+`vllm.distributed.kv_events` for precise prefix routing. The recipe's
+`engine_flavor` says which family the renderer emits.
+
+The probe **gates** arms and never prunes them: the seeder and planner
+write an arm whose capability is `false` as `blocked` with
+`blocked_on_engine_capability`, so a missing connector is visible on round
+one rather than discovered when the arm is finally opened. With no probe
+every connector arm stays open, on the assumption that the vllm-torchtpu
+image carries what the guides name. A connector reported absent is a
+`blockers[]` line tagged informational and a sentence in the study
+summary, not a platform failure.
 
 ## What the platform specialist does not do
 

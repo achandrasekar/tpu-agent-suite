@@ -77,6 +77,11 @@ class DeployEnv:
     inference_perf_image: str = pins.INFERENCE_PERF_IMAGE
     max_chips_default: int = DEFAULT_MAX_CHIPS
     compute_backend: str = ""
+    # Pod sizes for the non-accelerator parts of a release (bench Job, EPP,
+    # Envoy proxy). The defaults are the llm-d guides' sizes; a shared
+    # cluster whose CPU pools are nearly full sets smaller ones here rather
+    # than leaving every bench Job Pending.
+    sizing: dict[str, Any] = dataclasses.field(default_factory=dict)
 
     @classmethod
     def from_environment(cls, env_data: dict[str, Any]) -> DeployEnv:
@@ -92,6 +97,10 @@ class DeployEnv:
                 f"llmd.gateway_mode must be one of {GATEWAY_MODES}, got"
                 f" {mode!r}",
                 error_code="INVALID_FIELD")
+        sizing = llmd.get("sizing") or {}
+        if not isinstance(sizing, dict):
+            raise DeployError("llmd.sizing must be an object",
+                              error_code="INVALID_FIELD")
         return cls(
             namespace=namespace,
             production_namespace=str(
@@ -101,8 +110,10 @@ class DeployEnv:
             kube_context=llmd.get("kube_context") or None,
             project=str(params.get("project") or ""),
             zone=str(params.get("zone") or ""),
-            tpu_accelerator=str(params.get("tpu_accelerator") or ""),
-            tpu_topology=str(params.get("tpu_topology") or ""),
+            tpu_accelerator=str(llmd.get("tpu_accelerator")
+                                or params.get("tpu_accelerator") or ""),
+            tpu_topology=str(llmd.get("tpu_topology")
+                             or params.get("tpu_topology") or ""),
             hf_token_secret=str(
                 llmd.get("hf_token_secret") or DEFAULT_HF_TOKEN_SECRET),
             prometheus_url=str(llmd.get("prometheus_url") or ""),
@@ -114,6 +125,7 @@ class DeployEnv:
             max_chips_default=int(
                 llmd.get("max_chips_default") or DEFAULT_MAX_CHIPS),
             compute_backend=str(backend or ""),
+            sizing=dict(sizing),
         )
 
     def kube(self, *, production: bool = False, runner: Any = None) -> Kube:

@@ -13,12 +13,12 @@
 # limitations under the License.
 """Is this cluster ready for an llm-d release, and if not, what is missing.
 
-Every check names its fix. `--fix` performs the two that are safe to do
-without a person: creating the namespace and installing the Gateway API
-Inference Extension CRDs the router chart needs (an InferencePool is a CRD,
-and helm will not create the CRD for it). Secrets, TPU node pools and
-Managed Prometheus are reported, never created: each is an account- or
-capacity-level decision.
+Every check names its fix. `--fix` performs the ones that are safe to do
+without a person: creating the namespace and installing the CRDs the router
+chart needs -- the Gateway API Inference Extension's InferencePool and the
+llm-d-router's own InferenceObjective (helm will not create a CRD for the
+resources it renders). Secrets, TPU node pools and Managed Prometheus are
+reported, never created: each is an account- or capacity-level decision.
 """
 
 from __future__ import annotations
@@ -129,20 +129,27 @@ def run_preflight(env: DeployEnv,
                 Check(f"{label}.{ns}", "fail", "missing",
                       "re-run with --fix to create it"))
 
-    if _crd_present(kube, pins.INFERENCE_POOL_CRD):
-        checks.append(Check("crd.inferencepool", "ok",
-                            pins.INFERENCE_POOL_CRD))
-    elif fix:
-        kube.kubectl(["apply", "-f", pins.GAIE_CRD_URL], namespaced=False)
-        fixed.append(f"applied GAIE CRDs {pins.GAIE_VERSION}")
-        checks.append(
-            Check("crd.inferencepool", "ok",
-                  f"installed from {pins.GAIE_CRD_URL}"))
-    else:
-        checks.append(
-            Check("crd.inferencepool", "fail",
-                  f"{pins.INFERENCE_POOL_CRD} missing",
-                  f"re-run with --fix to apply {pins.GAIE_CRD_URL}"))
+    # Two CRD families, both cluster-scoped and both outside helm's reach:
+    # GAIE's InferencePool (the pool the EPP watches) and the router's own
+    # llm-d.ai InferenceObjective (one per `router.inferenceObjectives`
+    # entry, so every non-passthrough render needs it).
+    for check_name, crd, url, label in (
+        ("crd.inferencepool", pins.INFERENCE_POOL_CRD, pins.GAIE_CRD_URL,
+         f"GAIE CRDs {pins.GAIE_VERSION}"),
+        ("crd.inferenceobjective", pins.INFERENCE_OBJECTIVE_CRD,
+         pins.ROUTER_CRD_URL,
+         f"llm-d-router CRDs {pins.ROUTER_RELEASE_VERSION}"),
+    ):
+        if _crd_present(kube, crd):
+            checks.append(Check(check_name, "ok", crd))
+        elif fix:
+            kube.kubectl(["apply", "-f", url], namespaced=False)
+            fixed.append(f"applied {label}")
+            checks.append(Check(check_name, "ok", f"installed from {url}"))
+        else:
+            checks.append(
+                Check(check_name, "fail", f"{crd} missing",
+                      f"re-run with --fix to apply {url}"))
 
     if env.gateway_mode == "gke":
         checks.append(

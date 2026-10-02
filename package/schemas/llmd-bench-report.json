@@ -164,6 +164,13 @@
           ]
         }
       }
+    },
+    "client_limited": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "`<tenant>/r<replicate>` entries whose load generator fell behind its requested rate or schedule (inference-perf load_summary); any entry fails the `load.client_limited` gate, because a client-bound run measured the client."
     }
   }
 }

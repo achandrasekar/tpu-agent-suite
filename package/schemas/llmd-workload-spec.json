@@ -73,6 +73,10 @@
               "type": "integer",
               "minimum": 1
             },
+            "data": {
+              "type": "object",
+              "description": "Deep-merged over the workload source's `data` block before the benchmark runs. Use it to fit a catalog entry to the server (for example cap dynamic_system_prompt_len.max below max_model_len) without forking the entry; the merged block is recorded in the release so a report says what was actually sent."
+            },
             "streaming": {
               "type": "boolean"
             }
