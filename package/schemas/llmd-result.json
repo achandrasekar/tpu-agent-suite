@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "status"
+  ],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": [
+        "completed",
+        "invalid_input",
+        "needs_input",
+        "failed",
+        "blocked"
+      ],
+      "description": "Outcome of this ONE round. 'completed' means the round advanced the study and wrote the ledger; the study may still be open."
+    },
+    "study_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+    },
+    "round": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "study_status": {
+      "type": "string",
+      "enum": [
+        "open",
+        "closed",
+        "ready_to_promote"
+      ],
+      "description": "'ready_to_promote' is 'closed' plus an admissible incumbent that beat the baseline; production still needs a separate request with promotion_approved."
+    },
+    "incumbent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "arm_id",
+        "config_path"
+      ],
+      "properties": {
+        "arm_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "config_path": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The incumbent llmd-config.json under the run's artifacts."
+        },
+        "score": {
+          "type": "number",
+          "description": "Primary-metric value of the incumbent, as measured."
+        },
+        "metric": {
+          "type": "string"
+        },
+        "chips_total": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "recommendations": {
+      "type": "array",
+      "description": "Findings for other domains, never acted on here. Each names the domain and the operating point it should be measured at.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "domain",
+          "finding"
+        ],
+        "properties": {
+          "domain": {
+            "type": "string",
+            "enum": [
+              "tpu-performance",
+              "tpu-onboarding",
+              "tpu-kernel",
+              "platform"
+            ]
+          },
+          "finding": {
+            "type": "string",
+            "minLength": 1
+          },
+          "operating_point": {
+            "type": "object"
+          },
+          "evidence": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "summary": {
+      "type": "string"
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "examples": [
+    {
+      "status": "completed",
+      "study_id": "acme-chat-tpu7x",
+      "round": 3,
+      "study_status": "open",
+      "incumbent": {
+        "arm_id": "a2",
+        "config_path": "artifacts/llmd/incumbent/llmd-config.json",
+        "score": 0.83,
+        "metric": "goodput_at_slo_per_chip",
+        "chips_total": 20
+      },
+      "recommendations": [],
+      "summary": "Arm a2 (topology.replicas 6->5 with max_num_seqs 256) win +16.9%.",
+      "artifacts": []
+    }
+  ]
+}

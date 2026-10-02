@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "prompt",
+    "study_id",
+    "workload_spec_path",
+    "recipe_path"
+  ],
+  "properties": {
+    "prompt": {
+      "type": "string"
+    },
+    "run_id": {
+      "type": "string",
+      "pattern": "^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}$"
+    },
+    "study_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+      "description": "Slug of the llm-d study this round advances. Supplied by the user and confirmed by the coworker; never minted by the specialist, because a round that opens the wrong study deploys real chips against the wrong plan."
+    },
+    "workload_spec_path": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Path to the llmd-workload-spec.json the study optimizes for."
+    },
+    "recipe_path": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Path to the serving-recipe.json of the already-optimized single-replica engine."
+    },
+    "mode": {
+      "type": "string",
+      "enum": [
+        "approve",
+        "auto"
+      ],
+      "default": "approve",
+      "description": "approve: each cold arm is proposed and waits for the user before it deploys capacity. auto: arms run without asking, only when the user said so and the protocol names a chip-hour bound."
+    },
+    "chip_budget": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Overrides budget.max_chips from the workload spec for this study."
+    },
+    "production_namespace": {
+      "type": "string",
+      "description": "Where a promoted release goes. Only read when promotion_approved is true."
+    },
+    "promotion_approved": {
+      "type": "boolean",
+      "default": false,
+      "description": "The user explicitly approved promoting the incumbent to production in this request. Promotion never happens without it."
+    }
+  },
+  "examples": [
+    {
+      "prompt": "Advance one round of the llm-d study.",
+      "run_id": "20260914T120000Z-000000000000",
+      "study_id": "acme-chat-tpu7x",
+      "workload_spec_path": "specs/acme-chat.json",
+      "recipe_path": "artifacts/onboarding/serving-recipe.json",
+      "mode": "approve"
+    }
+  ]
+}

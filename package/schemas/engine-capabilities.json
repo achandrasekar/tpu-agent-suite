@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "image",
+    "outcome",
+    "capabilities"
+  ],
+  "description": "Output of `deploy probe`: which llm-d-relevant modules the serving image carries. A sanity check that marks arms blocked, not a gate on the study.",
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "engine-capabilities"
+    },
+    "probed_at": {
+      "type": "string"
+    },
+    "image": {
+      "type": "string"
+    },
+    "accelerator": {
+      "type": "object"
+    },
+    "outcome": {
+      "type": "string",
+      "enum": [
+        "succeeded",
+        "failed",
+        "timeout"
+      ]
+    },
+    "capabilities": {
+      "type": "object",
+      "properties": {
+        "pd_connector": {
+          "type": "boolean"
+        },
+        "offload_connector": {
+          "type": "boolean"
+        },
+        "kv_events": {
+          "type": "boolean"
+        },
+        "tpu_inference": {
+          "type": "boolean"
+        },
+        "vllm": {
+          "type": "boolean"
+        }
+      }
+    },
+    "versions": {
+      "type": "object"
+    },
+    "modules": {
+      "type": "object"
+    },
+    "log_tail": {
+      "type": "string"
+    }
+  }
+}

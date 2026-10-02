@@ -391,3 +391,12 @@ class ShippedFrameworkTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    def test_deploy_imports(self) -> None:
+        """`from framework import deploy` works from the package root."""
+        result = self._run([
+            "-c", "from framework import deploy; "
+            "print(deploy.PRODUCTION_LABEL)"
+        ], self.package)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("production", result.stdout)

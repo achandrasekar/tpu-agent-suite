@@ -1,0 +1,138 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "prompt",
+    "study_id",
+    "run_id",
+    "arm",
+    "kind",
+    "arm_kind",
+    "incumbent_config_path",
+    "recipe_path",
+    "workload_spec_path"
+  ],
+  "properties": {
+    "prompt": {
+      "type": "string"
+    },
+    "run_id": {
+      "type": "string",
+      "pattern": "^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}$"
+    },
+    "study_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+    },
+    "arm": {
+      "type": "string",
+      "minLength": 1
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "kernel-block",
+        "exposed-collective",
+        "sharding-overhead",
+        "load-imbalance",
+        "host-critical-path",
+        "recompilation-padding",
+        "scheduler-batching",
+        "memory-capacity",
+        "fleet-topology",
+        "kv-reuse",
+        "routing-policy",
+        "engine-fleet-knob",
+        "platform-capacity"
+      ],
+      "description": "Coarse kind from study.BOTTLENECK_KINDS, as on the round ledger."
+    },
+    "arm_kind": {
+      "type": "string",
+      "enum": [
+        "baseline",
+        "topology.replicas",
+        "topology.pd",
+        "kv.precise_routing",
+        "kv.tiered_host",
+        "router.profile",
+        "router.flow_control",
+        "router.predicted_latency",
+        "engine.fleet_knob",
+        "platform.capacity"
+      ],
+      "description": "The llm-d arm taxonomy entry; decides what the cold change is and which inner-sweep knobs open."
+    },
+    "claim": {
+      "type": "string"
+    },
+    "incumbent_config_path": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The current incumbent llmd-config.json. The arm's config is this plus `sets`."
+    },
+    "sets": {
+      "type": "object",
+      "description": "Dotted-path assignments applied to the incumbent to form the arm's cold configuration, e.g. {\"topology.decode.replicas\": 5}. Empty for the baseline arm."
+    },
+    "recipe_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "workload_spec_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "release_name": {
+      "type": "string",
+      "pattern": "^[a-z0-9]([-a-z0-9]{0,38}[a-z0-9])?$",
+      "description": "Release name to use; defaults to <study_id>-<arm> truncated."
+    },
+    "replicates": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 3
+    },
+    "sweep_budget": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 8,
+      "description": "Maximum inner-loop benchmark runs (hot/warm reconfigures) after the first measurement."
+    },
+    "sweep_knobs": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Hot/warm dotted paths the inner sweep may move for this arm, with the executor choosing values. Default depends on arm_kind."
+    },
+    "baseline_value": {
+      "type": "number",
+      "description": "Primary-metric value of the study baseline (or current incumbent) to compute the verdict against."
+    },
+    "protocol_digest": {
+      "type": "string"
+    }
+  },
+  "examples": [
+    {
+      "prompt": "Execute arm a1.",
+      "run_id": "20260914T120000Z-000000000000",
+      "study_id": "acme-chat-tpu7x",
+      "arm": "a1",
+      "kind": "fleet-topology",
+      "arm_kind": "topology.replicas",
+      "claim": "5 replicas at max_num_seqs 256 meet the SLO at 120 qps with 4 fewer chips.",
+      "incumbent_config_path": "artifacts/llmd/incumbent/llmd-config.json",
+      "sets": {
+        "topology.decode.replicas": 5
+      },
+      "recipe_path": "artifacts/onboarding/serving-recipe.json",
+      "workload_spec_path": "specs/acme-chat.json",
+      "replicates": 3,
+      "sweep_budget": 8,
+      "baseline_value": 0.71
+    }
+  ]
+}

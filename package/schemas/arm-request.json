@@ -39,7 +39,12 @@
         "host-critical-path",
         "recompilation-padding",
         "scheduler-batching",
-        "memory-capacity"
+        "memory-capacity",
+        "fleet-topology",
+        "kv-reuse",
+        "routing-policy",
+        "engine-fleet-knob",
+        "platform-capacity"
       ],
       "description": "Bottleneck kind from study.BOTTLENECK_KINDS (see study-round.json) deciding execution strategy and specialist delegation."
     },

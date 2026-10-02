@@ -4,7 +4,9 @@
   "description": "The body a round writes at its integrate step. Replaces the study's arms wholesale rather than patching them: a whole-file rewrite cannot leave the state half-updated, and a partial write on an interrupted round is the one corruption this design refuses to be exposed to.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["arms"],
+  "required": [
+    "arms"
+  ],
   "properties": {
     "arms": {
       "type": "array",
@@ -12,7 +14,12 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["arm", "kind", "status", "claim"],
+        "required": [
+          "arm",
+          "kind",
+          "status",
+          "claim"
+        ],
         "properties": {
           "arm": {
             "type": "string",
@@ -29,13 +36,23 @@
               "host-critical-path",
               "recompilation-padding",
               "scheduler-batching",
-              "memory-capacity"
+              "memory-capacity",
+              "fleet-topology",
+              "kv-reuse",
+              "routing-policy",
+              "engine-fleet-knob",
+              "platform-capacity"
             ],
             "description": "What kind of problem this is, which decides the ceiling formula and where the work can go. Named rather than inferred, because a candidate routed by its symptom instead of its cause reaches somewhere that cannot act on it."
           },
           "status": {
             "type": "string",
-            "enum": ["open", "in_flight", "decided", "blocked"],
+            "enum": [
+              "open",
+              "in_flight",
+              "decided",
+              "blocked"
+            ],
             "description": "`in_flight` means a job exists and nothing else may assume its result."
           },
           "claim": {
@@ -55,7 +72,10 @@
             "maximum": 1,
             "description": "Addressable fraction in [0, 1] of `share` this arm claims it can eliminate (e.g. 0.50 for a 2x kernel speedup; `share * headroom` = 0.20 expected end-to-end ceiling gain)."
           },
-          "since_round": { "type": "integer", "minimum": 0 },
+          "since_round": {
+            "type": "integer",
+            "minimum": 0
+          },
           "blocked_on": {
             "type": "string",
             "description": "Required in spirit for a blocked arm: what is needed and who can give it."
@@ -84,12 +104,20 @@
           "result": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["verdict", "execution_id"],
+            "required": [
+              "verdict",
+              "execution_id"
+            ],
             "description": "Present once the arm is decided. Carries the measurement, not a summary of it.",
             "properties": {
               "verdict": {
                 "type": "string",
-                "enum": ["win", "tie", "loss", "invalid"],
+                "enum": [
+                  "win",
+                  "tie",
+                  "loss",
+                  "invalid"
+                ],
                 "description": "`tie` is the default and the burden is on `win`. `invalid` means the measurement cannot be trusted or violates admissibility constraints (cannot count), which is different from a result that did not help (`loss`, performance regression below the noise floor)."
               },
               "execution_id": {
@@ -100,11 +128,23 @@
               "metric": {
                 "type": "object",
                 "additionalProperties": false,
-                "required": ["name", "value", "replicates", "provenance"],
+                "required": [
+                  "name",
+                  "value",
+                  "replicates",
+                  "provenance"
+                ],
                 "properties": {
-                  "name": { "type": "string", "minLength": 1 },
-                  "value": { "type": "number" },
-                  "unit": { "type": "string" },
+                  "name": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "value": {
+                    "type": "number"
+                  },
+                  "unit": {
+                    "type": "string"
+                  },
                   "replicates": {
                     "type": "integer",
                     "minimum": 1,
@@ -116,7 +156,12 @@
                   },
                   "provenance": {
                     "type": "string",
-                    "enum": ["measured", "inferred", "modeled", "projected"],
+                    "enum": [
+                      "measured",
+                      "inferred",
+                      "modeled",
+                      "projected"
+                    ],
                     "description": "A closed set. Not `verified`, not `confirmed`, not `derived`. A modelled ceiling reported where it reads as measured is the most common way a study starts believing its own predictions."
                   }
                 }
@@ -127,11 +172,22 @@
                 "items": {
                   "type": "object",
                   "additionalProperties": false,
-                  "required": ["name", "passed", "execution_id"],
+                  "required": [
+                    "name",
+                    "passed",
+                    "execution_id"
+                  ],
                   "properties": {
-                    "name": { "type": "string", "minLength": 1 },
-                    "passed": { "type": "boolean" },
-                    "value": { "type": "number" },
+                    "name": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "passed": {
+                      "type": "boolean"
+                    },
+                    "value": {
+                      "type": "number"
+                    },
                     "execution_id": {
                       "type": "string",
                       "minLength": 1,
@@ -143,7 +199,9 @@
               "artifacts": {
                 "type": "array",
                 "description": "Paths to durable outputs. Referenced, never inlined, so a round stays cheap to read.",
-                "items": { "type": "string" }
+                "items": {
+                  "type": "string"
+                }
               }
             }
           }
@@ -189,7 +247,9 @@
                 "execution_id": "j-81ec2c4d"
               }
             ],
-            "artifacts": ["arms/a1/report.md"]
+            "artifacts": [
+              "arms/a1/report.md"
+            ]
           }
         }
       ],

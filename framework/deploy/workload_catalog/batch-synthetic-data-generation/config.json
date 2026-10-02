@@ -1,0 +1,54 @@
+{
+  "input_sequence_length": {
+    "min": 50,
+    "max": 15000,
+    "mean": 500,
+    "standard_deviation": 1200,
+    "distribution_type": "log_normal"
+  },
+  "output_sequence_length": {
+    "min": 500,
+    "max": 8000,
+    "mean": 4000,
+    "standard_deviation": 2500,
+    "distribution_type": "uniform"
+  },
+  "number_of_turns": {
+    "min": 1,
+    "max": 1,
+    "mean": 1,
+    "standard_deviation": 0,
+    "distribution_type": "normal"
+  },
+  "time_between_turns": {
+    "min": 0,
+    "max": 0,
+    "mean": 0,
+    "standard_deviation": 0,
+    "distribution_type": "normal"
+  },
+  "system_prompt": {
+    "min": 2000,
+    "max": 2000,
+    "mean": 2000,
+    "standard_deviation": 0,
+    "distribution_type": "normal"
+  },
+  "input_sequence_length_per_turn": {
+    "min": 0,
+    "max": 0,
+    "mean": 0,
+    "standard_deviation": 0,
+    "distribution_type": "normal"
+  },
+  "multi_turn": false,
+  "input_sequence_type_token_ratio": 0.5,
+  "metadata": {
+    "suitable_optimizations": ["Prefix aware routing", "KV cache offloading", "Wide Expert Parallelism", "Fault-tolerant queueing"],
+    "prefill_decode_ratio": 0.125,
+    "slos": {
+      "e2e_p99_ms": 2080000,
+      "e2e_p99_ms_justification": "Runaway backstop for an offline job. Worst case is the maximum 8,000 output tokens at 200 ms each, the slowest inter-token latency in any MLPerf benchmark (https://github.com/mlcommons/inference/blob/7a7db59c1183d6482da22fc363c49ad083b79b3e/loadgen/mlperf.conf, last updated 2026-02-06), 1600 seconds, plus 30% headroom for queueing and scheduling."
+    }
+  }
+}

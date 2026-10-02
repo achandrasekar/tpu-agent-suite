@@ -90,6 +90,22 @@ BOTTLENECK_KINDS: tuple[str, ...] = (
     "recompilation-padding",
     "scheduler-batching",
     "memory-capacity",
+    # Serving-fleet study kinds (tpu-llmd). The study store validates arm
+    # kinds against this tuple, so fleet studies share the store by
+    # extending it here rather than running a parallel one.
+    "fleet-topology",
+    "kv-reuse",
+    "routing-policy",
+    "engine-fleet-knob",
+    "platform-capacity",
+)
+
+FLEET_BOTTLENECK_KINDS: tuple[str, ...] = (
+    "fleet-topology",
+    "kv-reuse",
+    "routing-policy",
+    "engine-fleet-knob",
+    "platform-capacity",
 )
 
 MAX_STUDY_ARMS = 16

@@ -72,7 +72,7 @@ if _PACKAGE_ROOT not in sys.path:
     sys.path.insert(0, _PACKAGE_ROOT)
 
 try:
-    from framework import compute, journal, study, trajectory, utils
+    from framework import compute, deploy, journal, study, trajectory, utils
 except Exception as _import_error:  # noqa: BLE001 - becomes the hook's failure
     # A hook-dispatch whose package is half gone still exits by its policy
     # instead of a traceback (exit 1, which Antigravity refuses on). Not only
@@ -2492,6 +2492,22 @@ def _is_session_over(event_payload: dict[str, Any]) -> bool:
             and _session_completed(term.get("reason")))
 
 
+def _reap_aware_resolver(resolve: Callable[..., Any]) -> Any:
+    """The compute driver resolver, extended to answer for llm-d releases.
+
+    A release is filed as a job record so the session reaper finds it, but
+    its backend is not a compute driver; `deploy.wrap_reap_resolver` answers
+    for that one backend with a teardown and passes everything else through
+    to `resolve`. Callers hand in a thunk that looks the real resolver up at
+    call time (the reap hook via `compute.resolve_driver`, the CLI via
+    `compute.config.resolve_driver`, each as it did before this wrapper
+    exists) because those attributes are what late driver registration
+    rebinds and what tests patch; a resolver bound eagerly here would keep
+    calling the original.
+    """
+    return deploy.wrap_reap_resolver(resolve)
+
+
 def _builtin_reap_jobs(
     package: str,
     workspace: Path,
@@ -3817,6 +3833,9 @@ def build_runtime_parser() -> argparse.ArgumentParser:
 
     # study
     study.register_study_parser(sub)
+
+    # deploy
+    deploy.register_deploy_parser(sub)
 
     # journal
     journal.register_journal_parser(sub)

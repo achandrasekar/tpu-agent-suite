@@ -1,0 +1,246 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "name",
+    "workload"
+  ],
+  "description": "What the fleet must serve. Traffic shape comes from an inference-perf workload-catalog entry or the user's own inference-perf config; this spec adds only rate, tenants with SLOs, objective, budget and constraints.",
+  "properties": {
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+    },
+    "workload": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Exactly one of catalog_entry, inference_perf_config, trace.",
+      "properties": {
+        "catalog_entry": {
+          "type": "string",
+          "enum": [
+            "interactive-chat",
+            "code-generation",
+            "deep-research",
+            "reasoning",
+            "batch-summarization-rag",
+            "batch-synthetic-data-generation",
+            "agentic-trace-replay"
+          ],
+          "description": "An entry of kubernetes-sigs/inference-perf/workload-catalog, vendored at the pinned ref."
+        },
+        "inference_perf_config": {
+          "type": "string",
+          "description": "Path to a user-supplied inference-perf config YAML, including trace replay configs built from request logs."
+        },
+        "trace": {
+          "type": "string",
+          "description": "Reserved: a request log to turn into a replay config. Not supported yet; convert it to an inference-perf trace config first."
+        },
+        "overrides": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "rate"
+          ],
+          "properties": {
+            "rate": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "target_qps"
+              ],
+              "properties": {
+                "target_qps": {
+                  "type": "number",
+                  "minimum": 0,
+                  "description": "The aggregate request rate the SLOs are a promise about."
+                },
+                "peak_qps": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "sweep": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  }
+                }
+              }
+            },
+            "max_model_len": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "streaming": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    },
+    "tenancy": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+          },
+          "share": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Fraction of target_qps this tenant sends. Shares sum to 1."
+          },
+          "priority": {
+            "type": "integer",
+            "description": "Higher is more important; negative is sheddable under burst. Read by flow control once that arm exists."
+          },
+          "slo": {
+            "type": "object",
+            "description": "Keys of the form <ttft|tpot|itl|e2e>_p<50|90|99>_ms. Defaults to the catalog entry's metadata.slos when omitted."
+          }
+        }
+      }
+    },
+    "objective": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "primary_metric": {
+          "type": "string",
+          "enum": [
+            "goodput_at_slo_per_chip",
+            "cost_per_1M_tokens_at_slo"
+          ],
+          "default": "goodput_at_slo_per_chip",
+          "description": "The one number verdicts are computed on. Both are always reported. cost_per_1M_tokens_at_slo needs budget.chip_hour_cost."
+        }
+      }
+    },
+    "availability": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "error_rate_max": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 0.001
+        },
+        "zonal_failure_tolerated": {
+          "type": "boolean"
+        }
+      }
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_chips": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "accelerator": {
+          "type": "string"
+        },
+        "capacity": {
+          "type": "string",
+          "enum": [
+            "reservation",
+            "flex-start",
+            "spot"
+          ]
+        },
+        "chip_hour_cost": {
+          "type": "number",
+          "minimum": 0,
+          "description": "USD per chip-hour, for cost_per_1M_tokens_at_slo."
+        },
+        "max_chip_hours": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Study-wide spend bound; the stopping rule's chip-hour clause."
+        }
+      }
+    },
+    "constraints": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "region": {
+          "type": "string"
+        },
+        "namespace": {
+          "type": "string"
+        },
+        "gateway_mode": {
+          "type": "string",
+          "enum": [
+            "standalone",
+            "gke"
+          ]
+        },
+        "max_model_len": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "name": "acme-chat",
+      "workload": {
+        "catalog_entry": "interactive-chat",
+        "overrides": {
+          "rate": {
+            "target_qps": 120,
+            "peak_qps": 300
+          }
+        }
+      },
+      "tenancy": [
+        {
+          "name": "interactive",
+          "share": 0.7,
+          "priority": 10,
+          "slo": {
+            "ttft_p90_ms": 500,
+            "tpot_p90_ms": 30
+          }
+        },
+        {
+          "name": "batch",
+          "share": 0.3,
+          "priority": -5,
+          "slo": {
+            "ttft_p90_ms": 5000,
+            "tpot_p90_ms": 80
+          }
+        }
+      ],
+      "objective": {
+        "primary_metric": "goodput_at_slo_per_chip"
+      },
+      "availability": {
+        "error_rate_max": 0.001
+      },
+      "budget": {
+        "max_chips": 64,
+        "accelerator": "tpu7x"
+      },
+      "constraints": {
+        "namespace": "llmd-study",
+        "gateway_mode": "standalone"
+      }
+    }
+  ]
+}

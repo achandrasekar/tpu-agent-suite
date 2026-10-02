@@ -1,0 +1,15 @@
+{
+  "source": "https://github.com/kubernetes-sigs/inference-perf/tree/main/workload-catalog",
+  "inference_perf_ref": "45af1d3c5f57de7cf43866539fd9d4d7a3591ad9",
+  "vendored_on": "2026-10-01",
+  "entries": [
+    "interactive-chat",
+    "code-generation",
+    "deep-research",
+    "reasoning",
+    "batch-summarization-rag",
+    "batch-synthetic-data-generation",
+    "agentic-trace-replay"
+  ],
+  "note": "Each entry carries the catalog's harness-agnostic config.json (traffic shape plus a metadata block that classifies the workload) and its ready-to-run inference-perf.yaml. Re-vendor by bumping inference_perf_ref and re-running the golden tests; a study records the ref it used in release.json."
+}

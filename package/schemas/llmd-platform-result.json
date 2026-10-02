@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "llmd-platform-result.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "status"
+  ],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": [
+        "checked",
+        "invalid_input",
+        "needs_input",
+        "failed",
+        "blocked"
+      ],
+      "description": "'checked' means preflight ran and `preflight.ok` carries the answer -- a cluster that is not ready is still a checked cluster. 'failed' means the check itself could not run; 'blocked' means a prerequisite outside the cluster (credentials, quota) stopped it before it started."
+    },
+    "preflight": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        },
+        "failed": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "fixed": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "chips_free": {
+          "type": "integer"
+        },
+        "report": {
+          "type": "string"
+        }
+      }
+    },
+    "capabilities": {
+      "type": "object",
+      "description": "engine-capabilities.json capabilities block: pd_connector, offload_connector, kv_events, ..."
+    },
+    "blockers": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "What a person must do before the study can deploy; each names the fix."
+    },
+    "summary": {
+      "type": "string"
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "failure_reason": {
+      "type": "string",
+      "enum": [
+        "no_environment",
+        "cluster_unreachable",
+        "preflight_error",
+        "probe_failed",
+        "probe_unschedulable"
+      ],
+      "description": "Why the check did not reach an answer. Nexus-owned, so closed: no `llmd` environment to read, an API server that did not answer, the preflight verb itself erroring, a probe Job that failed, or one that never got a chip."
+    }
+  },
+  "status_requires": {
+    "checked": [
+      "preflight"
+    ],
+    "failed": [
+      "failure_reason"
+    ]
+  },
+  "examples": [
+    {
+      "status": "checked",
+      "preflight": {
+        "ok": true,
+        "failed": [],
+        "fixed": [
+          "applied GAIE CRDs v1.5.0"
+        ],
+        "chips_free": 32,
+        "report": "artifacts/llmd/platform/preflight.json"
+      },
+      "capabilities": {
+        "pd_connector": true,
+        "offload_connector": true,
+        "kv_events": true
+      },
+      "blockers": [],
+      "summary": "Cluster ready; image carries P/D and offload connectors.",
+      "artifacts": [
+        "artifacts/llmd/platform/preflight.json",
+        "artifacts/llmd/platform/engine-capabilities.json"
+      ]
+    }
+  ]
+}

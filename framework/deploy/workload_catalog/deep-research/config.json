@@ -1,0 +1,56 @@
+{
+  "input_sequence_length": {
+    "min": 2000,
+    "max": 150000,
+    "mean": 45000,
+    "standard_deviation": 35000,
+    "distribution_type": "exponential"
+  },
+  "output_sequence_length": {
+    "min": 50,
+    "max": 4000,
+    "mean": 300,
+    "standard_deviation": 850,
+    "distribution_type": "bimodal"
+  },
+  "number_of_turns": {
+    "min": 2,
+    "max": 50,
+    "mean": 15,
+    "standard_deviation": 8.5,
+    "distribution_type": "normal"
+  },
+  "time_between_turns": {
+    "min": 5,
+    "max": 60,
+    "mean": 25,
+    "standard_deviation": 12,
+    "distribution_type": "normal"
+  },
+  "system_prompt": {
+    "min": 2000,
+    "max": 2000,
+    "mean": 2000,
+    "standard_deviation": 0,
+    "distribution_type": "normal"
+  },
+  "input_sequence_length_per_turn": {
+    "min": 500,
+    "max": 15000,
+    "mean": 3000,
+    "standard_deviation": 2500,
+    "distribution_type": "log_normal"
+  },
+  "multi_turn": true,
+  "input_sequence_type_token_ratio": 0.08,
+  "metadata": {
+    "suitable_optimizations": ["Prefix aware routing", "KV cache offloading"],
+    "prefill_decode_ratio": 150.0,
+    "slos": {
+      "ttft_p90_ms": 10000,
+      "ttft_p90_ms_justification": "Research queries are large (inputs up to 150,000 tokens), so TTFT is higher than interactive chat and set to P90 for some leeway.",
+      "itl_p99_ms": 100,
+      "itl_p99_ms_justification": "The MLPerf server tier targets 80 - 200 ms per token (see *.Server.tpot_latency fields excluding *-interactive.Server.tpot_latency fields from https://github.com/mlcommons/inference/blob/7a7db59c1183d6482da22fc363c49ad083b79b3e/loadgen/mlperf.conf, last updated 2026-02-06). Most turns in this loop are consumed by the model itself rather than read by a human, so reading speed does not apply. ML Perf uses 99th percentile tail latencies for server scenarios (https://github.com/mlcommons/inference_policies/blob/master/inference_rules.adoc#3-scenarios)."
+    }
+  }
+}

@@ -197,7 +197,10 @@
             },
             "sink": {
               "type": "string",
-              "enum": ["gcs", "harbor"],
+              "enum": [
+                "gcs",
+                "harbor"
+              ],
               "description": "Where a shared trajectory goes: 'gcs' uses the bucket below, 'harbor' uploads to the hub instead. Only one sink is used."
             },
             "share_org": {
@@ -206,6 +209,54 @@
             }
           },
           "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "llmd": {
+      "type": "object",
+      "description": "Settings only an llm-d release needs, read by `deploy`. Absent means defaults: the compute namespace, the standalone router, the llm-d-hf-token secret and Managed Prometheus in the compute project.",
+      "properties": {
+        "namespace": {
+          "type": "string",
+          "description": "Namespace study releases are deployed to. Empty means compute.params.namespace."
+        },
+        "production_namespace": {
+          "type": "string",
+          "description": "Namespace a promoted release goes to. Empty means the study namespace."
+        },
+        "gateway_mode": {
+          "type": "string",
+          "enum": [
+            "standalone",
+            "gke"
+          ],
+          "description": "standalone: llm-d's standalone router chart, no Gateway resource (default). gke: GKE Inference Gateway in front of the same EPP."
+        },
+        "hf_token_secret": {
+          "type": "string",
+          "description": "Kubernetes Secret holding HF_TOKEN for model-server and benchmark pods. Default llm-d-hf-token."
+        },
+        "kube_context": {
+          "type": "string",
+          "description": "kubectl/helm context to use. Empty means the current context."
+        },
+        "prometheus_url": {
+          "type": "string",
+          "description": "Prometheus HTTP API base for `deploy collect`. Empty means Managed Prometheus in prometheus_project."
+        },
+        "prometheus_project": {
+          "type": "string",
+          "description": "GCP project whose Managed Prometheus holds the fleet metrics. Empty means compute.params.project."
+        },
+        "inference_perf_image": {
+          "type": "string",
+          "description": "Container image the benchmark Jobs run. Empty means the pinned inference-perf image."
+        },
+        "max_chips_default": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Chip budget a workload spec without budget.max_chips gets."
         }
       },
       "additionalProperties": false

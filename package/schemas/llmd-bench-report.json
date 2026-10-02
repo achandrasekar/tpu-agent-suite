@@ -1,0 +1,169 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "execution_id",
+    "stage",
+    "replicates",
+    "release",
+    "metrics",
+    "tenants",
+    "gates",
+    "admissible",
+    "telemetry_valid"
+  ],
+  "description": "Output of `deploy bench`: inference-perf numbers per tenant and replicate, SLO attainment, both primary-metric candidates and the admissibility gates, from one execution.",
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "llmd-bench-report"
+    },
+    "execution_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "stage": {
+      "type": "string",
+      "enum": [
+        "sweep",
+        "slo"
+      ]
+    },
+    "replicates": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "started_at": {
+      "type": "string"
+    },
+    "finished_at": {
+      "type": "string"
+    },
+    "release": {
+      "type": "object",
+      "required": [
+        "name",
+        "config_digest",
+        "chips_total"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "namespace": {
+          "type": "string"
+        },
+        "config_digest": {
+          "type": "string"
+        },
+        "replicas": {
+          "type": "integer"
+        },
+        "chips_total": {
+          "type": "integer"
+        },
+        "router_profile": {
+          "type": "string"
+        }
+      }
+    },
+    "workload": {
+      "type": "object"
+    },
+    "primary_metric": {
+      "type": "string",
+      "enum": [
+        "goodput_at_slo_per_chip",
+        "cost_per_1M_tokens_at_slo"
+      ]
+    },
+    "telemetry_valid": {
+      "type": "boolean",
+      "description": "False when any Job failed or printed no summary report; the arm verdict is then invalid regardless of the numbers."
+    },
+    "job_failures": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "raw_dir": {
+      "type": "string"
+    },
+    "metrics": {
+      "type": "object",
+      "required": [
+        "goodput_at_slo",
+        "goodput_at_slo_per_chip"
+      ]
+    },
+    "tenants": {
+      "type": "object"
+    },
+    "gates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "metric",
+          "comparator",
+          "bound",
+          "passed"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "metric": {
+            "type": "string"
+          },
+          "comparator": {
+            "type": "string",
+            "enum": [
+              "lt",
+              "lte",
+              "gt",
+              "gte"
+            ]
+          },
+          "bound": {
+            "type": "number"
+          },
+          "unit": {
+            "type": "string"
+          },
+          "value": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "passed": {
+            "type": "boolean"
+          },
+          "same_execution": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "admissible": {
+      "type": "boolean"
+    },
+    "sweep": {
+      "type": "object",
+      "properties": {
+        "stages": {
+          "type": "array"
+        },
+        "knee": {
+          "type": [
+            "object",
+            "null"
+          ]
+        }
+      }
+    }
+  }
+}

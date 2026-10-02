@@ -115,6 +115,83 @@
     "summary": {
       "type": "string",
       "description": "One-line narrative summary of the execution outcome."
+    },
+    "config_path": {
+      "type": "string",
+      "description": "For fleet arms: the arm's best llmd-config.json after its inner sweep, under the run's artifacts. Becomes the incumbent if the verdict is a win."
+    },
+    "sweep_ledger": {
+      "type": "array",
+      "description": "For fleet arms: every inner-loop measurement, in order -- the hot/warm sets applied, the execution id, the primary value and whether the gates passed -- so the chosen configuration is traceable to the run that measured it.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "execution_id",
+          "value",
+          "admissible"
+        ],
+        "properties": {
+          "execution_id": {
+            "type": "string"
+          },
+          "sets": {
+            "type": "object"
+          },
+          "config_digest": {
+            "type": "string"
+          },
+          "value": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "admissible": {
+            "type": "boolean"
+          },
+          "report": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "recommendations": {
+      "type": "array",
+      "description": "Findings for other domains the executor noticed and did not act on.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "domain",
+          "finding"
+        ],
+        "properties": {
+          "domain": {
+            "type": "string",
+            "enum": [
+              "tpu-performance",
+              "tpu-onboarding",
+              "tpu-kernel",
+              "platform"
+            ]
+          },
+          "finding": {
+            "type": "string"
+          },
+          "operating_point": {
+            "type": "object"
+          },
+          "evidence": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "chips_total": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "For fleet arms: chips the arm's release held while measured."
     }
   },
   "examples": [

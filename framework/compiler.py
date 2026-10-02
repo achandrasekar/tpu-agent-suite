@@ -386,9 +386,10 @@ def render_agent_references(text: str,
             "instructions contain a malformed reference, script, data or"
             " schema token")
 
-    # Automatically inject `--package {{package_tag}}` into `{{runtime}} compute` calls
+    # Automatically inject `--package {{package_tag}}` into `{{runtime}} compute`
+    # and `{{runtime}} deploy` calls
     rendered = _RUNTIME_COMPUTE_PATTERN.sub(
-        "{{runtime}} compute --package {{package_tag}}", rendered)
+        r"{{runtime}} \1 --package {{package_tag}}", rendered)
 
     for token, value in resource_registry(manifest).items():
         rendered = rendered.replace(token, value)
@@ -408,9 +409,11 @@ def render_agent_references(text: str,
     return rendered
 
 
-# `{{runtime}} compute` not already followed by `--package`.
+# `{{runtime}} compute` or `{{runtime}} deploy` not already followed by
+# `--package`. Both resolve the package's environment.json; neither verb
+# family should make an author spell the package tag.
 _RUNTIME_COMPUTE_PATTERN = re.compile(
-    r"\{\{runtime}}\s+compute(?!\s+--package\b)")
+    r"\{\{runtime}}\s+(compute|deploy)(?!\s+--package\b)")
 
 
 def resource_token_targets(text: str) -> list[tuple[str, str]]:

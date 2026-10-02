@@ -1,0 +1,253 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "topology",
+    "kv",
+    "router",
+    "engine"
+  ],
+  "description": "The incumbent: one document that fully determines a deployment. Hot paths (router.*) change with an EPP reload, warm paths (engine.*, kv.block_size) with a rolling restart, everything else is cold and needs a new release.",
+  "properties": {
+    "topology": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "decode"
+      ],
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "aggregated",
+            "pd"
+          ]
+        },
+        "decode": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "replicas"
+          ],
+          "properties": {
+            "replicas": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "tp": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "slice": {
+              "type": "string"
+            }
+          }
+        },
+        "prefill": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "properties": {
+            "replicas": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "tp": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "slice": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "kv": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "precise_routing": {
+          "type": "boolean"
+        },
+        "block_size": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "tiered_host": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "properties": {
+            "num_cpu_chunks": {
+              "type": "integer"
+            },
+            "staging_blocks": {
+              "type": "integer"
+            }
+          }
+        },
+        "pd_connector": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "tpu_connector",
+            "tpu_connector_hma",
+            null
+          ]
+        }
+      }
+    },
+    "router": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "profile"
+      ],
+      "properties": {
+        "profile": {
+          "type": "string",
+          "enum": [
+            "sticky-until-saturated",
+            "prefix-weighted",
+            "load-only",
+            "session-sticky"
+          ]
+        },
+        "plugins": {
+          "type": "object",
+          "description": "Per-plugin parameter overrides keyed by plugin type, e.g. {\"prefix-cache-affinity-filter\": {\"peakPrefillThroughput\": 27336}, \"token-load-scorer\": {\"weight\": 1.5}}. 'weight' applies to the scheduling-profile entry; every other key is a plugin parameter."
+        },
+        "flow_control": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "predicted_latency": {
+          "type": "boolean"
+        },
+        "epp_replicas": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "engine": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The fleet-tunable whitelist. Anything else is a recommendation for the engine-optimization domain.",
+      "properties": {
+        "max_num_seqs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_num_batched_tokens": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "gpu_memory_utilization": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "kv_cache_dtype": {
+          "type": "string"
+        },
+        "max_model_len": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "async_scheduling": {
+          "type": "boolean"
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "arm": {
+          "type": "string"
+        },
+        "execution_id": {
+          "type": "string"
+        },
+        "metric": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "value": {
+              "type": "number"
+            },
+            "provenance": {
+              "type": "string",
+              "enum": [
+                "measured",
+                "inferred",
+                "modeled",
+                "projected"
+              ]
+            }
+          }
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "topology": {
+        "mode": "aggregated",
+        "decode": {
+          "replicas": 5,
+          "tp": 8,
+          "slice": "2x2x1"
+        },
+        "prefill": null
+      },
+      "kv": {
+        "precise_routing": false,
+        "block_size": null,
+        "tiered_host": null,
+        "pd_connector": null
+      },
+      "router": {
+        "profile": "sticky-until-saturated",
+        "plugins": {
+          "prefix-cache-affinity-filter": {
+            "peakPrefillThroughput": 27336
+          }
+        },
+        "flow_control": null,
+        "predicted_latency": false,
+        "epp_replicas": 1
+      },
+      "engine": {
+        "max_num_seqs": 256
+      },
+      "provenance": {
+        "arm": "baseline",
+        "execution_id": "20260914T120000Z-1a2b3c4d",
+        "metric": {
+          "name": "goodput_at_slo_per_chip",
+          "value": 0.71,
+          "provenance": "measured"
+        }
+      }
+    }
+  ]
+}

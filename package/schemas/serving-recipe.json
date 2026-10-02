@@ -1,0 +1,159 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "model",
+    "image",
+    "accelerator"
+  ],
+  "description": "The optimized single-replica engine the fleet is built from: what tpu-onboarding and tpu-performance produced, as one file.",
+  "properties": {
+    "model": {
+      "type": "string",
+      "minLength": 1
+    },
+    "image": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The vLLM TPU serving image, by digest when possible."
+    },
+    "args": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "`vllm serve` arguments after the model name. --port and --tensor-parallel-size are set by the renderer and ignored here."
+    },
+    "env": {
+      "type": "object"
+    },
+    "accelerator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tpu_accelerator",
+        "tpu_topology"
+      ],
+      "properties": {
+        "tpu_accelerator": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tpu_topology": {
+          "type": "string",
+          "minLength": 1
+        },
+        "chips_per_replica": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "tensor_parallel": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "max_model_len": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "memory": {
+          "type": "string"
+        },
+        "cpu": {
+          "type": [
+            "string",
+            "integer"
+          ]
+        },
+        "shm": {
+          "type": "string"
+        }
+      }
+    },
+    "measured": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Single-replica saturation facts the planner sizes the fleet from.",
+      "properties": {
+        "knee_rps": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Highest request rate at which the single replica still met the SLOs."
+        },
+        "knee_concurrency": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "curve": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "hbm_gb": {
+          "type": "number"
+        },
+        "kv_blocks": {
+          "type": "integer"
+        },
+        "peak_prefill_throughput": {
+          "type": "number",
+          "description": "Tokens/s of prefill one replica sustains; the affinity filter's peakPrefillThroughput."
+        }
+      }
+    },
+    "parity": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "verdict": {
+          "type": "string"
+        },
+        "report": {
+          "type": "string"
+        }
+      }
+    },
+    "secrets": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "hf_token_secret": {
+          "type": "string"
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "description": "Where this recipe came from (run ids, report paths)."
+    }
+  },
+  "examples": [
+    {
+      "model": "Qwen/Qwen3-32B",
+      "image": "docker.io/vllm/vllm-tpu:v0.29.0",
+      "args": [
+        "--max-model-len=4096",
+        "--max-num-seqs=128"
+      ],
+      "env": {},
+      "accelerator": {
+        "tpu_accelerator": "tpu7x",
+        "tpu_topology": "2x2x1",
+        "chips_per_replica": 4
+      },
+      "tensor_parallel": 8,
+      "max_model_len": 4096,
+      "measured": {
+        "knee_rps": 45,
+        "knee_concurrency": 256
+      }
+    }
+  ]
+}

@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "prompt",
+    "study_id",
+    "run_id"
+  ],
+  "properties": {
+    "prompt": {
+      "type": "string"
+    },
+    "run_id": {
+      "type": "string",
+      "pattern": "^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}$"
+    },
+    "study_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+    },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "preflight",
+          "probe"
+        ]
+      },
+      "description": "Which checks to run; default both."
+    },
+    "image": {
+      "type": "string",
+      "description": "Serving image to probe. Required when probe is requested."
+    },
+    "fix": {
+      "type": "boolean",
+      "default": true,
+      "description": "Let preflight create the namespace and install GAIE CRDs."
+    }
+  },
+  "examples": [
+    {
+      "prompt": "Verify the cluster and image for the study.",
+      "run_id": "20260914T120000Z-000000000000",
+      "study_id": "acme-chat-tpu7x",
+      "checks": [
+        "preflight",
+        "probe"
+      ],
+      "image": "docker.io/vllm/vllm-tpu:v0.29.0",
+      "fix": true
+    }
+  ]
+}

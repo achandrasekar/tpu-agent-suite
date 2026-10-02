@@ -386,6 +386,75 @@
           "harbor"
         ]
       }
+    },
+    {
+      "name": "llmd_namespace",
+      "path": "llmd.namespace",
+      "when": {
+        "backend": [
+          "gke_job",
+          "gke_xpk"
+        ]
+      },
+      "prompt": "llm-d studies: Kubernetes namespace to deploy study releases into (empty to reuse the compute namespace)",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "llmd_production_namespace",
+      "path": "llmd.production_namespace",
+      "when": {
+        "backend": [
+          "gke_job",
+          "gke_xpk"
+        ]
+      },
+      "prompt": "llm-d studies: namespace a promoted production release goes to (empty to reuse the study namespace)",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "llmd_gateway_mode",
+      "path": "llmd.gateway_mode",
+      "when": {
+        "backend": [
+          "gke_job",
+          "gke_xpk"
+        ]
+      },
+      "prompt": "llm-d studies: router mode, 'standalone' (llm-d standalone router chart, no Gateway) or 'gke' (GKE Inference Gateway)",
+      "type": "string",
+      "choices": [
+        "standalone",
+        "gke"
+      ],
+      "default": "standalone"
+    },
+    {
+      "name": "llmd_hf_token_secret",
+      "path": "llmd.hf_token_secret",
+      "when": {
+        "backend": [
+          "gke_job",
+          "gke_xpk"
+        ]
+      },
+      "prompt": "llm-d studies: name of the Kubernetes Secret holding HF_TOKEN",
+      "type": "string",
+      "default": "llm-d-hf-token"
+    },
+    {
+      "name": "llmd_prometheus_project",
+      "path": "llmd.prometheus_project",
+      "when": {
+        "backend": [
+          "gke_job",
+          "gke_xpk"
+        ]
+      },
+      "prompt": "llm-d studies: GCP project whose Managed Prometheus scrapes the cluster (empty to reuse the compute project)",
+      "type": "string",
+      "default": ""
     }
   ]
 }

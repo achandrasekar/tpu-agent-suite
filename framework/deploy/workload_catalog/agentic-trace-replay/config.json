@@ -1,0 +1,61 @@
+{
+  "input_sequence_length": {
+    "min": 0.0,
+    "max": 3403502.0,
+    "mean": 49141.36907104073,
+    "standard_deviation": 138889.17673037984
+  },
+  "output_sequence_length": {
+    "min": 0.0,
+    "max": 146112.0,
+    "mean": 659.4164118408796,
+    "standard_deviation": 3072.701911706664
+  },
+  "number_of_turns": {
+    "min": 1.0,
+    "max": 300.0,
+    "mean": 21.88593874303898,
+    "standard_deviation": 23.41381768880812
+  },
+  "time_between_turns": {
+    "min": 0.001,
+    "max": 7199.569,
+    "mean": 13.028349060174717,
+    "standard_deviation": 176.44644604066423
+  },
+  "shared_prefix_tokens_per_call": {
+    "min": 0.0,
+    "max": 3306363.0,
+    "mean": 44636.407774269035,
+    "standard_deviation": 135279.49297253875
+  },
+  "cacheable_tokens_per_call": {
+    "min": 0.0,
+    "max": 3314419.0,
+    "mean": 45122.07362609901,
+    "standard_deviation": 136580.50439731946
+  },
+  "session_duration_sec": {
+    "min": 0.0,
+    "max": 7777.925,
+    "mean": 405.6700053699284,
+    "standard_deviation": 997.5749029776471
+  },
+  "metadata": {
+    "suitable_optimizations": [
+      "Prefix aware routing",
+      "KV cache offloading",
+      "P/D disaggregation"
+    ],
+    "prefill_decode_ratio": 74.52,
+    "agentic_characteristics": {
+      "avg_tool_calls_per_session": 20.51,
+      "sessions_with_tool_calls_ratio": 0.659,
+      "sessions_with_tool_definitions_ratio": 0.765,
+      "tool_call_turn_ratio": 0.617,
+      "tool_wait_call_ratio": 0.538,
+      "shared_prefix_ratio": 0.92,
+      "sessions_with_independent_calls_ratio": 0.088
+    }
+  }
+}

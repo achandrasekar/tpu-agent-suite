@@ -82,7 +82,10 @@ class TestTpuPerformanceSchemaParity(unittest.TestCase):
         self.assertEqual(study.BOTTLENECK_KINDS, round_kinds)
         self.assertEqual(study.BOTTLENECK_KINDS, arm_kinds)
         # A profile can find a cost that none of the study's kinds describe.
-        self.assertEqual(study.BOTTLENECK_KINDS + ("other", ), lever_kinds)
+        xprof_kinds = tuple(
+            k for k in study.BOTTLENECK_KINDS
+            if k not in getattr(study, "FLEET_BOTTLENECK_KINDS", ()))
+        self.assertEqual(xprof_kinds + ("other", ), lever_kinds)
 
     def test_arm_request_omits_redundant_round_property(self):
         arm_request_schema = json.loads(
