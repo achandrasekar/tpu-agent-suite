@@ -1,0 +1,134 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "llmd-plan-request.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "prompt",
+    "run_id",
+    "study_id",
+    "workload_spec_path",
+    "recipe_path",
+    "incumbent_config_path"
+  ],
+  "description": "What tpu-llmd hands llmd-planner: the study's inputs plus where the search stands, so the planner can propose arms as deltas against the current incumbent and never re-propose a decided one.",
+  "properties": {
+    "prompt": {
+      "type": "string",
+      "description": "What the orchestrator wants planned this round, in a sentence."
+    },
+    "run_id": {
+      "type": "string"
+    },
+    "study_id": {
+      "type": "string"
+    },
+    "workload_spec_path": {
+      "type": "string"
+    },
+    "recipe_path": {
+      "type": "string"
+    },
+    "incumbent_config_path": {
+      "type": "string",
+      "description": "The current best llmd-config.json. Every proposed arm is a delta against it."
+    },
+    "capabilities_path": {
+      "type": "string",
+      "description": "engine-capabilities.json from llmd-platform, when it exists. Arms needing a connector the image lacks are proposed `blocked_on_engine_capability`, never dropped."
+    },
+    "baseline_profile_path": {
+      "type": "string",
+      "description": "The baseline arm's fleet metrics.json (from `deploy collect`), when it exists. The planner reads prefix hit rate, KV occupancy and queue depth from it to rank KV-reuse and capacity arms on evidence rather than catalog hints."
+    },
+    "decided_arms": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "arm",
+          "arm_kind",
+          "verdict"
+        ],
+        "properties": {
+          "arm": {
+            "type": "string"
+          },
+          "arm_kind": {
+            "type": "string"
+          },
+          "verdict": {
+            "type": "string"
+          },
+          "delta_pct": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "sets": {
+            "type": "object"
+          },
+          "blocked_on": {
+            "type": "string"
+          }
+        }
+      },
+      "description": "Arms already decided or blocked, so the planner dedups and learns from them (a decided `load-only` win says prefix reuse is not the lever)."
+    },
+    "open_arms": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Arm ids still open; the planner does not duplicate them."
+    },
+    "max_chips": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "max_new_arms": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 4
+    },
+    "fleet_mode": {
+      "type": "string",
+      "enum": [
+        "managed",
+        "adopted"
+      ],
+      "description": "Adopted fleets cannot take engine-mutating arms; the planner still proposes them, `blocked_on_adopted_fleet`, so the finding is visible."
+    }
+  },
+  "examples": [
+    {
+      "prompt": "Propose the next arms for round 2 of acme-chat-tpu7x.",
+      "run_id": "20260914T120000Z-000000000000",
+      "study_id": "acme-chat-tpu7x",
+      "workload_spec_path": "specs/acme-chat.json",
+      "recipe_path": "artifacts/onboarding/serving-recipe.json",
+      "incumbent_config_path": "artifacts/llmd/incumbent/llmd-config.json",
+      "capabilities_path": "artifacts/llmd/platform/engine-capabilities.json",
+      "baseline_profile_path": "artifacts/llmd/bench/baseline/metrics.json",
+      "decided_arms": [
+        {
+          "arm": "a1",
+          "arm_kind": "router.profile",
+          "verdict": "win",
+          "delta_pct": 6.2,
+          "sets": {
+            "router.profile": "sticky-until-saturated"
+          }
+        }
+      ],
+      "open_arms": [
+        "a2"
+      ],
+      "max_chips": 64,
+      "max_new_arms": 4,
+      "fleet_mode": "managed"
+    }
+  ]
+}

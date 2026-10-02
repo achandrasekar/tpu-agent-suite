@@ -65,6 +65,10 @@ class TestTpuLlmdEvaluateArm(_scripts_test.EvaluateArmTest):
     """Wire the evaluate_llmd_arm tests into package discovery."""
 
 
+class TestTpuLlmdPlanArms(_scripts_test.PlanArmsTest):
+    """Wire the plan_arms tests into package discovery."""
+
+
 LLMD_SCHEMAS = (
     "llmd-request.json",
     "llmd-result.json",
@@ -76,6 +80,8 @@ LLMD_SCHEMAS = (
     "llmd-arm-request.json",
     "llmd-bench-report.json",
     "engine-capabilities.json",
+    "llmd-plan-request.json",
+    "llmd-plan-result.json",
 )
 
 
@@ -115,9 +121,10 @@ class TestTpuLlmdSchemas(unittest.TestCase):
 
     def test_request_schemas_carry_prompt_and_results_carry_status(self):
         for name in ("llmd-request.json", "llmd-platform-request.json",
-                     "llmd-arm-request.json"):
+                     "llmd-arm-request.json", "llmd-plan-request.json"):
             self.assertIn("prompt", _schema(name)["properties"])
-        for name in ("llmd-result.json", "llmd-platform-result.json"):
+        for name in ("llmd-result.json", "llmd-platform-result.json",
+                     "llmd-plan-result.json"):
             self.assertIn("status", _schema(name)["required"])
 
     def test_arm_kinds_are_one_list_across_framework_and_package(self):
@@ -177,12 +184,13 @@ class TestTpuLlmdWiring(unittest.TestCase):
         text = (_PACKAGE_ROOT / rel).read_text(encoding="utf-8")
         return frontmatter.parse_frontmatter_document(text)[0]
 
-    def test_agents_json_lists_the_three_agents(self):
+    def test_agents_json_lists_the_four_agents(self):
         agents = json.loads((_PACKAGE_ROOT / "tpu-llmd" /
                              "agents.json").read_text(encoding="utf-8"))
         self.assertEqual(agents["agents"], [
             "instructions/tpu-llmd.md",
             "instructions/llmd-platform.md",
+            "instructions/llmd-planner.md",
             "instructions/llmd-arm-executor.md",
         ])
         manifest = json.loads(
@@ -194,7 +202,8 @@ class TestTpuLlmdWiring(unittest.TestCase):
         self.assertEqual(fm["accepts"], "schemas/llmd-request.json")
         self.assertEqual(fm["produces"], "schemas/llmd-result.json")
         self.assertEqual(set(fm["delegates"]),
-                         {"llmd-platform", "llmd-arm-executor", "tpu-knowledge-base"})
+                         {"llmd-platform", "llmd-arm-executor",
+                          "llmd-planner", "tpu-knowledge-base"})
         # Recommend-only toward the engine domains: never a delegation.
         self.assertNotIn("tpu-performance-optimization", fm["delegates"])
         self.assertNotIn("tpu-model-onboarding", fm["delegates"])
@@ -205,6 +214,8 @@ class TestTpuLlmdWiring(unittest.TestCase):
              "schemas/llmd-platform-request.json"),
             ("agents/llmd-arm-executor.md",
              "schemas/llmd-arm-request.json"),
+            ("agents/llmd-planner.md",
+             "schemas/llmd-plan-request.json"),
         ):
             fm = self._frontmatter(rel)
             self.assertEqual(fm["accepts"], accepts)
@@ -228,6 +239,7 @@ class TestTpuLlmdWiring(unittest.TestCase):
         executor = (_PACKAGE_ROOT / "agents" /
                     "llmd-arm-executor.md").read_text(encoding="utf-8")
         self.assertIn("{{runtime}} deploy teardown", executor)
+
 
 
 if __name__ == "__main__":

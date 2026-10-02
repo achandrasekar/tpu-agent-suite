@@ -24,6 +24,8 @@ references:
   - references/tpu-llmd/PROTOCOL.md
   - references/tpu-llmd/SEARCH.md
   - references/tpu-llmd/ROUTER.md
+  - references/tpu-llmd/KV_CACHE.md
+  - references/tpu-llmd/PD.md
 ---
 
 # llmd-arm-executor
@@ -86,13 +88,30 @@ python3 {{script:tpu-llmd/seed_arms.py}} apply-sets \
     --out <release>
 ```
 
-For the `baseline` arm `sets` holds only the capacity-floor replica count
-(`topology.decode.replicas`) and the incumbent is the seeded baseline
-config; the commands are the same. `render` validates the config --
-a refused config (unknown router plugin, a `NOT_IMPLEMENTED` feature such as
-`topology.mode: pd`) is `verdict: invalid` with the error in `summary`, and
-you stop before spending a chip. On success `<release>/release.json` names
-the chip total and the router Service.
+For the `baseline` arm `sets` holds the capacity-floor replica count
+(`topology.decode.replicas`) on a managed fleet and nothing on an adopted
+one, and the incumbent is the seeded baseline config; the commands are the
+same. `render` validates the config, and a refusal is a verdict, not a
+retry:
+
+- `ADOPTED_FLEET_IMMUTABLE` -- the arm would change model servers this
+  release does not own (an adopted fleet's `topology`, `kv.*`, `engine.*`
+  or replica count). Return `status: blocked`, `verdict: invalid`, and a
+  `summary` that starts with `blocked_on_adopted_fleet:` and names the
+  refused paths. The orchestrator records the arm `blocked` with that
+  reason and keeps it as a finding.
+- `NOT_IMPLEMENTED` -- the config combines features no TPU guide ships
+  together (P/D with tiered host KV) or asks for a plugin the renderer
+  does not know. Return `verdict: invalid` with the error in `summary`.
+- any other `INVALID_FIELD` -- `verdict: invalid`.
+
+You stop before spending a chip in all three cases. If the arm's plan
+carries `prerequisites.capabilities` and the study's
+`engine-capabilities.json` says one of them is `false`, return
+`status: blocked` with a `summary` starting `blocked_on_engine_capability:`
+without rendering. On
+success `<release>/release.json` names the chip total and the router
+Service.
 
 ```bash
 {{runtime}} deploy apply --name <release_name> --release <release> --run-id <run_id>
@@ -189,7 +208,11 @@ the `arm-result.json`, copying the best entry's config snapshot to
 - a protocol gate the report never measured is appended as failed, and a
   would-be win becomes `invalid`;
 - the `baseline` arm (no `baseline_value`) is `tie` when admissible: it is
-  the reference, not a contestant.
+  the reference, not a contestant;
+- a report with `load.client_limited` failed means the load generator fell
+  behind its own schedule; the gate makes it `invalid`, and the fix is the
+  bench sizing in the environment (`llmd.sizing.bench`), never a smaller
+  rate.
 
 Before returning, add to the result what the schema lets you carry and the
 scorer cannot know: `recommendations[]` when the evidence points past the

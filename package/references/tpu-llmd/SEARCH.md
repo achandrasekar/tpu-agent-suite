@@ -1,6 +1,10 @@
 ---
 scripts:
+  - scripts/tpu-llmd/plan_arms.py
   - scripts/tpu-llmd/seed_arms.py
+references:
+  - references/tpu-llmd/KV_CACHE.md
+  - references/tpu-llmd/PD.md
 ---
 # The search: how an llm-d study climbs
 
@@ -40,8 +44,9 @@ scorer weights that are hot only make sense within one profile.
 
 ## The staged order of arms
 
-`{{script:tpu-llmd/seed_arms.py}}` writes the arms in the order the study
-should spend on them, and the orchestrator picks the highest-ranked open arm:
+`{{script:tpu-llmd/seed_arms.py}}` writes the opening queue in the order the
+study should spend on it, and the orchestrator picks the highest-ranked
+open arm (rank = modelled `headroom` x `share`):
 
 1. **Capacity** (`baseline`, `a1` = N0-1, `a2` = N0+1). N0 is
    `ceil(target_qps / knee_rps)` from the recipe's measured knee, clamped
@@ -50,17 +55,71 @@ should spend on them, and the orchestrator picks the highest-ranked open arm:
    tells you about saturation. `a1` has the highest modelled headroom
    (goodput per chip rises by N0/(N0-1) if attainment holds); `a2` has zero
    by construction and only wins when the baseline failed a gate.
-2. **KV reuse** (`a3` precise prefix routing, `a4` tiered host KV) --
-   seeded **blocked** today because the runtime does not render them yet.
-   They stay in the state so the plan is visible, and they unblock when a
-   package release adds the renderer paths, not when a round decides to.
+2. **KV reuse** (`a3` precise prefix routing, `a4` tiered host KV), seeded
+   when the workload has shared prefixes or multi-turn reuse
+   (`{{reference:tpu-llmd/KV_CACHE.md}}`).
 3. **Routing policy** (`a5` prefix-weighted, `a6` load-only, `a7`
-   session-sticky when the workload is multi-turn). All hot inside, cold
-   between. `a6` is the control: if routing with no prefix affinity at all
-   is not worse, prefix reuse is not this workload's lever and `a3`/`a4`
-   should be de-prioritised when they open.
-4. **P/D disaggregation** (`a8`) -- blocked for the same reason as 2, seeded
-   only when the catalog entry lists it as a suitable optimisation.
+   session-sticky when the workload is multi-turn, `a9` flow control when
+   tenants carry more than one priority). All hot inside, cold between.
+   `a6` is the control: if routing with no prefix affinity at all is not
+   worse, prefix reuse is not this workload's lever and the planner cuts
+   the reuse arms' headroom.
+4. **P/D disaggregation** (`a8`), seeded only when the catalog entry lists
+   it as a suitable optimisation (`{{reference:tpu-llmd/PD.md}}`).
+
+### Gated, never pruned
+
+Every seeded or planned arm passes one `gate()` before it is written:
+
+- `blocked_on_engine_capability` -- the probe (`engine-capabilities.json`)
+  says the serving image lacks the connector the arm needs (`kv_events`,
+  `offload_connector`, `pd_connector`). No probe means open: the
+  vllm-torchtpu image is assumed to carry what llm-d's guides name until a
+  probe says otherwise.
+- `blocked_on_adopted_fleet` -- the recipe's `fleet.mode` is `adopted` (the
+  model servers are running and owned by someone else) and the arm's
+  `sets` touch a path in the renderer's immutable list (`topology.mode`,
+  `topology.prefill`, `kv.*`, `engine.*`) or change the replica count.
+  The renderer refuses the same paths with `ADOPTED_FLEET_IMMUTABLE`, so
+  the gate is a prediction of a refusal, not a separate rule.
+
+A blocked arm stays in the state with its `prerequisites` (which
+capability, which fleet mode, how many chips) so the study's report says
+what the workload wanted and what would open it. The orchestrator never
+dispatches a blocked arm and never turns one open.
+
+### The adopted-fleet queue
+
+An adopted fleet starts from what is running: its own replica count and
+no router (`router.profile: passthrough`, the fleet Service). Its baseline
+is the customer's current state, and its first open arm is `a0`
+(`sticky-until-saturated`, llm-d's optimized-baseline profile), followed
+by the other router profiles and flow control. Capacity, reuse, P/D and
+engine arms are seeded blocked. This is the production case and the only
+case on a cluster whose chips the deployment under study already holds.
+
+### Rounds after the seed: the planner
+
+When the open queue runs low, the orchestrator dispatches `llmd-planner`
+with the incumbent, the decided arms, the probe and the baseline's fleet
+profile. `{{script:tpu-llmd/plan_arms.py}}` proposes new arms as deltas
+against the **incumbent** (so a replica-count win is inherited), ranks
+them on measured evidence rather than catalog hints (a low
+`prefix_hit_rate` raises reuse headroom; a decided `load-only` win lowers
+it), dedups against decided and open arms, and applies the same gate. The
+planner may adjust ceilings and rationale; it may not un-block, invent or
+re-propose an arm.
+
+### When the objective cannot move
+
+`goodput_at_slo_per_chip` at the `slo` stage is bounded above by
+`target_qps / chips`. If the baseline already serves every request inside
+the SLO at target rate, every arm ties at that bound and the study reports
+so: the right answer is that the current fleet meets the promise, and the
+lever is `target_qps` (raise it toward the knee the `sweep` stage finds)
+or a tighter SLO, both of which are the user's to set in the workload
+spec, not the study's. A measured tie on a non-binding SLO is a result,
+not a failure of the search.
 
 The `kind` on each arm is the coarse study taxonomy (`fleet-topology`,
 `kv-reuse`, `routing-policy`, `engine-fleet-knob`, `platform-capacity`);

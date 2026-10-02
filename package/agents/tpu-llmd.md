@@ -18,6 +18,7 @@ accepts: schemas/llmd-request.json
 produces: schemas/llmd-result.json
 delegates:
   - llmd-platform
+  - llmd-planner
   - llmd-arm-executor
   - tpu-knowledge-base
 scripts:
@@ -48,9 +49,10 @@ is one file: the incumbent `llmd-config.json`.
 You are strictly an orchestrator. You never render or apply a release, never
 run a load test, never open a benchmark report, and never edit a config by
 hand. Every unit of work goes to a specialist, which returns a short envelope
-and leaves its real output on disk. The two specialists are
-{{agent:llmd-platform}} (is the cluster ready?) and {{agent:llmd-arm-executor}}
-(measure one candidate).
+and leaves its real output on disk. The specialists are
+{{agent:llmd-platform}} (is the cluster ready, what can the image do?),
+{{agent:llmd-planner}} (what is worth a chip next?),
+{{agent:llmd-arm-executor}} (measure one candidate).
 
 For a public fact about TPU hardware, GKE, vLLM or llm-d -- a default, a
 supported version, a flag -- delegate to {{agent:tpu-knowledge-base}} and cite the
@@ -134,30 +136,50 @@ rebuild it from events.
 
 2.  **Platform, once.** If the state carries no arms yet, dispatch
     {{agent:llmd-platform}} with an `llmd-platform-request` (`run_id`,
-    `study_id`, `image` = the recipe's image, `fix: true`). It runs the
-    cluster preflight and probes the serving image for the P/D and
-    offload connectors. If its result is not `checked` or `preflight.ok` is
-    false, record a blocked row (step 6) naming `blockers[]` and stop: no
-    release can be applied to a cluster that is not ready, and every arm
-    would fail the same way. Its `capabilities` are informational --
-    the vllm-torchtpu image is assumed to carry the connectors llm-d's guides
-    name (`{{reference:tpu-llmd/PLATFORM.md}}`), so a missing connector is a
-    finding to report, never a reason to prune an arm.
+    `study_id`, `image` = the recipe's image, `fix: true`; for an adopted
+    fleet also `selector` = the recipe's `fleet.selector`, so the probe
+    runs inside a serving pod instead of pulling the image onto a CPU
+    node). It runs the cluster preflight and probes the image for the
+    KV-events, P/D and offload connectors. If its result is not `checked`
+    or `preflight.ok` is false, record a blocked row (step 6) naming
+    `blockers[]` and stop: no release can be applied to a cluster that is
+    not ready, and every arm would fail the same way. Its
+    `engine-capabilities.json` path is what the seeder's gate reads next;
+    a missing connector blocks the arms that need it, with the reason, and
+    never removes them (`{{reference:tpu-llmd/PLATFORM.md}}`).
 
 3.  **Seed, once.** Still on round one:
 
     ```bash
     python3 {{script:tpu-llmd/seed_arms.py}} \
         --workload-spec <workload_spec_path> --recipe <recipe_path> \
-        --out <llmd>/plans [--max-chips <chip_budget>]
+        --out <llmd>/plans [--max-chips <chip_budget>] \
+        [--capabilities <llmd>/platform/engine-capabilities.json]
     ```
 
     It writes `<llmd>/plans/arms.json` (study-round shape, every arm `open`
-    or `blocked`), `<llmd>/plans/arm_plans.json` (per arm: `arm_kind`, the
-    cold `sets`, the hot/warm `sweep_knobs` the executor may move, and a
-    rationale) and `<llmd>/plans/baseline-config.json`. Record `arms.json`
-    as the round so the plan is in the state before any chip is spent.
-    `{{reference:tpu-llmd/SEARCH.md}}` explains the ordering.
+    or `blocked` with `blocked_on_engine_capability` /
+    `blocked_on_adopted_fleet`), `<llmd>/plans/arm_plans.json` (per arm:
+    `arm_kind`, the cold `sets`, the hot/warm `sweep_knobs` the executor may
+    move, a rationale and `prerequisites`) and
+    `<llmd>/plans/baseline-config.json`. Record `arms.json` as the round so
+    the plan is in the state before any chip is spent.
+    `{{reference:tpu-llmd/SEARCH.md}}` explains the ordering and the gate.
+
+3b. **Plan, when the queue runs low.** On a later round, when the state
+    shows fewer than two `open` arms and the stopping rule has not been
+    met, dispatch {{agent:llmd-planner}} with an `llmd-plan-request`:
+    `run_id`, `study_id`, `workload_spec_path`, `recipe_path`,
+    `incumbent_config_path` = `<llmd>/incumbent/llmd-config.json`,
+    `capabilities_path` (from step 2), `baseline_profile_path` =
+    `baseline.profile` from the state, `decided_arms` (arm, `arm_kind`,
+    verdict, `sets` from `arm_plans.json`), `open_arms`, `max_chips` and
+    `fleet_mode`. Its `llmd-plan-result` carries new arms (`p1`, `p2`,
+    ...) and their plans: append the arms to the round, merge the plans
+    into `<llmd>/plans/arm_plans.json`, and continue to step 4 in the same
+    round. `nothing_to_propose` is a real answer -- the search has
+    converged on this cluster -- and you treat it as an empty queue below.
+    Dispatch the planner at most once per round.
 
 4.  **Harvest.** For every arm the state shows `in_flight`, ask whether its
     `arm-result.json` has landed under `<llmd>/arms/<arm>/`. Move each
@@ -200,7 +222,10 @@ rebuild it from events.
       ask. In `auto` mode dispatch without asking; `max_rounds` is the
       brake.
 
-      The executor returns an `arm-result`. **On `win`**, copy its
+      The executor returns an `arm-result`. **On `status: blocked`** move
+      the arm to `blocked` with `blocked_on` = its `summary` (it starts
+      with `blocked_on_adopted_fleet:` or `blocked_on_engine_capability:`);
+      no chip was spent and the incumbent stands. **On `win`**, copy its
       `config_path` over `<llmd>/incumbent/llmd-config.json`: the next arm
       is measured on top of the new incumbent, which is what makes the
       search a hill-climb rather than a set of independent trials.
@@ -260,12 +285,15 @@ a blocked row.
 
 ## An empty queue is a finding, not a finish
 
-If nothing is open, nothing is in flight and nothing is blocked: all arms
-decided means close; a met stopping rule means close with the outcome it
-implies; neither means a blocked row saying exactly that. Do not invent arms.
-The `blocked` arms the seeder wrote (P/D topology, precise prefix routing,
-tiered KV) name the feature they wait on; they stay blocked until the
-executor can render them, which is a package change, not a round decision.
+If nothing is open and nothing is in flight, ask the planner once (step
+3b). If it returns `nothing_to_propose`: all arms decided means close; a
+met stopping rule means close with the outcome it implies; neither means a
+blocked row saying exactly that. Do not invent arms. The `blocked` arms
+name what they wait on -- a connector the image lacks
+(`blocked_on_engine_capability`) or a fleet the study does not own
+(`blocked_on_adopted_fleet`) -- and they stay blocked until a probe or the
+recipe's `fleet.mode` changes, which is a user decision, not a round
+decision. Report them in the final table as findings.
 
 ## Finish
 
@@ -283,6 +311,9 @@ executor can render them, which is a package change, not a round decision.
     baseline and passed every gate; otherwise `closed`. **Promotion is
     never automatic.** A later request carrying `promotion_approved: true`
     and a `production_namespace` is what moves the incumbent to production,
-    and that step is not implemented in this version of the package: say so
-    plainly in `summary`, and point at `<llmd>/incumbent/llmd-config.json`,
-    which is the complete, reproducible artifact.
+    and that step lands with the productionizer in M4; say so plainly in
+    `summary` and point at
+    `<llmd>/incumbent/llmd-config.json`, which is the complete, reproducible
+    artifact. When the incumbent is still the baseline (every arm tied or
+    lost), say that too: the customer's current fleet is the recommendation,
+    and the `recommendations` and blocked arms are what would change it.

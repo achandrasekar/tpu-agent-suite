@@ -1,3 +1,7 @@
+---
+references:
+  - references/tpu-llmd/KV_CACHE.md
+---
 # The router: profiles, plugins and what the hot loop may touch
 
 The study's router is llm-d's Endpoint Picker (EPP), installed by the
@@ -66,11 +70,51 @@ the user's clients call. `gke_gateway` mode renders the same EPP config
 behind the GKE Inference Gateway instead; the config and the knobs are the
 same, only the front door changes.
 
-## What is not rendered yet
+## Flow control and priorities (`router.flow_control`)
 
-`router.flow_control` (priority bands and InferenceObjective-driven
-admission), `router.predicted_latency` (the latency-predictor TTFT source)
-and the precise prefix-cache producer (KV-event driven) are refused by the
-renderer as `NOT_IMPLEMENTED`. The seeder lists the arms that need them as
-`blocked` with the reason, so the plan shows the gap without an executor
-discovering it after a release was applied.
+With `featureGates: [flowControl]` in the EPP config, a saturated pool
+queues requests instead of sending them to a full pod; without it only
+sheddable (negative-priority) requests are rejected with 429
+(https://github.com/llm-d/llm-d/blob/main/docs/architecture/core/router/epp/flow-control.md).
+The renderer emits the gate, a `flowControl` block and the detector from
+`router.flow_control`:
+
+| config key | EPP key | default |
+| :--- | :--- | :--- |
+| `saturation_detector.type` | `saturationDetector.pluginRef` | `utilization-detector` |
+| `saturation_detector.queueDepthThreshold` | detector parameter | 5 |
+| `saturation_detector.kvCacheUtilThreshold` | detector parameter | 0.8 |
+| `max_requests`, `max_bytes`, `default_request_ttl`, `enable_eviction` | `flowControl.maxRequests` ... | 0 (unlimited), 0, client deadline, false |
+| `priority_bands[].priority` | `flowControl.priorityBands[]` and one `InferenceObjective` per tenant priority (`router.inferenceObjectives` in the chart) | -- |
+
+Clients select a band with the `x-llm-d-inference-objective` header; the
+bench Job sets it per tenant from the workload spec's `priority`. The two
+detector thresholds are hot paths.
+
+## Predicted latency (`router.predicted_latency: true`)
+
+Enables the chart's `router.latencyPredictor` (a training server and
+prediction server beside the EPP) and the alpha plugins
+`predicted-latency-producer`, `latency-scorer`, `slo-headroom-tier-filter`
+and `latency-slo-admitter`, which need `--allow-experimental-plugins`
+(https://github.com/llm-d/llm-d-router/blob/v0.11.0/pkg/epp/framework/plugins/requestcontrol/dataproducer/predictedlatency/README.md).
+Clients may send `x-llm-d-slo-ttft-ms`; the renderer does not set it. The
+sidecars cost CPU on the control-plane nodes (`llmd.sizing` in the
+environment), which is why it is an arm with its own release.
+
+## HA and the front door (`router.epp_replicas`, `epp_ha_mode`, `proxy_*`)
+
+`router.epp.replicas > 1` makes the chart add
+`--ha-enable-leader-election` (active-passive); `epp_ha_mode:
+active-active` turns that flag off so every replica picks
+(https://github.com/llm-d/llm-d-router/blob/v0.11.0/config/charts/README.md).
+`proxy_mode: sidecar` (default) runs Envoy beside the EPP; `service` runs
+it as its own Deployment with `proxy_replicas`. None of these change a
+routing decision, so they are promotion settings first and arms only when
+the EPP itself is the bottleneck (`llm_d_epp_*` latency in the profile).
+
+## Precise prefix routing
+
+`kv.precise_routing` swaps the approximate producer for the KV-event
+driven one and needs model-server flags; it is described with the other
+reuse mechanisms in `{{reference:tpu-llmd/KV_CACHE.md}}`.

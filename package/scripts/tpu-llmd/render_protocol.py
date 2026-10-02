@@ -100,6 +100,18 @@ def build_protocol(profile: dict[str, Any], recipe: dict[str, Any], *,
             "unit": "chips",
             "same_execution": True,
         })
+    # The load generator is part of the measurement: a replicate whose
+    # client fell behind its own schedule measured the client, and the
+    # bench report marks it. Pre-registering the gate makes such a run
+    # inadmissible rather than a quiet tie.
+    gates.append({
+        "name": "load.client_limited",
+        "metric": "client_limited_replicates",
+        "comparator": "lte",
+        "bound": 0,
+        "unit": "replicates",
+        "same_execution": True,
+    })
     source = profile["source"]
     shape = source.get("catalog_entry") or "custom"
     return {

@@ -1,0 +1,225 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "llmd-plan-result.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "status"
+  ],
+  "description": "A ranked bank of candidate arms, each a delta against the incumbent with a modelled ceiling and the evidence it rests on. tpu-llmd merges `arms` into the study round and copies `plans` into arm_plans.json; it never edits either.",
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": [
+        "planned",
+        "nothing_to_propose",
+        "invalid_input",
+        "needs_input",
+        "failed"
+      ],
+      "description": "'planned' means at least one arm was written. 'nothing_to_propose' means every dimension the model opens is decided, blocked or already open -- a finding for the orchestrator's stopping rule, not an error."
+    },
+    "arms": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "arm",
+          "kind",
+          "status",
+          "claim",
+          "share",
+          "headroom"
+        ],
+        "properties": {
+          "arm": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "open",
+              "blocked"
+            ]
+          },
+          "claim": {
+            "type": "string"
+          },
+          "share": {
+            "type": "number"
+          },
+          "headroom": {
+            "type": "number"
+          },
+          "since_round": {
+            "type": "integer"
+          },
+          "blocked_on": {
+            "type": "string"
+          }
+        }
+      },
+      "description": "Study-round arm rows, ranked best first, ready for record-round."
+    },
+    "plans": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "arm_kind",
+          "sets",
+          "sweep_knobs",
+          "rationale"
+        ],
+        "properties": {
+          "arm_kind": {
+            "type": "string"
+          },
+          "sets": {
+            "type": "object",
+            "description": "Cold assignments (llmd-config paths -> values) applied over the incumbent by `seed_arms.py apply-sets`."
+          },
+          "sweep_knobs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "ceiling_provenance": {
+            "type": "string",
+            "enum": [
+              "modeled",
+              "measured"
+            ]
+          },
+          "prerequisites": {
+            "type": "object",
+            "description": "{capabilities: [..], chips: N, fleet_mode: managed}"
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "URLs or artifact paths the claim rests on."
+          }
+        }
+      },
+      "description": "Per-arm plan keyed by arm id, the shape arm_plans.json holds."
+    },
+    "model": {
+      "type": "object",
+      "description": "What the planner computed: capacity floor, reuse signals, observed prefix hit rate, P/D worth-it gate, and the dimensions it considers closed."
+    },
+    "summary": {
+      "type": "string"
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "failure_reason": {
+      "type": "string",
+      "enum": [
+        "missing_input",
+        "unreadable_input",
+        "model_error"
+      ]
+    }
+  },
+  "status_requires": {
+    "planned": [
+      "arms",
+      "plans"
+    ],
+    "failed": [
+      "failure_reason"
+    ]
+  },
+  "examples": [
+    {
+      "status": "planned",
+      "arms": [
+        {
+          "arm": "a3",
+          "kind": "kv-reuse",
+          "status": "open",
+          "claim": "Precise prefix routing lifts hit rate from 0.41 toward 0.6 on a 28% shared-prefix workload.",
+          "share": 0.28,
+          "headroom": 0.19,
+          "since_round": 2
+        },
+        {
+          "arm": "a4",
+          "kind": "fleet-topology",
+          "status": "blocked",
+          "claim": "1P/3D disaggregation isolates TTFT from decode load.",
+          "share": 0.35,
+          "headroom": 0.0,
+          "since_round": 2,
+          "blocked_on": "blocked_on_engine_capability: pd_connector"
+        }
+      ],
+      "plans": {
+        "a3": {
+          "arm_kind": "kv.precise_routing",
+          "sets": {
+            "kv.precise_routing": true
+          },
+          "sweep_knobs": [
+            "kv.block_size"
+          ],
+          "rationale": "Observed prefix_hit_rate 0.41 against a modelled reuse ceiling of 0.6.",
+          "ceiling_provenance": "measured",
+          "prerequisites": {
+            "capabilities": [
+              "kv_events"
+            ],
+            "fleet_mode": "managed"
+          },
+          "evidence": [
+            "artifacts/llmd/bench/baseline/metrics.json"
+          ]
+        },
+        "a4": {
+          "arm_kind": "topology.pd",
+          "sets": {
+            "topology.mode": "disaggregated",
+            "topology.prefill": {
+              "replicas": 1,
+              "tp": 4
+            }
+          },
+          "sweep_knobs": [],
+          "rationale": "Prefill share 0.35 of chip-time is above the P/D worth-it gate; the image lacks a P/D connector.",
+          "ceiling_provenance": "modeled",
+          "prerequisites": {
+            "capabilities": [
+              "pd_connector"
+            ],
+            "chips": 16
+          }
+        }
+      },
+      "model": {
+        "capacity_floor_replicas": 3,
+        "prefix_hit_rate": 0.41,
+        "reuse_headroom": 0.19,
+        "pd_worth_it": true,
+        "closed": [
+          "router.profile: decided a1"
+        ]
+      }
+    }
+  ]
+}

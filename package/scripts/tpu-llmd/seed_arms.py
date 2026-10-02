@@ -17,8 +17,15 @@ The outer loop is greedy coordinate ascent over cold dimensions in a staged
 order: capacity first, then KV reuse, then routing. This script writes the
 opening queue in that order with a modelled ceiling for each arm, so round
 one has something ranked to pick from and every later round can trace why
-an arm exists. Arms the runtime cannot deploy yet are written `blocked`
-with the reason, so the plan is visible even where it cannot yet run.
+an arm exists.
+
+An arm is **gated, never pruned**. One that needs a connector the serving
+image lacks is written `blocked` with `blocked_on_engine_capability`; one
+that would change model servers an adopted fleet does not own is written
+`blocked` with `blocked_on_adopted_fleet`. Both stay in the plan so the
+study reports what the workload wanted and what would open it (a package
+change, or taking the fleet under management). The same `gate()` is what
+`plan_arms.py` applies to the arms it proposes later.
 
 Two files: `arms.json` in study-round shape (what `record-round` takes) and
 `arm_plans.json` keyed by arm id with the `arm_kind`, the cold `sets` and
@@ -26,7 +33,7 @@ the hot/warm `sweep_knobs` the executor may move.
 
 Usage:
     seed_arms.py --workload-spec SPEC --recipe RECIPE --out DIR
-                 [--max-chips N]
+                 [--max-chips N] [--capabilities engine-capabilities.json]
     seed_arms.py apply-sets --config IN --set path=value ... --out OUT
 """
 
@@ -50,6 +57,9 @@ try:
     from framework.deploy import release, render, workload  # noqa: E402
 except ImportError:  # shipped runtime: `deploy` is top-level
     from deploy import release, render, workload  # type: ignore  # noqa: E402
+
+BLOCKED_CAPABILITY = "blocked_on_engine_capability"
+BLOCKED_ADOPTED = "blocked_on_adopted_fleet"
 
 # Hot/warm paths each arm kind may sweep in the inner loop. The executor
 # chooses values; this bounds where it may look.
@@ -75,19 +85,38 @@ SWEEP_KNOBS: dict[str, list[str]] = {
         "engine.gpu_memory_utilization", "engine.kv_cache_dtype",
         "kv.block_size", "engine.async_scheduling",
     ],
+    "kv.precise_routing": [
+        "router.plugins.prefix-cache-affinity-filter.affinityThreshold",
+        "router.plugins.prefix-cache-affinity-filter.peakPrefillThroughput",
+        "router.plugins.token-load-scorer.weight",
+    ],
+    "kv.tiered_host": [
+        "kv.tiered_host.cpu_chunks", "kv.tiered_host.staging_blocks",
+        "router.plugins.prefix-cache-scorer.weight",
+    ],
+    "topology.pd": [
+        "topology.pd_decider.parameters.nonCachedTokens",
+        "router.plugins.token-load-scorer.weight",
+        "engine.max_num_batched_tokens",
+    ],
+    "router.flow_control": [
+        "router.flow_control.saturation_detector.queueDepthThreshold",
+        "router.flow_control.saturation_detector.kvCacheUtilThreshold",
+    ],
+    "router.predicted_latency": [
+        "router.plugins.latency-scorer.weight",
+    ],
+    "router.epp_replicas": [],
 }
 
-# Arm kinds the renderer refuses today, and why. Seeded as blocked arms when
-# the workload would benefit, so the plan shows what a later milestone opens.
-NOT_YET = {
-    "kv.precise_routing": "runtime does not render precise prefix-cache"
-                          " routing yet (kv-events, block-size 64, EPP"
-                          " precise producer)",
-    "kv.tiered_host": "runtime does not render tiered host KV offload yet",
-    "topology.pd": "runtime does not render prefill/decode disaggregation"
-                   " yet",
-    "router.flow_control": "runtime does not render flow control and"
-                           " InferenceObjective priorities yet",
+# Which probe capability each arm family needs. A `false` in
+# engine-capabilities.json blocks the arm; a missing probe leaves it open,
+# because the vllm-torchtpu image is assumed to carry what llm-d's guides
+# name (tpu-llmd/references/PLATFORM.md) until a probe says otherwise.
+NEEDS_CAPABILITY: dict[str, str] = {
+    "kv.precise_routing": "kv_events",
+    "kv.tiered_host": "offload_connector",
+    "topology.pd": "pd_connector",
 }
 
 COARSE_KIND = {
@@ -99,13 +128,65 @@ COARSE_KIND = {
     "router.profile": "routing-policy",
     "router.flow_control": "routing-policy",
     "router.predicted_latency": "routing-policy",
+    "router.epp_replicas": "routing-policy",
     "engine.fleet_knob": "engine-fleet-knob",
     "platform.capacity": "platform-capacity",
 }
 
+# The guide's single-host tiered-prefix-cache overlay sizes; the inner sweep
+# moves them (https://github.com/llm-d/llm-d/tree/v0.10.0/guides/tiered-prefix-cache).
+TIERED_HOST_DEFAULT = {"cpu_chunks": 25000, "staging_blocks": 1000}
+
+
+def load_capabilities(path: pathlib.Path | str | None) -> dict[str, Any]:
+    """The `capabilities` map of a probe document, or {} when none."""
+    if not path:
+        return {}
+    p = pathlib.Path(path)
+    if not p.is_file():
+        return {}
+    try:
+        doc = json.loads(p.read_text(encoding="utf-8"))
+    except ValueError:
+        return {}
+    return dict(doc.get("capabilities") or {})
+
+
+def gate(arm_kind: str, sets: dict[str, Any], *, incumbent: dict[str, Any],
+         recipe: dict[str, Any], capabilities: dict[str, Any]) -> str:
+    """Why this arm cannot run now, or '' when it can.
+
+    Capability first: an image without the connector cannot run the arm
+    anywhere. Then the fleet: on an adopted fleet any path in
+    `render.ADOPTED_IMMUTABLE_PATHS`, or a replica count other than the one
+    running, would restart servers this release does not own.
+    """
+    cap = NEEDS_CAPABILITY.get(arm_kind)
+    if cap and capabilities and capabilities.get(cap) is False:
+        return (f"{BLOCKED_CAPABILITY}: image lacks {cap}"
+                " (engine-capabilities.json)")
+    fleet = render.fleet_spec(recipe)
+    if fleet["mode"] != render.FLEET_ADOPTED:
+        return ""
+    trial = apply_sets(incumbent, sets)
+    touched = [path for path, is_on in render.ADOPTED_IMMUTABLE_PATHS
+               if is_on(trial)]
+    if int(trial["topology"]["decode"]["replicas"]) != fleet["replicas"]:
+        touched.append("topology.decode.replicas")
+    if touched:
+        return (f"{BLOCKED_ADOPTED}: {touched} would change model servers"
+                " this release does not own")
+    return ""
+
 
 def capacity_floor(profile: dict[str, Any], recipe: dict[str, Any]) -> tuple[int, str]:
-    """Replicas needed at target_qps from the recipe's knee, and how known."""
+    """Replicas needed at target_qps from the recipe's knee, and how known.
+
+    An adopted fleet's floor is what is running: the study cannot scale it.
+    """
+    fleet = render.fleet_spec(recipe)
+    if fleet["mode"] == render.FLEET_ADOPTED:
+        return fleet["replicas"], "adopted"
     knee = (recipe.get("measured") or {}).get("knee_rps")
     target = float(profile["rate"]["target_qps"])
     if knee and float(knee) > 0:
@@ -130,25 +211,35 @@ def _reuse_signals(profile: dict[str, Any]) -> dict[str, bool]:
 
 
 def seed(profile: dict[str, Any], recipe: dict[str, Any], *,
-         max_chips: int | None) -> tuple[dict[str, Any], dict[str, Any]]:
+         max_chips: int | None,
+         capabilities: dict[str, Any] | None = None
+         ) -> tuple[dict[str, Any], dict[str, Any]]:
+    caps = capabilities or {}
     n0, n0_provenance = capacity_floor(profile, recipe)
-    chips = render.chips_per_replica(recipe, render.default_config(recipe))
+    base = render.default_config(recipe)
+    adopted = render.fleet_spec(recipe)["mode"] == render.FLEET_ADOPTED
+    chips = render.chips_per_replica(recipe, base)
     cap = max_chips or (profile.get("budget") or {}).get("max_chips")
-    if cap:
+    if cap and not adopted:
         n_max = max(1, int(cap) // chips)
         if n0 > n_max:
             n0 = n_max
     signals = _reuse_signals(profile)
+    tenants = profile.get("tenants") or []
+    priorities = {int(t.get("priority") or 0) for t in tenants}
+    tp = base["topology"]["decode"].get("tp")
     arms: list[dict[str, Any]] = []
     plans: dict[str, Any] = {}
 
     def add(arm_id: str, arm_kind: str, claim: str, *, share: float,
-            headroom: float, sets: dict[str, Any], status: str = "open",
-            blocked_on: str = "", rationale: str = "") -> None:
+            headroom: float, sets: dict[str, Any], rationale: str = "",
+            prerequisites: dict[str, Any] | None = None) -> None:
+        blocked_on = "" if arm_kind == "baseline" else gate(
+            arm_kind, sets, incumbent=base, recipe=recipe, capabilities=caps)
         entry: dict[str, Any] = {
             "arm": arm_id,
             "kind": COARSE_KIND[arm_kind],
-            "status": status,
+            "status": "blocked" if blocked_on else "open",
             "claim": claim,
             "share": round(share, 4),
             "headroom": round(headroom, 4),
@@ -163,16 +254,28 @@ def seed(profile: dict[str, Any], recipe: dict[str, Any], *,
             "sweep_knobs": SWEEP_KNOBS.get(arm_kind, []),
             "rationale": rationale,
             "ceiling_provenance": "modeled",
+            "prerequisites": prerequisites or {},
         }
 
-    # Stage 1: capacity.
-    add("baseline", "baseline",
-        f"{n0} aggregated replica(s) of the recipe behind the standalone"
-        " router with sticky-until-saturated routing meet the SLO at"
-        f" {profile['rate']['target_qps']:g} qps",
-        share=1.0, headroom=0.0, sets={"topology.decode.replicas": n0},
-        rationale=f"capacity floor ceil(target_qps / knee_rps) = {n0}"
-                  f" ({n0_provenance}); inner sweep tunes the knee flags")
+    # Stage 1: capacity. The baseline is what round one measures: for a
+    # managed fleet, llm-d's optimized baseline at the capacity floor; for
+    # an adopted fleet, the servers as they run today with no router.
+    rate = profile["rate"]["target_qps"]
+    if adopted:
+        add("baseline", "baseline",
+            f"the {n0} running replica(s) reached through the fleet Service"
+            f" (passthrough, no router) meet the SLO at {rate:g} qps",
+            share=1.0, headroom=0.0, sets={},
+            rationale="adopted fleet: the customer's current state is the"
+                      " control every router arm is judged against")
+    else:
+        add("baseline", "baseline",
+            f"{n0} aggregated replica(s) of the recipe behind the standalone"
+            " router with sticky-until-saturated routing meet the SLO at"
+            f" {rate:g} qps",
+            share=1.0, headroom=0.0, sets={"topology.decode.replicas": n0},
+            rationale=f"capacity floor ceil(target_qps / knee_rps) = {n0}"
+                      f" ({n0_provenance}); inner sweep tunes the knee flags")
     if n0 > 1:
         add("a1", "topology.replicas",
             f"{n0 - 1} replicas still meet the SLO once max_num_seqs and"
@@ -189,27 +292,38 @@ def seed(profile: dict[str, Any], recipe: dict[str, Any], *,
             rationale="only a win if the baseline fails a gate; headroom"
                       " zero by construction, ranked last among capacity")
 
-    # Stage 2: KV reuse -- blocked until the runtime renders it, but seeded
-    # so the plan says what the workload wants.
+    # Stage 2: KV reuse.
     if signals["shared_prefix"] or signals["multi_turn"]:
         add("a3", "kv.precise_routing",
             "exact KV-event-driven prefix routing raises prefix hit rate"
             " over the approximate index",
-            share=0.3, headroom=0.3, sets={"kv.precise_routing": True,
-                                           "kv.block_size": 64},
-            status="blocked", blocked_on=NOT_YET["kv.precise_routing"],
-            rationale="workload has shared prefixes or multi-turn reuse")
+            share=0.3, headroom=0.3,
+            sets={"kv.precise_routing": True, "kv.block_size": 64},
+            rationale="workload has shared prefixes or multi-turn reuse",
+            prerequisites={"capabilities": ["kv_events"],
+                           "fleet_mode": render.FLEET_MANAGED})
     if signals["offload_suggested"]:
         add("a4", "kv.tiered_host",
             "host-memory KV tier keeps multi-turn context beyond HBM"
             " capacity",
             share=0.2, headroom=0.3,
-            sets={"kv.tiered_host": {"num_cpu_chunks": 4096}},
-            status="blocked", blocked_on=NOT_YET["kv.tiered_host"],
-            rationale="multi-turn with long shared prefixes")
+            sets={"kv.tiered_host": dict(TIERED_HOST_DEFAULT)},
+            rationale="multi-turn with long shared prefixes; guide sizes"
+                      " from the tiered-prefix-cache single-host overlay",
+            prerequisites={"capabilities": ["offload_connector"],
+                           "fleet_mode": render.FLEET_MANAGED})
 
     # Stage 3: routing policy, all hot; the control arm measures what
-    # prefix affinity is worth at all.
+    # prefix affinity is worth at all. An adopted fleet starts without a
+    # router, so llm-d's optimized-baseline profile is its first arm.
+    if adopted:
+        add("a0", "router.profile",
+            "sticky-until-saturated affinity routing beats kube-proxy"
+            " spreading at this rate",
+            share=1.0, headroom=0.3,
+            sets={"router.profile": "sticky-until-saturated"},
+            rationale="llm-d optimized-baseline profile; sweeps"
+                      " peakPrefillThroughput and affinityThreshold")
     add("a5", "router.profile",
         "weighted prefix + load scoring spreads load better than sticky"
         " affinity at this rate",
@@ -227,6 +341,20 @@ def seed(profile: dict[str, Any], recipe: dict[str, Any], *,
             " effective prefix reuse",
             share=0.2, headroom=0.15, sets={"router.profile": "session-sticky"},
             rationale="multi-turn workload")
+    if len(priorities) > 1:
+        bands = [{"priority": p} for p in sorted(priorities, reverse=True)]
+        add("a9", "router.flow_control",
+            "queueing at the router with per-priority bands keeps the"
+            " high-priority tenant inside its SLO under burst",
+            share=0.3, headroom=0.1,
+            sets={"router.profile": "prefix-weighted",
+                  "router.flow_control": {
+                      "saturation_detector": {"type": "utilization-detector",
+                                              "queueDepthThreshold": 5,
+                                              "kvCacheUtilThreshold": 0.8},
+                      "priority_bands": bands}},
+            rationale=f"tenant priorities {sorted(priorities)} map to"
+                      " InferenceObjective bands")
 
     # Stage 4: P/D, when the workload is prefill heavy.
     if signals["pd_suggested"]:
@@ -234,14 +362,21 @@ def seed(profile: dict[str, Any], recipe: dict[str, Any], *,
             "a prefill pool isolates long prefills from decode so TPOT"
             " holds at target rate",
             share=0.4, headroom=0.3,
-            sets={"topology.mode": "pd", "kv.pd_connector": "tpu_connector"},
-            status="blocked", blocked_on=NOT_YET["topology.pd"],
-            rationale="catalog metadata lists P/D disaggregation")
+            sets={"topology.mode": "disaggregated",
+                  "topology.prefill": {"replicas": 1, "tp": tp}},
+            rationale="catalog metadata lists P/D disaggregation; costs one"
+                      f" more slice ({chips} chips)",
+            prerequisites={"capabilities": ["pd_connector"],
+                           "chips": (n0 + 1) * chips,
+                           "fleet_mode": render.FLEET_MANAGED})
 
     return {"arms": arms}, {
         "capacity_floor": {"replicas": n0, "provenance": n0_provenance,
-                           "chips_per_replica": chips, "max_chips": cap},
+                           "chips_per_replica": chips, "max_chips": cap,
+                           "fleet_mode": render.FLEET_ADOPTED if adopted
+                           else render.FLEET_MANAGED},
         "signals": signals,
+        "capabilities": caps,
         "plans": plans,
     }
 
@@ -281,12 +416,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--recipe", required=True, type=pathlib.Path)
     parser.add_argument("--out", required=True, type=pathlib.Path)
     parser.add_argument("--max-chips", type=int, default=None)
+    parser.add_argument("--capabilities", type=pathlib.Path, default=None,
+                        help="engine-capabilities.json from the platform"
+                             " probe; gates connector arms")
     args = parser.parse_args(argv)
     spec = json.loads(args.workload_spec.read_text(encoding="utf-8"))
     recipe = json.loads(args.recipe.read_text(encoding="utf-8"))
     render.validate_recipe(recipe)
     profile = workload.resolve_workload(spec, spec_dir=args.workload_spec.parent)
-    arms, plans = seed(profile, recipe, max_chips=args.max_chips)
+    arms, plans = seed(profile, recipe, max_chips=args.max_chips,
+                       capabilities=load_capabilities(args.capabilities))
     args.out.mkdir(parents=True, exist_ok=True)
     (args.out / "arms.json").write_text(json.dumps(arms, indent=2) + "\n",
                                         encoding="utf-8")

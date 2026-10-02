@@ -41,6 +41,7 @@ def _load(name: str):
 render_protocol = _load("render_protocol")
 seed_arms = _load("seed_arms")
 evaluate_llmd_arm = _load("evaluate_llmd_arm")
+plan_arms = _load("plan_arms")
 
 
 class _Quiet(unittest.TestCase):
@@ -158,14 +159,60 @@ class SeedArmsTest(_Quiet):
         self.assertEqual(by_id["a1"]["kind"], "fleet-topology")
         self.assertEqual(by_id["a5"]["kind"], "routing-policy")
         # interactive-chat is multi-turn with a shared system prompt, so the
-        # reuse arms exist but are blocked until the runtime renders them.
-        self.assertEqual(by_id["a3"]["status"], "blocked")
-        self.assertIn("precise", by_id["a3"]["blocked_on"])
+        # reuse arms exist; on a managed fleet with no probe they are open.
+        self.assertEqual(by_id["a3"]["status"], "open")
+        self.assertEqual(plans["plans"]["a3"]["sets"]["kv.precise_routing"],
+                         True)
+        self.assertEqual(by_id["a4"]["status"], "open")
+        self.assertIn("cpu_chunks", plans["plans"]["a4"]["sets"]["kv.tiered_host"])
         self.assertEqual(by_id["a7"]["status"], "open")
+        # Two tenant priorities seed a flow-control arm.
+        self.assertEqual(by_id["a9"]["status"], "open")
+        bands = plans["plans"]["a9"]["sets"]["router.flow_control"][
+            "priority_bands"]
+        self.assertEqual([b["priority"] for b in bands], [10, -5])
+        self.assertNotIn("a0", by_id)  # managed: baseline already routes
         for arm in arms["arms"]:
             self.assertIn(arm["kind"], (
                 "fleet-topology", "kv-reuse", "routing-policy",
                 "engine-fleet-knob", "platform-capacity"))
+
+    def test_probe_gates_connector_arms(self):
+        from framework.deploy import workload  # noqa: PLC0415
+        profile = workload.resolve_workload(SPEC)
+        caps = {"kv_events": False, "offload_connector": True,
+                "pd_connector": False}
+        arms, plans = seed_arms.seed(profile, RECIPE, max_chips=None,
+                                     capabilities=caps)
+        by_id = {a["arm"]: a for a in arms["arms"]}
+        self.assertEqual(by_id["a3"]["status"], "blocked")
+        self.assertIn("blocked_on_engine_capability", by_id["a3"]["blocked_on"])
+        self.assertIn("kv_events", by_id["a3"]["blocked_on"])
+        self.assertEqual(by_id["a4"]["status"], "open")
+        self.assertEqual(plans["capabilities"], caps)
+
+    def test_adopted_fleet_seeds_passthrough_baseline(self):
+        from framework.deploy import workload  # noqa: PLC0415
+        recipe = dict(RECIPE)
+        recipe["fleet"] = {"mode": "adopted", "selector": {"app": "ds"},
+                           "service": "ds", "port": 8000, "replicas": 2}
+        profile = workload.resolve_workload(SPEC)
+        arms, plans = seed_arms.seed(profile, recipe, max_chips=8)
+        by_id = {a["arm"]: a for a in arms["arms"]}
+        self.assertEqual(plans["capacity_floor"]["replicas"], 2)
+        self.assertEqual(plans["capacity_floor"]["provenance"], "adopted")
+        self.assertEqual(plans["plans"]["baseline"]["sets"], {})
+        # Scaling, KV and engine arms would restart servers the release
+        # does not own; routing arms stay open.
+        for arm_id in ("a1", "a3", "a4", "a8"):
+            self.assertEqual(by_id[arm_id]["status"], "blocked", arm_id)
+            self.assertIn("blocked_on_adopted_fleet",
+                          by_id[arm_id]["blocked_on"])
+        self.assertEqual(by_id["a0"]["status"], "open")
+        self.assertEqual(plans["plans"]["a0"]["sets"],
+                         {"router.profile": "sticky-until-saturated"})
+        self.assertEqual(by_id["a5"]["status"], "open")
+        self.assertEqual(by_id["a9"]["status"], "open")
 
     def test_capacity_floor_capped_by_budget(self):
         from framework.deploy import workload  # noqa: PLC0415
@@ -273,3 +320,141 @@ class EvaluateArmTest(_Quiet):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PlanArmsTest(_Quiet):
+    """plan_arms proposes incumbent-relative arms, gated not pruned."""
+
+    def _request(self, tmp: pathlib.Path, recipe, incumbent, *, decided=(),
+                 open_arms=(), caps=None, profile_metrics=None):
+        (tmp / "spec.json").write_text(json.dumps(SPEC))
+        (tmp / "recipe.json").write_text(json.dumps(recipe))
+        (tmp / "incumbent.json").write_text(json.dumps(incumbent))
+        req = {
+            "run_id": "r", "study_id": "s",
+            "workload_spec_path": str(tmp / "spec.json"),
+            "recipe_path": str(tmp / "recipe.json"),
+            "incumbent_config_path": str(tmp / "incumbent.json"),
+            "decided_arms": list(decided), "open_arms": list(open_arms),
+            "max_new_arms": 4,
+        }
+        if caps is not None:
+            (tmp / "caps.json").write_text(json.dumps(
+                {"capabilities": caps}))
+            req["capabilities_path"] = str(tmp / "caps.json")
+        if profile_metrics is not None:
+            (tmp / "metrics.json").write_text(json.dumps(
+                {"metrics": {k: {"value": v}
+                             for k, v in profile_metrics.items()}}))
+            req["baseline_profile_path"] = str(tmp / "metrics.json")
+        return req
+
+    def test_managed_incumbent_proposes_reuse_first(self):
+        from framework.deploy import render  # noqa: PLC0415
+        incumbent = render.default_config(RECIPE, replicas=3)
+        with tempfile.TemporaryDirectory() as d:
+            tmp = pathlib.Path(d)
+            req = self._request(tmp, RECIPE, incumbent,
+                                profile_metrics={"prefix_hit_rate": 0.2})
+            result = plan_arms.propose(req)
+        self.assertEqual(result["status"], "planned")
+        open_arms = [a for a in result["arms"] if a["status"] == "open"]
+        self.assertTrue(open_arms)
+        self.assertLessEqual(len(open_arms), 4)
+        kinds = [result["plans"][a["arm"]]["arm_kind"] for a in open_arms]
+        # Low measured hit rate on a shared-prefix workload raises precise
+        # routing's headroom to the cap; the N-1 capacity arm (share 1.0)
+        # still ranks above it by headroom x share, as the staged order says.
+        self.assertEqual(kinds[0], "topology.replicas")
+        self.assertIn("kv.precise_routing", kinds)
+        precise = next(a for a in open_arms if result["plans"][a["arm"]][
+            "arm_kind"] == "kv.precise_routing")
+        self.assertAlmostEqual(precise["headroom"], 0.5)
+        self.assertAlmostEqual(result["model"]["reuse_headroom"], 0.5)
+        for arm in result["arms"]:
+            plan = result["plans"][arm["arm"]]
+            self.assertIn("sets", plan)
+            self.assertIn("evidence", plan)
+            self.assertTrue(arm["arm"].startswith("p"))
+
+    def test_dedup_against_decided_and_open(self):
+        from framework.deploy import render  # noqa: PLC0415
+        incumbent = render.default_config(RECIPE, replicas=3)
+        decided = [{"arm": "a5", "arm_kind": "router.profile",
+                    "verdict": "loss", "sets": {"router.profile":
+                                                "prefix-weighted"}}]
+        with tempfile.TemporaryDirectory() as d:
+            tmp = pathlib.Path(d)
+            req = self._request(tmp, RECIPE, incumbent, decided=decided,
+                                open_arms=["p1"])
+            result = plan_arms.propose(req)
+        all_sets = [json.dumps(p["sets"], sort_keys=True)
+                    for p in result["plans"].values()]
+        self.assertNotIn(json.dumps({"router.profile": "prefix-weighted"},
+                                    sort_keys=True), all_sets)
+        self.assertNotIn("p1", result["plans"])
+        self.assertTrue(any("already proposed" in c
+                            for c in result["model"]["closed"]))
+
+    def test_load_only_win_lowers_reuse_headroom(self):
+        from framework.deploy import render  # noqa: PLC0415
+        incumbent = render.default_config(RECIPE, replicas=3)
+        incumbent["router"]["profile"] = "load-only"
+        decided = [{"arm": "a6", "arm_kind": "router.profile",
+                    "verdict": "win", "sets": {"router.profile": "load-only"}}]
+        with tempfile.TemporaryDirectory() as d:
+            tmp = pathlib.Path(d)
+            req = self._request(tmp, RECIPE, incumbent, decided=decided,
+                                profile_metrics={"prefix_hit_rate": 0.2})
+            result = plan_arms.propose(req)
+        self.assertTrue(result["model"]["load_only_won"])
+        self.assertAlmostEqual(result["model"]["reuse_headroom"], 0.15)
+
+    def test_adopted_passthrough_gates_and_orders(self):
+        from framework.deploy import render  # noqa: PLC0415
+        recipe = dict(RECIPE)
+        recipe["fleet"] = {"mode": "adopted", "selector": {"app": "ds"},
+                           "service": "ds", "port": 8000, "replicas": 2}
+        incumbent = render.default_config(recipe)
+        caps = {"kv_events": True, "offload_connector": True,
+                "pd_connector": False}
+        with tempfile.TemporaryDirectory() as d:
+            tmp = pathlib.Path(d)
+            req = self._request(tmp, recipe, incumbent, caps=caps)
+            result = plan_arms.propose(req)
+        by_kind = {}
+        for arm in result["arms"]:
+            by_kind.setdefault(result["plans"][arm["arm"]]["arm_kind"],
+                               []).append(arm)
+        first = result["arms"][0]
+        self.assertEqual(result["plans"][first["arm"]]["sets"],
+                         {"router.profile": "sticky-until-saturated"})
+        for arm in by_kind["router.profile"]:
+            self.assertEqual(arm["status"], "open")
+        # Capability beats fleet in the reason: the image lacks pd_connector.
+        pd = by_kind["topology.pd"][0]
+        self.assertEqual(pd["status"], "blocked")
+        self.assertIn("blocked_on_engine_capability", pd["blocked_on"])
+        tiered = by_kind["kv.tiered_host"][0]
+        self.assertIn("blocked_on_adopted_fleet", tiered["blocked_on"])
+        self.assertEqual(result["model"]["fleet_mode"], "adopted")
+        # Blocked arms survive the max_new_arms cut.
+        self.assertGreater(len(result["arms"]), 4)
+
+    def test_main_writes_result_and_rejects_missing_keys(self):
+        from framework.deploy import render  # noqa: PLC0415
+        incumbent = render.default_config(RECIPE, replicas=3)
+        with tempfile.TemporaryDirectory() as d:
+            tmp = pathlib.Path(d)
+            req = self._request(tmp, RECIPE, incumbent)
+            (tmp / "req.json").write_text(json.dumps(req))
+            rc = plan_arms.main(["--request", str(tmp / "req.json"),
+                                 "--out", str(tmp / "out")])
+            self.assertEqual(rc, 0)
+            written = json.loads((tmp / "out/llmd-plan-result.json").read_text())
+            self.assertEqual(written["status"], "planned")
+            del req["incumbent_config_path"]
+            (tmp / "bad.json").write_text(json.dumps(req))
+            self.assertEqual(plan_arms.main(["--request", str(tmp / "bad.json"),
+                                             "--out", str(tmp / "out2")]), 2)
+

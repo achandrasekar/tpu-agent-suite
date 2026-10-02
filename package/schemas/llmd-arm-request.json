@@ -59,6 +59,7 @@
         "router.profile",
         "router.flow_control",
         "router.predicted_latency",
+        "router.epp_replicas",
         "engine.fleet_knob",
         "platform.capacity"
       ],

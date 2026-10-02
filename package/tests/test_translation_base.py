@@ -48,7 +48,7 @@ PACKAGE_DIR = REPO_ROOT / "package"
 # an agent fails loudly instead of quietly shrinking the suite. 7 specialists
 # plus the agent built from the `tpu-agent` skill, which is emitted as a
 # selectable agent as well as a skill so `--agent` can reach it.
-EXPECTED_AGENT_COUNT = 11
+EXPECTED_AGENT_COUNT = 12
 
 # Imported, not restated: `copy_asset` hands exactly these patterns to
 # `shutil.ignore_patterns`, so the exclusion and its test cannot drift apart.
