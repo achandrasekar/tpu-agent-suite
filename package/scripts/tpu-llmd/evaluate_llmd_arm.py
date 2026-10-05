@@ -240,6 +240,20 @@ def cmd_score(args: argparse.Namespace) -> int:
     result = score_arm(ledger, protocol, arm=args.arm,
                        baseline_value=args.baseline_value,
                        config_path=config_path)
+    if config_path and result.get("execution_id"):
+        cfg_doc = _load(pathlib.Path(config_path))
+        prov = dict(cfg_doc.get("provenance") or {})
+        prov["arm"] = args.arm
+        prov["execution_id"] = result["execution_id"]
+        if result.get("metric"):
+            prov["metric"] = {
+                k: result["metric"][k]
+                for k in ("name", "value", "provenance")
+                if k in result["metric"]
+            }
+        cfg_doc["provenance"] = prov
+        pathlib.Path(config_path).write_text(
+            json.dumps(cfg_doc, indent=2) + "\n", encoding="utf-8")
     args.out.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(result, indent=2))
     return 0 if result["status"] == "completed" else 1

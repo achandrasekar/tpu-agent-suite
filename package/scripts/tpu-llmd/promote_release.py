@@ -246,7 +246,8 @@ def judge_acceptance(acceptance: dict[str, Any] | None,
                      baseline: dict[str, Any] | None,
                      drills: list[dict[str, Any]],
                      noise_floor_pct: float,
-                     router_installed: bool) -> dict[str, Any]:
+                     router_installed: bool,
+                     direction: str | None = None) -> dict[str, Any]:
     """Gates, metric-vs-incumbent and drills, each with its own verdict.
 
     The production release is the incumbent re-applied in its own
@@ -282,12 +283,20 @@ def judge_acceptance(acceptance: dict[str, Any] | None,
                 "value")
             if ref:
                 delta = (value - ref) / ref * 100.0
-                ok = delta >= -float(noise_floor_pct)
+                eff_dir = direction or (
+                    "minimize" if primary == "cost_per_1M_tokens_at_slo"
+                    else "maximize")
+                if eff_dir == "minimize":
+                    ok = delta <= float(noise_floor_pct)
+                    bound_note = f"ceiling +{noise_floor_pct}%"
+                else:
+                    ok = delta >= -float(noise_floor_pct)
+                    bound_note = f"floor -{noise_floor_pct}%"
                 rows.append({
                     "check": f"{primary} vs incumbent measurement",
                     "passed": ok,
                     "detail": f"{value:.4g} vs {ref:.4g} ({delta:+.1f}%,"
-                              f" floor -{noise_floor_pct}%)",
+                              f" {bound_note})",
                 })
                 passed = passed and ok
         else:
@@ -609,8 +618,10 @@ def cmd_bundle(args: argparse.Namespace) -> int:
     noise = float(((request.get("acceptance") or {}).get("noise_floor_pct"))
                   or 5.0)
 
+    direction = (((study or {}).get("protocol") or {}).get(
+        "primary_metric") or {}).get("direction")
     judged = judge_acceptance(acceptance, baseline, drills, noise,
-                              router_installed)
+                              router_installed, direction=direction)
     unverified = list(UNVERIFIED_ALWAYS)
     if adopted:
         unverified += UNVERIFIED_ADOPTED
@@ -673,11 +684,24 @@ def cmd_bundle(args: argparse.Namespace) -> int:
     (out / "autoscaling").mkdir(exist_ok=True)
     _write_text(out / "autoscaling" / "README.md", autoscaling_note(release))
 
-    incumbent_arm = None
-    if study:
+    incumbent_cfg = _load(out / "llmd-config.json")
+    prov_arm = (incumbent_cfg.get("provenance") or {}).get("arm")
+    if (not prov_arm and request.get("incumbent_config_path")
+            and pathlib.Path(request["incumbent_config_path"]).is_file()):
+        prov_arm = (_load(request["incumbent_config_path"]).get(
+            "provenance") or {}).get("arm")
+    incumbent_arm = prov_arm if (prov_arm and prov_arm != "baseline") else None
+    if not incumbent_arm and study:
         for arm in study.get("arms") or []:
             if (arm.get("result") or {}).get("verdict") == "win":
                 incumbent_arm = arm.get("arm")
+    if not incumbent_arm:
+        if prov_arm:
+            incumbent_arm = prov_arm
+        elif study and any(
+                a.get("arm") == "baseline" and a.get("status") == "decided"
+                for a in (study.get("arms") or [])):
+            incumbent_arm = "baseline"
     _write_text(out / "search-ledger.md", search_ledger(study, incumbent_arm))
     _write_text(out / "acceptance-report.md",
                 acceptance_report(request, release, judged, acceptance,

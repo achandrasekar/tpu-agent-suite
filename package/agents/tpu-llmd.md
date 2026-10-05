@@ -217,7 +217,7 @@ rebuild it from events.
       | `release_name` | `<study_id truncated to 30 chars>-<arm>` |
       | `replicates` | `protocol.replicate_count` |
       | `sweep_budget` | `inner_sweep_budget` from `llmd-study.json` |
-      | `baseline_value` | `baseline.metric.value` from the state |
+      | `baseline_value` | the current incumbent's metric value (`provenance.metric.value` in `<llmd>/incumbent/llmd-config.json`, or `baseline.metric.value` from the state if no arm has won yet) |
       | `protocol_digest` | the state's protocol digest, if shown |
 
       In `approve` mode an arm that changes replica count or topology costs
@@ -230,10 +230,12 @@ rebuild it from events.
       the arm to `blocked` with `blocked_on` = its `summary` (it starts
       with `blocked_on_adopted_fleet:` or `blocked_on_engine_capability:`);
       no chip was spent and the incumbent stands. **On `win`**, copy its
-      `config_path` over `<llmd>/incumbent/llmd-config.json`: the next arm
-      is measured on top of the new incumbent, which is what makes the
-      search a hill-climb rather than a set of independent trials.
-      On any other verdict the incumbent stands.
+      `config_path` over `<llmd>/incumbent/llmd-config.json` (which carries
+      `provenance.arm` and `provenance.metric.value` from the winning
+      measurement): the next arm is both branched from and scored against
+      the new incumbent, which is what makes the search a hill-climb rather
+      than a set of independent trials. On any other verdict the incumbent
+      stands.
 
 6.  **Integrate.** Two commands, the only writes you make to the study:
 

@@ -279,6 +279,10 @@ class EvaluateArmTest(_Quiet):
         self.assertEqual(result["execution_id"], "e2")
         self.assertAlmostEqual(result["metric"]["value"], 0.83)
         self.assertEqual(chosen_cfg["engine"]["max_num_seqs"], 384)
+        self.assertEqual(chosen_cfg["provenance"]["arm"], "a1")
+        self.assertEqual(chosen_cfg["provenance"]["execution_id"], "e2")
+        self.assertAlmostEqual(
+            chosen_cfg["provenance"]["metric"]["value"], 0.83)
         self.assertEqual(len(result["sweep_ledger"]), 3)
         self.assertTrue(all(g["execution_id"] == "e2" for g in result["gates"]))
 
@@ -734,6 +738,88 @@ class PromoteReleaseTest(_Quiet):
                     "bundle", "--request", str(tmp / "promote-request.json"),
                     "--out", str(tmp / "bundle"),
                     "--release-dir", str(release_dir)])
+
+    def test_bundle_minimize_cost_metric_acceptance(self):
+        def _cost_report(exec_id, cost_val):
+            rep = _report(exec_id, 2.5)
+            rep["primary_metric"] = "cost_per_1M_tokens_at_slo"
+            rep["metrics"]["cost_per_1M_tokens_at_slo"] = {"value": cost_val}
+            return rep
+
+        # Lower cost (-10%) is an improvement under minimize and must pass;
+        # higher cost (+20%) exceeds the +5% ceiling and must fail.
+        passed = promote_release.judge_acceptance(
+            _cost_report("e2", 0.90), _cost_report("e1", 1.00),
+            [self._drill_row()], noise_floor_pct=5.0, router_installed=True)
+        self.assertTrue(passed["passed"], passed)
+        self.assertTrue(any("ceiling +5.0%" in r["detail"]
+                            for r in passed["rows"]))
+
+        failed = promote_release.judge_acceptance(
+            _cost_report("e3", 1.20), _cost_report("e1", 1.00),
+            [self._drill_row()], noise_floor_pct=5.0, router_installed=True)
+        self.assertFalse(failed["passed"], failed)
+        self.assertEqual(
+            [r["check"] for r in failed["rows"] if not r["passed"]],
+            ["cost_per_1M_tokens_at_slo vs incumbent measurement"])
+
+    def test_bundle_prefers_provenance_arm_and_falls_back_to_baseline(self):
+        study = {
+            "study_id": "acme-chat-study", "status": "converged",
+            "protocol": {"primary_metric": {
+                "name": "goodput_at_slo_per_chip", "direction": "maximize",
+                "unit": "rps/chip"}, "noise_floor_pct": 5,
+                "replicate_count": 3},
+            "baseline": {"metric": {"value": 2.5, "unit": "rps/chip"},
+                         "execution_id": "e0"},
+            "arms": [
+                {"arm": "baseline", "kind": "baseline", "status": "decided",
+                 "claim": "control", "result": {
+                     "verdict": "tie", "execution_id": "e0",
+                     "metric": {"value": 2.5}}},
+                {"arm": "a0", "kind": "routing-policy", "status": "decided",
+                 "claim": "sticky", "result": {
+                     "verdict": "tie", "execution_id": "e1",
+                     "metric": {"value": 2.52, "delta_pct": 0.8}}},
+            ],
+        }
+        with tempfile.TemporaryDirectory() as d:
+            tmp = pathlib.Path(d)
+            rc, _ = self._bundle(
+                tmp, acceptance=_report("e2", 2.5), baseline=_report("e0", 2.5),
+                drill=self._drill_row(), study=study)
+            self.assertEqual(rc, 0)
+            ledger = (tmp / "bundle" / "search-ledger.md").read_text()
+            self.assertIn("baseline **(incumbent)**", ledger)
+
+        # When provenance.arm is explicitly stamped on the incumbent config,
+        # it takes precedence over scanning study arms.
+        with tempfile.TemporaryDirectory() as d:
+            tmp = pathlib.Path(d)
+            release_dir = _production_release(tmp)
+            cfg_path = release_dir / "llmd-config.json"
+            cfg = json.loads(cfg_path.read_text())
+            cfg["provenance"] = {"arm": "a0", "execution_id": "e1"}
+            cfg_path.write_text(json.dumps(cfg))
+            _promote_request(tmp, cfg)
+            (tmp / "acceptance.json").write_text(
+                json.dumps(_report("e2", 2.5)))
+            (tmp / "baseline.json").write_text(
+                json.dumps(_report("e1", 2.52)))
+            (tmp / "drill.json").write_text(
+                json.dumps(self._drill_row()))
+            (tmp / "study.json").write_text(json.dumps(study))
+            rc = promote_release.main([
+                "bundle", "--request", str(tmp / "promote-request.json"),
+                "--out", str(tmp / "bundle"),
+                "--release-dir", str(release_dir),
+                "--acceptance", str(tmp / "acceptance.json"),
+                "--baseline-report", str(tmp / "baseline.json"),
+                "--drill", str(tmp / "drill.json"),
+                "--study-state", str(tmp / "study.json")])
+            self.assertEqual(rc, 0)
+            ledger = (tmp / "bundle" / "search-ledger.md").read_text()
+            self.assertIn("a0 **(incumbent)**", ledger)
 
 
 class ProductionGuardTest(unittest.TestCase):
