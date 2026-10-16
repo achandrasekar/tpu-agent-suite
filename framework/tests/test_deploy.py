@@ -1948,5 +1948,229 @@ class CliTest(unittest.TestCase):
         self.assertIn("interactive-chat", out["entries"])
 
 
+# A recipe shaped like the InferenceX AgentX Qwen3.5 stack: the engine is a
+# role script with env, one whole tpu7x host per engine, weights on a
+# ReadOnlyMany PVC, llm-d-router main images, the turn-priority EPP config.
+AGENTX_RECIPE = {
+    "model": "Qwen/Qwen3.5-397B-A17B-FP8",
+    "image": "us-docker.pkg.dev/x/vllm-tpu/torchtpu-vllm-prod:infx-qwen35",
+    "accelerator": {"tpu_accelerator": "tpu7x", "tpu_topology": "2x2x1",
+                    "chips_per_host": 4},
+    "tensor_parallel": 8,
+    "max_model_len": 262144,
+    "engine_flavor": "torchtpu",
+    "source": {"repo": "SemiAnalysisAI/InferenceX",
+               "ref": "main", "token_secret": "infx-token"},
+    "router_images": {"epp": pins.AGENTX_EPP_IMAGE,
+                      "sidecar": pins.AGENTX_SIDECAR_IMAGE},
+    "launch": {
+        "command": ["bash", "benchmarks/multi_node/agentic/"
+                            "qwen3.5_fp8_tpuv7_vllm-disagg_server.sh"],
+        "ports": {"prefill": 8000, "decode": 7200},
+        "role_env": {
+            "prefill": {"MODEL": "Qwen/Qwen3.5-397B-A17B-FP8",
+                        "PREFILL_TP": 8, "VLLM_HTTP_TIMEOUT_KEEP_ALIVE": 900,
+                        "PREFILL_RAIDEN_ENGINE_ID": "$(POD_NAME)",
+                        "TPU_RAIDEN_ADVERTISE_HOST": "$(POD_IP)"},
+            "decode": {"MODEL": "Qwen/Qwen3.5-397B-A17B-FP8", "DECODE_TP": 8,
+                       "MAX_NUM_SEQS_DECODE": 32,
+                       "VLLM_HTTP_TIMEOUT_KEEP_ALIVE": 900},
+        },
+        "knobs": {
+            "max_num_seqs": {"env": "MAX_NUM_SEQS_DECODE", "roles": ["decode"]},
+            "kv_cpu_offload_bytes": {"env": "PREFILL_KV_CPU_OFFLOAD_BYTES",
+                                     "roles": ["prefill"], "unit": "GiB"},
+            "hma_max_inflight_pulls": {"env": "TPU_HMA_MAX_INFLIGHT_PULLS"},
+        },
+        "sidecar_args": pins.AGENTX_SIDECAR_ARGS,
+    },
+    "pod": {
+        "privileged": True,
+        "working_dir": "/workdir",
+        "resources": {"limits": {"google.com/tpu": 4}},
+        "tolerations": [{"key": "google.com/tpu", "operator": "Exists",
+                         "effect": "NoSchedule"}],
+        "volumes": [
+            {"name": "tpu-cache", "hostPath": {
+                "path": "/var/lib/tpu-cache", "type": "DirectoryOrCreate"}},
+            {"name": "model-cache", "persistentVolumeClaim": {
+                "claimName": "qwen-cache-ro", "readOnly": True}},
+        ],
+        "volume_mounts": [
+            {"name": "tpu-cache", "mountPath": "/root/.cache"},
+            {"name": "model-cache", "mountPath": "/mnt/models-ro",
+             "readOnly": True},
+        ],
+        "init_containers": [{"name": "tpu-node-setup", "image": "busybox",
+                             "securityContext": {"privileged": True},
+                             "command": ["sh", "-c", "sysctl -w x=1"]}],
+    },
+    "measured": {"sessions_per_prefill_engine": 96,
+                 "sessions_per_decode_engine": 112},
+}
+
+
+class AgentXLaunchRenderTest(unittest.TestCase):
+
+    def _config(self, **engine):
+        cfg = render.default_config(AGENTX_RECIPE, replicas=1)
+        cfg["topology"]["mode"] = "disaggregated"
+        cfg["topology"]["prefill"] = {"replicas": 3, "tp": 8}
+        cfg["topology"]["decode"]["tp"] = 8
+        cfg["router"]["profile"] = "agentx-turn-priority"
+        for role, knobs in engine.items():
+            cfg["topology"][role]["engine"] = knobs
+        return cfg
+
+    def test_image_values_fold_a_digest_into_the_chart_fields(self):
+        v = render.image_values(pins.AGENTX_EPP_IMAGE)
+        self.assertEqual(v["registry"], "ghcr.io")
+        self.assertEqual(v["repository"],
+                         "llm-d/llm-d-router-endpoint-picker@sha256")
+        self.assertEqual(f"{v['registry']}/{v['repository']}:{v['tag']}",
+                         pins.AGENTX_EPP_IMAGE)
+        v = render.image_values("ghcr.io/llm-d/llm-d-router-endpoint-picker:v0.11.0")
+        self.assertEqual((v["repository"], v["tag"]),
+                         ("llm-d/llm-d-router-endpoint-picker", "v0.11.0"))
+
+    def test_document_profiles_render_as_written(self):
+        cfg = self._config()
+        doc = render.epp_config(cfg)
+        self.assertEqual(doc["apiVersion"], "llm-d.ai/v1")
+        self.assertEqual(doc["featureGates"], ["flowControl"])
+        self.assertEqual(doc["flowControl"]["defaultPriorityBand"]
+                         ["fairnessPolicyRef"], "program-aware-fairness")
+        types = [p["type"] for p in doc["plugins"]]
+        self.assertEqual(types[:2], ["agent-identity", "program-aware-fairness"])
+        self.assertIn("session-affinity-filter", types)
+        self.assertEqual([sp["name"] for sp in doc["schedulingProfiles"]],
+                         ["prefill", "decode"])
+        # nofc: the same document minus its flow-control half.
+        cfg["router"]["profile"] = "agentx-session-affinity"
+        nofc = render.epp_config(cfg)
+        self.assertNotIn("featureGates", nofc)
+        self.assertNotIn("flowControl", nofc)
+        self.assertNotIn("program-aware-fairness",
+                         [p["type"] for p in nofc["plugins"]])
+        self.assertEqual(nofc["schedulingProfiles"],
+                         doc["schedulingProfiles"])
+        # Saturation thresholds merge into the flow-control block; a plugin
+        # override reaches a plugin by its name.
+        cfg["router"]["profile"] = "agentx-turn-priority"
+        cfg["router"]["flow_control"] = {"saturation_detector": {
+            "queueDepthThreshold": 20, "kvCacheUtilThreshold": 0.95}}
+        cfg["router"]["plugins"] = {"active-requests": {"weight": 2},
+                                    "program-aware-fairness": {
+                                        "turnPriorityTimeWeight": 0.1}}
+        tuned = render.epp_config(cfg)
+        self.assertEqual(tuned["flowControl"]["saturationDetector"]
+                         ["queueDepthThreshold"], 20)
+        fair = next(p for p in tuned["plugins"]
+                    if p["type"] == "program-aware-fairness")
+        self.assertEqual(fair["parameters"]["turnPriorityTimeWeight"], 0.1)
+        # A document profile that routes P/D refuses an aggregated fleet,
+        # and flow control cannot be switched on where the document has none.
+        agg = render.default_config(AGENTX_RECIPE)
+        agg["router"]["profile"] = "agentx-session-affinity"
+        with self.assertRaises(DeployError):
+            render.validate_config(agg)
+        cfg["router"]["profile"] = "agentx-session-affinity"
+        with self.assertRaises(DeployError):
+            render.epp_config(cfg)
+
+    def test_router_values_take_the_recipe_images_and_experimental_flag(self):
+        cfg = self._config()
+        values = render.router_values("agx", cfg, env=dict(ENV_SUBSET),
+                                      recipe=AGENTX_RECIPE)
+        epp = values["router"]["epp"]
+        self.assertTrue(epp["flags"]["allow-experimental-plugins"])
+        self.assertEqual(epp["image"]["tag"],
+                         pins.AGENTX_EPP_IMAGE.split("sha256:")[1])
+        plain = render.router_values("agx", render.default_config(RECIPE),
+                                     env=dict(ENV_SUBSET), recipe=RECIPE)
+        self.assertNotIn("image", plain["router"]["epp"])
+
+    def test_launch_recipe_renders_the_inferencex_pod(self):
+        cfg = self._config(decode={"max_num_seqs": 48},
+                           prefill={"kv_cpu_offload_bytes": 256})
+        cfg["engine"] = {"hma_max_inflight_pulls": 16}
+        docs = render.modelserver_manifests("agx", AGENTX_RECIPE, cfg,
+                                            dict(ENV_SUBSET), False)["items"]
+        deps = {d["metadata"]["name"]: d for d in docs
+                if d["kind"] == "Deployment"}
+        dec = deps["agx-decode"]["spec"]["template"]["spec"]
+        pf = deps["agx-prefill"]["spec"]["template"]["spec"]
+        c = dec["containers"][0]
+        env = {e["name"]: e.get("value") for e in c["env"]}
+        self.assertEqual(c["command"], AGENTX_RECIPE["launch"]["command"])
+        self.assertNotIn("args", c)
+        self.assertEqual(c["workingDir"], "/workdir")
+        self.assertEqual(env["ROLE"], "decode")
+        self.assertEqual(env["DECODE_TP"], "8")
+        # The knob overrides the role default by name, once.
+        self.assertEqual(env["MAX_NUM_SEQS_DECODE"], "48")
+        self.assertEqual([e["name"] for e in c["env"]].count(
+            "MAX_NUM_SEQS_DECODE"), 1)
+        self.assertEqual(env["TPU_HMA_MAX_INFLIGHT_PULLS"], "16")
+        self.assertNotIn("PREFILL_KV_CPU_OFFLOAD_BYTES", env)
+        # Neither the renderer's P/D env nor its offload env leaks in.
+        self.assertNotIn("TPU_SIDE_CHANNEL_PORT", env)
+        self.assertEqual(c["ports"][0]["containerPort"], 7200)
+        self.assertEqual(c["resources"], {"limits": {"google.com/tpu": 4}})
+        self.assertTrue(c["securityContext"]["privileged"])
+        self.assertEqual(c["startupProbe"]["httpGet"]["path"], "/health")
+        self.assertEqual(c["startupProbe"]["failureThreshold"], 240)
+        mounts = {m["name"]: m["mountPath"] for m in c["volumeMounts"]}
+        self.assertEqual(mounts["model-cache"], "/mnt/models-ro")
+        self.assertEqual(mounts["workdir"], "/workdir")
+        self.assertNotIn("torch-compile-cache", mounts)
+        vols = {v["name"] for v in dec["volumes"]}
+        self.assertEqual(vols, {"dshm", "workdir", "tpu-cache", "model-cache"})
+        inits = [i["name"] for i in dec["initContainers"]]
+        self.assertEqual(inits, ["tpu-node-setup", "clone", "routing-proxy"])
+        clone = dec["initContainers"][1]
+        self.assertIn("main", clone["args"][0])
+        self.assertIn("x-access-token:${TOKEN}@github.com/"
+                      "SemiAnalysisAI/InferenceX.git",
+                      clone["args"][0])
+        sidecar = dec["initContainers"][2]
+        self.assertEqual(sidecar["image"], pins.AGENTX_SIDECAR_IMAGE)
+        self.assertEqual(sidecar["args"], [
+            "--port=8000", "--model-server-port=7200",
+            "--kv-connector=nixlv2", "--secure-serving=false"])
+        self.assertEqual(dec["tolerations"][0]["key"], "google.com/tpu")
+        # Prefill: its own port, its own knobs, bytes from GiB.
+        pc = pf["containers"][0]
+        penv = {e["name"]: e.get("value") for e in pc["env"]}
+        self.assertEqual(pc["ports"][0]["containerPort"], 8000)
+        self.assertEqual(penv["PREFILL_KV_CPU_OFFLOAD_BYTES"],
+                         str(256 * (1 << 30)))
+        self.assertNotIn("MAX_NUM_SEQS_DECODE", penv)
+        self.assertEqual(penv["TPU_HMA_MAX_INFLIGHT_PULLS"], "16")
+        names = [e["name"] for e in pc["env"]]
+        self.assertLess(names.index("POD_NAME"),
+                        names.index("PREFILL_RAIDEN_ENGINE_ID"))
+        self.assertEqual(penv["PREFILL_RAIDEN_ENGINE_ID"], "$(POD_NAME)")
+        self.assertEqual(deps["agx-prefill"]["spec"]["replicas"], 3)
+        self.assertEqual(render.total_chips(AGENTX_RECIPE, cfg), 16)
+
+    def test_unmapped_knob_is_refused_by_name(self):
+        cfg = self._config(decode={"max_num_batched_tokens": 4096})
+        with self.assertRaises(DeployError) as ctx:
+            render.modelserver_manifests("agx", AGENTX_RECIPE, cfg,
+                                         dict(ENV_SUBSET), False)
+        self.assertEqual(ctx.exception.error_code, "ENGINE_KNOB_UNMAPPED")
+        # A plain image still takes the whitelisted flags without a map,
+        # and refuses a mapped-only knob it cannot express.
+        plain = render.default_config(RECIPE)
+        plain["engine"] = {"max_num_seqs": 64}
+        self.assertIn("--max-num-seqs=64", render.vllm_args(RECIPE, plain))
+        plain["engine"] = {"hma_max_inflight_pulls": 4}
+        with self.assertRaises(DeployError) as ctx:
+            render.modelserver_manifests("p", RECIPE, plain,
+                                         dict(ENV_SUBSET), False)
+        self.assertEqual(ctx.exception.error_code, "ENGINE_KNOB_UNMAPPED")
+
+
 if __name__ == "__main__":
     unittest.main()

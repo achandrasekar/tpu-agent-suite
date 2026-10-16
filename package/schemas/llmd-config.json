@@ -301,9 +301,11 @@
             "sticky-until-saturated",
             "prefix-weighted",
             "load-only",
-            "session-sticky"
+            "session-sticky",
+            "agentx-turn-priority",
+            "agentx-session-affinity"
           ],
-          "description": "passthrough: no EPP; requests go to the model-server Service and kube-proxy spreads them. It is the control every router arm is measured against and the baseline of an adopted fleet. The others name an EndpointPickerConfig the renderer carries."
+          "description": "passthrough: no EPP; requests go to the model-server Service and kube-proxy spreads them. It is the control every router arm is measured against and the baseline of an adopted fleet. The others name an EndpointPickerConfig the renderer carries. agentx-turn-priority / agentx-session-affinity are the two InferenceX AgentX EndpointPickerConfigs (llm-d.ai/v1: P/D, per-profile session affinity, active-request scoring; the first with flow control and program-aware fairness, the second without), rendered as written; they need `recipe.router_images` pointing at llm-d-router main and a disaggregated topology."
         },
         "plugins": {
           "type": "object",

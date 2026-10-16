@@ -1,0 +1,180 @@
+{
+ "model": "Qwen/Qwen3.5-397B-A17B-FP8",
+ "image": "us-central1-docker.pkg.dev/<project>/vllm-tpu/vllm-torchtpu:<tag>",
+ "engine_flavor": "torchtpu",
+ "accelerator": {
+  "tpu_accelerator": "tpu7x",
+  "tpu_topology": "2x2x1",
+  "chips_per_host": 4
+ },
+ "tensor_parallel": 8,
+ "max_model_len": 262144,
+ "tokenizer": "Qwen/Qwen3.5-397B-A17B-FP8",
+ "resources": {
+  "shm": "256Gi"
+ },
+ "fleet": {
+  "mode": "managed"
+ },
+ "source": {
+  "repo": "SemiAnalysisAI/InferenceX",
+  "ref": "main",
+  "token_secret": "inferencex-github-token"
+ },
+ "router_images": {
+  "epp": "ghcr.io/llm-d/llm-d-router-endpoint-picker@sha256:713f62c0f2db1b0805c23e04c6fedea9680fa6d82185d749cb4a8e416531b889",
+  "sidecar": "ghcr.io/llm-d/llm-d-router-disagg-sidecar@sha256:98d3020eebe3a5605d52ef3a0cc0a0565ab7a5486f0205a33a3397a62e1ef1fe"
+ },
+ "launch": {
+  "command": [
+   "bash",
+   "benchmarks/multi_node/agentic/qwen3.5_fp8_tpuv7_vllm-disagg_server.sh"
+  ],
+  "ports": {
+   "prefill": 8000,
+   "decode": 7200
+  },
+  "readiness_path": "/health",
+  "startup_timeout_s": 7200,
+  "sidecar_args": [
+   "--port={port}",
+   "--model-server-port={decode_port}",
+   "--kv-connector={connector}",
+   "--secure-serving=false"
+  ],
+  "role_env": {
+   "prefill": {
+    "MODEL": "Qwen/Qwen3.5-397B-A17B-FP8",
+    "SERVED_MODEL": "Qwen3.5-397B-A17B-FP8",
+    "PREFILL_TP": 8,
+    "PREFILL_RAIDEN_ENGINE_ID": "$(POD_NAME)",
+    "TPU_RAIDEN_ADVERTISE_HOST": "$(POD_IP)",
+    "MTP_NUM_SPECULATIVE_TOKENS_PREFILL": 1,
+    "VLLM_ENGINE_READY_TIMEOUT_S": 2700,
+    "VLLM_HTTP_TIMEOUT_KEEP_ALIVE": 900,
+    "MODEL_HUB_CACHE": "/mnt/models-ro/hub"
+   },
+   "decode": {
+    "MODEL": "Qwen/Qwen3.5-397B-A17B-FP8",
+    "SERVED_MODEL": "Qwen3.5-397B-A17B-FP8",
+    "DECODE_TP": 8,
+    "DECODE_RAIDEN_ENGINE_ID": "$(POD_NAME)",
+    "TPU_RAIDEN_ADVERTISE_HOST": "$(POD_IP)",
+    "MTP_NUM_SPECULATIVE_TOKENS_DECODE": 3,
+    "SYNTHETIC_ACCEPTANCE_LENGTH": 3.39,
+    "MAX_NUM_SEQS_DECODE": 32,
+    "VLLM_ENGINE_READY_TIMEOUT_S": 2700,
+    "VLLM_HTTP_TIMEOUT_KEEP_ALIVE": 900,
+    "MODEL_HUB_CACHE": "/mnt/models-ro/hub"
+   }
+  },
+  "knobs": {
+   "max_num_seqs": {
+    "env": "MAX_NUM_SEQS_DECODE",
+    "roles": [
+     "decode"
+    ]
+   },
+   "kv_cpu_offload_bytes": {
+    "env": "PREFILL_KV_CPU_OFFLOAD_BYTES",
+    "roles": [
+     "prefill"
+    ],
+    "unit": "GiB"
+   },
+   "hma_max_inflight_pulls": {
+    "env": "TPU_HMA_MAX_INFLIGHT_PULLS"
+   },
+   "mtp_num_speculative_tokens": {
+    "env": "MTP_NUM_SPECULATIVE_TOKENS_DECODE",
+    "roles": [
+     "decode"
+    ]
+   }
+  }
+ },
+ "pod": {
+  "strategy": "Recreate",
+  "privileged": true,
+  "working_dir": "/workdir",
+  "termination_grace_period_s": 180,
+  "resources": {
+   "requests": {
+    "cpu": "48",
+    "memory": "780Gi",
+    "google.com/tpu": 4
+   },
+   "limits": {
+    "cpu": "180",
+    "memory": "850Gi",
+    "google.com/tpu": 4
+   }
+  },
+  "tolerations": [
+   {
+    "key": "google.com/tpu",
+    "operator": "Exists",
+    "effect": "NoSchedule"
+   }
+  ],
+  "volumes": [
+   {
+    "name": "logs",
+    "emptyDir": {}
+   },
+   {
+    "name": "tpu-cache",
+    "hostPath": {
+     "path": "/var/lib/tpu-cache",
+     "type": "DirectoryOrCreate"
+    }
+   },
+   {
+    "name": "model-cache",
+    "persistentVolumeClaim": {
+     "claimName": "qwen35-397b-fp8-cache-ro",
+     "readOnly": true
+    }
+   }
+  ],
+  "volume_mounts": [
+   {
+    "name": "logs",
+    "mountPath": "/logs"
+   },
+   {
+    "name": "tpu-cache",
+    "mountPath": "/root/.cache"
+   },
+   {
+    "name": "model-cache",
+    "mountPath": "/mnt/models-ro",
+    "readOnly": true
+   }
+  ],
+  "init_containers": [
+   {
+    "name": "tpu-node-setup",
+    "image": "busybox",
+    "securityContext": {
+     "privileged": true
+    },
+    "command": [
+     "sh",
+     "-c"
+    ],
+    "args": [
+     "sysctl -w vm.max_map_count=8388608; if [ -f /sys/module/vfio_iommu_type1/parameters/dma_entry_limit ]; then echo 2000000 > /sys/module/vfio_iommu_type1/parameters/dma_entry_limit; fi"
+    ]
+   }
+  ]
+ },
+ "measured": {
+  "sessions_per_prefill_engine": 96,
+  "sessions_per_decode_engine": 112
+ },
+ "notes": {
+  "origin": "Reference serving recipe template for Qwen3.5-397B-A17B-FP8 on tpu7x behind llm-d.",
+  "source": "Replace `image`, `source.ref`, `source.token_secret` and the `model-cache` PVC claim name with your cluster's values before rendering."
+ }
+}

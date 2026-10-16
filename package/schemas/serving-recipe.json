@@ -161,6 +161,16 @@
           "type": "number",
           "minimum": 0,
           "description": "Generation tokens/s one replica sustains at its decode knee (TPOT within SLO); with peak_prefill_throughput it sizes the opening xP:yD shape."
+        },
+        "sessions_per_prefill_engine": {
+          "type": "number",
+          "minimum": 1,
+          "description": "Closed-loop sessions one prefill engine serves before its prefix cache thrashes (AgentX sizing prior)."
+        },
+        "sessions_per_decode_engine": {
+          "type": "number",
+          "minimum": 1,
+          "description": "Closed-loop sessions one decode engine serves with KV headroom (AgentX sizing prior)."
         }
       }
     },
@@ -187,7 +197,28 @@
     },
     "source": {
       "type": "object",
-      "description": "Where this recipe came from (run ids, report paths)."
+      "description": "Where this recipe came from (run ids, report paths), and -- when `repo` is set -- the repository the launch script lives in, which an init container clones into `mount_path` (default /workdir) before the engine starts.",
+      "properties": {
+        "repo": {
+          "type": "string",
+          "description": "`owner/name` on GitHub or a full URL."
+        },
+        "ref": {
+          "type": "string",
+          "description": "Commit, branch or tag to fetch (default main)."
+        },
+        "token_secret": {
+          "type": "string",
+          "description": "Secret holding a token for a private repository."
+        },
+        "token_key": {
+          "type": "string",
+          "description": "Key in that Secret (default token)."
+        },
+        "mount_path": {
+          "type": "string"
+        }
+      }
     },
     "engine_flavor": {
       "type": "string",
@@ -227,6 +258,203 @@
     "tokenizer": {
       "type": "string",
       "description": "Hugging Face tokenizer id the load generator counts tokens with, when the served model name is not a hub id (a simulated fleet, a private mirror). Defaults to `model`."
+    },
+    "launch": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Present when the engine is started by its own command (a role script that reads env) instead of `vllm serve <args>`. The InferenceX AgentX Qwen3.5 stack is one: `bash benchmarks/multi_node/agentic/<...>_server.sh` with ROLE and ~120 env vars. The renderer places the command, the role's env and the fleet's knobs (through `knobs`); it does not know the script.",
+      "required": [
+        "command"
+      ],
+      "properties": {
+        "command": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Container command, e.g. [\"bash\", \"benchmarks/multi_node/agentic/qwen3.5_fp8_tpuv7_vllm-disagg_server.sh\"]. The renderer adds env ROLE=prefill|decode."
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Container args after the command, when the command still takes flags; knobs mapped to `arg` merge into them."
+        },
+        "role_env": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "prefill": {
+              "type": "object",
+              "additionalProperties": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ]
+              }
+            },
+            "decode": {
+              "type": "object",
+              "additionalProperties": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ]
+              }
+            },
+            "aggregated": {
+              "type": "object",
+              "additionalProperties": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ]
+              }
+            }
+          },
+          "description": "Env the role needs beyond `recipe.env` (PREFILL_TP, DECODE_TP, MAX_NUM_SEQS_DECODE, MODEL, ...). Knobs override these by name."
+        },
+        "ports": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "prefill": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "decode": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "description": "Ports the script binds per role (InferenceX: prefill 8000, decode 7200 behind the sidecar on 8000)."
+        },
+        "knobs": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "env": {
+                "type": "string"
+              },
+              "arg": {
+                "type": "string"
+              },
+              "unit": {
+                "type": "string",
+                "enum": [
+                  "GiB"
+                ]
+              },
+              "roles": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "prefill",
+                    "decode"
+                  ]
+                }
+              }
+            }
+          },
+          "description": "How each whitelisted engine knob (`engine.*` / `topology.<role>.engine.*` in llmd-config) reaches this engine: an env var the script reads or a flag. A knob the planner proposes without a mapping is refused at render time with ENGINE_KNOB_UNMAPPED. `unit: GiB` writes bytes from a GiB value; `roles` limits a mapping to some roles. Example: {\"max_num_seqs\": {\"env\": \"MAX_NUM_SEQS_DECODE\", \"roles\": [\"decode\"]}, \"kv_cpu_offload_bytes\": {\"env\": \"PREFILL_KV_CPU_OFFLOAD_BYTES\", \"roles\": [\"prefill\"], \"unit\": \"GiB\"}}."
+        },
+        "sidecar_args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "P/D routing-sidecar args when the router images are not v0.11.0; placeholders {port}, {decode_port}, {connector}. The llm-d-router main sidecar takes [\"--port={port}\", \"--model-server-port={decode_port}\", \"--kv-connector={connector}\", \"--secure-serving=false\"]."
+        },
+        "readiness_path": {
+          "type": "string",
+          "description": "HTTP path the startup and readiness probes poll (default /health)."
+        },
+        "startup_timeout_s": {
+          "type": "integer",
+          "minimum": 60,
+          "description": "How long a cold start may take before the pod is restarted (default 7200: a cold TPU compile of a 397B model is ~30 min, longer under a cold cache)."
+        }
+      }
+    },
+    "pod": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Pod pieces the engine needs that the renderer cannot derive: rendered verbatim into the model-server pod after this schema. Written by the person porting a launcher, not by the search.",
+      "properties": {
+        "volumes": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "description": "Extra pod volumes (a ReadOnlyMany weights PVC, a hostPath compile cache, an emptyDir for logs)."
+        },
+        "volume_mounts": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "description": "Mounts for those volumes on the engine container."
+        },
+        "init_containers": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "description": "Init containers run before the engine (sysctls, cache pruning)."
+        },
+        "privileged": {
+          "type": "boolean",
+          "description": "Run the engine container privileged with IPC_LOCK, as the TPU launchers do."
+        },
+        "security_context": {
+          "type": "object",
+          "description": "Full container securityContext, when `privileged` is not enough."
+        },
+        "resources": {
+          "type": "object",
+          "description": "Full container resources, replacing the renderer's defaults (the chip request is added when absent). An engine with hundreds of GB of host RSS must not inherit the default 64Gi limit."
+        },
+        "tolerations": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "working_dir": {
+          "type": "string"
+        },
+        "termination_grace_period_s": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "router_images": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "EPP and P/D sidecar images when the pinned v0.11.0 ones will not do: the InferenceX AgentX config is `llm-d.ai/v1` and needs llm-d-router main builds (named by digest in that launcher).",
+      "properties": {
+        "epp": {
+          "type": "string"
+        },
+        "sidecar": {
+          "type": "string"
+        }
+      }
+    },
+    "notes": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "Free-text provenance a human wrote next to the numbers (which values are priors, what to confirm before submitting). Never read by the renderer."
     }
   },
   "examples": [

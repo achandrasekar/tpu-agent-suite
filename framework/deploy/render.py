@@ -153,6 +153,98 @@ ROUTER_PROFILES: dict[str, dict[str, Any]] = {
     },
 }
 
+
+def _agentx_session_plugins() -> list[dict[str, Any]]:
+    """The P/D + per-profile session-affinity plugin set of the InferenceX
+    AgentX router config (benchmarks/llm-d/turn-priority-config.yaml),
+    without the flow-control plugins."""
+    session = {"sources": [{"header": "x-dynamo-parent-session-id"},
+                           {"header": "x-dynamo-session-id"}],
+               "evictionTtlSeconds": 14400, "evictionSweepSeconds": 30}
+    return [
+        {"type": "always-disagg-pd-decider"},
+        {"type": "disagg-profile-handler",
+         "parameters": {"deciders": {"prefill": "always-disagg-pd-decider"}}},
+        {"type": "prefill-filter"},
+        {"type": "decode-filter"},
+        {"type": "inflight-load-producer"},
+        {"type": "session-affinity-filter", "name": "session-affinity-prefill",
+         "parameters": {"strategy": "session_id", "profileName": "prefill",
+                        "sessionIdConfig": copy.deepcopy(session)}},
+        {"type": "session-affinity-filter", "name": "session-affinity-decode",
+         "parameters": {"strategy": "session_id",
+                        "sessionIdConfig": copy.deepcopy(session)}},
+        {"type": "active-request-scorer", "name": "active-requests"},
+        {"type": "max-score-picker"},
+    ]
+
+
+AGENTX_SCHEDULING_PROFILES = [
+    {"name": "prefill", "plugins": [
+        {"pluginRef": "prefill-filter"},
+        {"pluginRef": "session-affinity-prefill"},
+        {"pluginRef": "active-requests"},
+        {"pluginRef": "max-score-picker"},
+    ]},
+    {"name": "decode", "plugins": [
+        {"pluginRef": "decode-filter"},
+        {"pluginRef": "session-affinity-decode"},
+        {"pluginRef": "active-requests"},
+        {"pluginRef": "max-score-picker"},
+    ]},
+]
+# The fairness / flow-control half of the turn-priority config. Removing
+# it produces the `nofc` (session-affinity without flowControl) A/B
+# profile; `router.flow_control: null` on the turn-priority profile
+# renders exactly that.
+AGENTX_FLOW_PLUGINS = [
+    {"type": "agent-identity",
+     "parameters": {"additionalSessionHeaders": [
+         "x-dynamo-parent-session-id", "x-dynamo-session-id"]}},
+    {"type": "program-aware-fairness",
+     "parameters": {"strategy": "turn-priority",
+                    "turnPriorityTimeWeight": 0.05,
+                    "turnPriorityInactivitySeconds": 120,
+                    "evictionTtlSeconds": 3600,
+                    "evictionSweepSeconds": 300}},
+]
+AGENTX_FLOW_CONTROL = {
+    "defaultRequestTTL": "600s",
+    "defaultPriorityBand": {"fairnessPolicyRef": "program-aware-fairness"},
+}
+
+# Whole-document router profiles: the EndpointPickerConfig is taken as
+# written (apiVersion and all) instead of being composed from a scorer
+# set. These are the InferenceX AgentX router configs;
+# both need the llm-d-router *main* EPP (`recipe.router_images`) and a
+# disaggregated topology.
+#   agentx-turn-priority: flow control with program-aware fairness, P/D,
+#     per-profile session affinity, active-request scoring.
+#   agentx-session-affinity: the same without flow control (`nofc`).
+DOCUMENT_PROFILES: dict[str, dict[str, Any]] = {
+    "agentx-turn-priority": {
+        "api_version": "llm-d.ai/v1",
+        "experimental": True,
+        "pd_only": True,
+        "source": "SemiAnalysisAI/InferenceX "
+                  "benchmarks/llm-d/turn-priority-config.yaml",
+        "feature_gates": ["flowControl"],
+        "flow_plugins": AGENTX_FLOW_PLUGINS,
+        "flow_control": AGENTX_FLOW_CONTROL,
+        "plugins": _agentx_session_plugins(),
+        "scheduling_profiles": AGENTX_SCHEDULING_PROFILES,
+    },
+    "agentx-session-affinity": {
+        "api_version": "llm-d.ai/v1",
+        "experimental": True,
+        "pd_only": True,
+        "source": "SemiAnalysisAI/InferenceX "
+                  "benchmarks/llm-d (epp `nofc`)",
+        "plugins": _agentx_session_plugins(),
+        "scheduling_profiles": AGENTX_SCHEDULING_PROFILES,
+    },
+}
+
 # Engine knobs the fleet may tune, and the vllm flag each sets. The
 # whitelist is the boundary with the engine-optimization domains: a knob
 # not listed here is a recommendation for tpu-performance, not an arm.
@@ -164,6 +256,15 @@ ENGINE_FLAGS: dict[str, str] = {
     "max_model_len": "--max-model-len",
 }
 ENGINE_SWITCHES: dict[str, str] = {"async_scheduling": "--async-scheduling"}
+# Knobs with no vLLM flag of their own: they reach the engine only through
+# a recipe's `launch.knobs` map (an env var the engine's launch script
+# reads, or a flag the image adds). Named here so the planner may propose
+# them; a recipe without a mapping refuses the arm at render time.
+ENGINE_MAPPED_ONLY: tuple[str, ...] = (
+    "kv_cpu_offload_bytes",      # host-DRAM prefix tier size per engine
+    "hma_max_inflight_pulls",    # decode-side KV pull concurrency
+    "mtp_num_speculative_tokens",
+)
 
 NAME_RE = re.compile(r"^[a-z0-9]([-a-z0-9]{0,38}[a-z0-9])?$")
 
@@ -388,17 +489,26 @@ def validate_config(config: dict[str, Any],
     if offload is not None and not isinstance(offload, dict):
         raise DeployError("kv.tiered_host must be an object",
                           error_code="INVALID_FIELD")
-    if profile != PASSTHROUGH_PROFILE and profile not in ROUTER_PROFILES:
+    if profile != PASSTHROUGH_PROFILE and profile not in ROUTER_PROFILES \
+            and profile not in DOCUMENT_PROFILES:
         raise DeployError(
             f"router.profile {profile!r} is not one of"
-            f" {sorted(ROUTER_PROFILES) + [PASSTHROUGH_PROFILE]}",
+            f" {sorted(ROUTER_PROFILES) + sorted(DOCUMENT_PROFILES)}"
+            f" + [{PASSTHROUGH_PROFILE!r}]",
+            error_code="INVALID_FIELD")
+    if profile in DOCUMENT_PROFILES and DOCUMENT_PROFILES[profile].get(
+            "pd_only") and config["topology"].get("mode") != "disaggregated":
+        raise DeployError(
+            f"router.profile {profile!r} routes prefill and decode pools;"
+            " it needs topology.mode: disaggregated",
             error_code="INVALID_FIELD")
     if profile == PASSTHROUGH_PROFILE and config["router"].get("plugins"):
         raise DeployError(
             "router.plugins has no effect under the passthrough profile;"
             " there is no EPP to configure",
             error_code="INVALID_FIELD")
-    allowed = set(ENGINE_FLAGS) | set(ENGINE_SWITCHES)
+    allowed = set(ENGINE_FLAGS) | set(ENGINE_SWITCHES) | set(
+        ENGINE_MAPPED_ONLY)
     scopes = [("engine", config["engine"])] + [
         (f"topology.{role}.engine",
          (config["topology"].get(role) or {}).get("engine") or {})
@@ -737,6 +847,12 @@ def vllm_args(recipe: dict[str, Any], config: dict[str, Any],
     for key, flag in ENGINE_FLAGS.items():
         if engine.get(key) is not None:
             overrides[flag] = engine[key]
+    unmapped = sorted(k for k in engine if k in ENGINE_MAPPED_ONLY)
+    if unmapped:
+        raise DeployError(
+            f"engine knob(s) {unmapped} have no vLLM flag; this image would"
+            " need recipe.launch.knobs to say how they reach the engine",
+            error_code="ENGINE_KNOB_UNMAPPED")
     if config["kv"].get("block_size"):
         overrides["--block-size"] = int(config["kv"]["block_size"])
     switches = {
@@ -858,6 +974,130 @@ def offload_env(config: dict[str, Any]) -> list[dict[str, str]]:
     return out
 
 
+def launch_spec(recipe: dict[str, Any]) -> dict[str, Any] | None:
+    """`recipe.launch` when the engine is started by its own command (a
+    role script that reads env) instead of `vllm serve <args>`; None for
+    a plain image."""
+    launch = recipe.get("launch")
+    return dict(launch) if launch else None
+
+
+def engine_ports(recipe: dict[str, Any], config: dict[str, Any]
+                 ) -> dict[str, int]:
+    """Port each role's engine listens on. Under P/D decode sits behind
+    the sidecar, which takes the model-server port; the recipe's
+    `launch.ports` names what its script binds (InferenceX: 8000 / 7200)."""
+    pd = config["topology"].get("mode") == "disaggregated"
+    launch = launch_spec(recipe) or {}
+    ports = dict(launch.get("ports") or {})
+    prefill = int(ports.get("prefill") or pins.MODEL_SERVER_PORT)
+    decode = int(ports.get("decode") or (
+        pins.PD_DECODE_PORT if pd else pins.MODEL_SERVER_PORT))
+    if not pd:
+        decode = int(ports.get("decode") or pins.MODEL_SERVER_PORT)
+    return {ROLE_PREFILL: prefill, ROLE_DECODE: decode}
+
+
+def knob_env(recipe: dict[str, Any], config: dict[str, Any], role: str
+             ) -> tuple[list[dict[str, str]], dict[str, Any]]:
+    """Resolve a role's engine overlay through the recipe's knob map.
+
+    Returns (env entries, flag overrides). A knob mapped to `env` becomes
+    an environment variable the launch script reads; one mapped to `arg`
+    becomes a flag (for a `launch.command` that still takes vLLM flags
+    through `launch.args`). A whitelisted knob the recipe does not map is
+    refused: the arm is not tunable on this engine, and the executor
+    records that rather than a silent no-op.
+    """
+    launch = launch_spec(recipe)
+    engine = role_engine(config, role)
+    if not engine:
+        return [], {}
+    knobs = dict((launch or {}).get("knobs") or {})
+    env_out: list[dict[str, str]] = []
+    flags: dict[str, Any] = {}
+    for key in sorted(engine):
+        value = engine[key]
+        spec = knobs.get(key)
+        if spec is None and launch is None and key in ENGINE_FLAGS:
+            flags[ENGINE_FLAGS[key]] = value
+            continue
+        if spec is None and launch is None and key in ENGINE_SWITCHES:
+            flags[ENGINE_SWITCHES[key]] = bool(value)
+            continue
+        if not spec:
+            raise DeployError(
+                f"engine knob {key!r} has no mapping on this recipe"
+                + (" (add it to recipe.launch.knobs)" if launch else
+                   " (no vLLM flag; the image would need recipe.launch.knobs)"),
+                error_code="ENGINE_KNOB_UNMAPPED")
+        roles = spec.get("roles")
+        if roles and role not in roles:
+            continue
+        if spec.get("env"):
+            env_out.append({"name": str(spec["env"]), "value": _knob_text(
+                value, spec)})
+        elif spec.get("arg"):
+            flags[str(spec["arg"])] = value
+        else:
+            raise DeployError(
+                f"recipe.launch.knobs.{key} must name `env` or `arg`",
+                error_code="INVALID_FIELD")
+    return env_out, flags
+
+
+def _dedupe_env(env_list: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep the last entry per name, in first-seen order: a knob overrides
+    the role default it tunes without the pod carrying both."""
+    last = {e["name"]: e for e in env_list}
+    seen: set[str] = set()
+    out = []
+    for e in env_list:
+        if e["name"] in seen:
+            continue
+        seen.add(e["name"])
+        out.append(last[e["name"]])
+    return out
+
+
+def _knob_text(value: Any, spec: dict[str, Any]) -> str:
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    unit = spec.get("unit")
+    if unit == "GiB" and isinstance(value, (int, float)):
+        # The knob is written in GiB for a human; the engine reads bytes.
+        return str(int(float(value) * (1 << 30)))
+    return str(value)
+
+
+def _source_init_container(recipe: dict[str, Any]) -> dict[str, Any] | None:
+    """Clone the repository the launch script lives in, as the InferenceX
+    launcher does (alpine/git, shallow fetch of one ref, token from a
+    Secret)."""
+    source = dict(recipe.get("source") or {})
+    if not source.get("repo"):
+        return None
+    ref = str(source.get("ref") or "main")
+    repo = str(source["repo"])
+    mount = str(source.get("mount_path") or "/workdir")
+    token_env = []
+    url = f"https://github.com/{repo}.git" if "/" in repo and \
+        "://" not in repo else repo
+    if source.get("token_secret"):
+        token_env = [{"name": "TOKEN", "valueFrom": {"secretKeyRef": {
+            "name": str(source["token_secret"]),
+            "key": str(source.get("token_key") or "token")}}}]
+        url = url.replace("https://", "https://x-access-token:${TOKEN}@", 1)
+    script = (f"set -e; cd {mount}; git init -q; git remote add origin"
+              f" \"{url}\"; git fetch --depth 1 -q origin \"{ref}\";"
+              " git checkout -q FETCH_HEAD;"
+              " if [ -f .gitmodules ]; then git submodule update --init"
+              " --recursive --depth 1 || true; fi")
+    return {"name": "clone", "image": "alpine/git:latest",
+            "env": token_env, "command": ["sh", "-c"], "args": [script],
+            "volumeMounts": [{"name": "workdir", "mountPath": mount}]}
+
+
 def _server_deployment(name: str, role: str, recipe: dict[str, Any],
                        config: dict[str, Any], env: dict[str, Any],
                        production: bool) -> dict[str, Any]:
@@ -871,14 +1111,14 @@ def _server_deployment(name: str, role: str, recipe: dict[str, Any],
     # Every pod of a multi-host group requests all of its node's chips.
     chips_per_pod = chips // hosts if hosts > 1 else chips
     slice_shape = pool.get("slice") or accel.get("tpu_topology") or ""
-    resources = dict(recipe.get("resources") or {})
+    sizing = dict(recipe.get("resources") or {})
     if sim:
-        limits = {"memory": resources.get("memory", SIM_MEMORY),
-                  "cpu": str(resources.get("cpu", SIM_CPU))}
+        limits = {"memory": sizing.get("memory", SIM_MEMORY),
+                  "cpu": str(sizing.get("cpu", SIM_CPU))}
     else:
         limits = {
-            "memory": resources.get("memory", DEFAULT_MEMORY),
-            "cpu": str(resources.get("cpu", DEFAULT_CPU)),
+            "memory": sizing.get("memory", DEFAULT_MEMORY),
+            "cpu": str(sizing.get("cpu", DEFAULT_CPU)),
             pins.TPU_RESOURCE: chips_per_pod,
         }
     pod_labels = {
@@ -905,11 +1145,19 @@ def _server_deployment(name: str, role: str, recipe: dict[str, Any],
     # The simulator refuses to start its KV cache without POD_IP (found
     # live: "IP should be defined in the environment (POD_IP)"), so a sim
     # pod always carries it.
-    needs_pod_ip = pd or bool(config["kv"].get("precise_routing")) or sim
+    needs_pod_ip = pd or bool(config["kv"].get("precise_routing")) or sim \
+        or bool(recipe.get("launch"))
     if needs_pod_ip:
         env_list.append({"name": "POD_IP", "valueFrom": {
             "fieldRef": {"fieldPath": "status.podIP"}}})
-    if pd and not sim:
+    if recipe.get("launch"):
+        # A launch script's role env may expand `$(POD_NAME)` / `$(POD_IP)`
+        # (Kubernetes expands earlier env in later values): one Raiden
+        # engine id per pod, the advertise address, and so on.
+        env_list.append({"name": "POD_NAME", "valueFrom": {
+            "fieldRef": {"fieldPath": "metadata.name"}}})
+    scripted = bool(recipe.get("launch"))
+    if pd and not sim and not scripted:
         env_list += [
             {"name": "TPU_SIDE_CHANNEL_PORT",
              "value": str(pins.TPU_SIDE_CHANNEL_PORT)},
@@ -919,7 +1167,9 @@ def _server_deployment(name: str, role: str, recipe: dict[str, Any],
         if role == ROLE_PREFILL:
             env_list.append({"name": "VLLM_HTTP_TIMEOUT_KEEP_ALIVE",
                              "value": "120"})
-    if not sim:
+    if not sim and not scripted:
+        # A launch script owns its connector env; host offload reaches it
+        # through the knob map (`kv_cpu_offload_bytes`), not these.
         env_list += offload_env(config)
     for key in sorted(recipe.get("env") or {}):
         env_list.append({"name": key, "value": str(recipe["env"][key])})
@@ -928,9 +1178,22 @@ def _server_deployment(name: str, role: str, recipe: dict[str, Any],
         for key in sorted(multihost.get("env") or {}):
             env_list.append({"name": key,
                              "value": str(multihost["env"][key])})
+    launch = launch_spec(recipe)
+    pod_extra = dict(recipe.get("pod") or {})
+    knob_flags: dict[str, Any] = {}
+    if launch:
+        # A script-driven engine: the role's env from the recipe, then the
+        # fleet's knobs through the recipe's map. Later names win, so a
+        # knob overrides the role default it tunes.
+        role_env = dict((launch.get("role_env") or {}).get(role) or {})
+        for key in sorted(role_env):
+            env_list.append({"name": key, "value": str(role_env[key])})
+        env_list.append({"name": "ROLE", "value": role})
+        knob_env_list, knob_flags = knob_env(recipe, config, role)
+        env_list += knob_env_list
+        env_list = _dedupe_env(env_list)
 
-    engine_port = pins.PD_DECODE_PORT if (pd and role == ROLE_DECODE) else \
-        pins.MODEL_SERVER_PORT
+    engine_port = engine_ports(recipe, config)[role]
     ports = [{"name": MODELSERVER_CONTAINER, "containerPort": engine_port,
               "protocol": "TCP"}]
     if pd and not sim:
@@ -948,27 +1211,63 @@ def _server_deployment(name: str, role: str, recipe: dict[str, Any],
              "protocol": "TCP"},
         ]
 
+    if launch:
+        command = list(launch.get("command") or [])
+        if not command:
+            raise DeployError("recipe.launch.command is required",
+                              error_code="INVALID_FIELD")
+        args = merge_args(list(launch.get("args") or []), knob_flags, {}) \
+            if (launch.get("args") or knob_flags) else []
+        ready_path = str(launch.get("readiness_path") or "/health")
+        startup_s = int(launch.get("startup_timeout_s") or 7200)
+    else:
+        command = [] if sim else ["vllm", "serve"]
+        args = sim_args(recipe, config, role) if sim else \
+            vllm_args(recipe, config, role)
+        ready_path = "/v1/models"
+        startup_s = 3600
+    resources = {"limits": limits, "requests": dict(limits)}
+    if pod_extra.get("resources"):
+        # The recipe owns the pod's resources outright (an engine whose
+        # host RSS is hundreds of GB must not inherit a 64Gi limit); the
+        # chip request is added when it left it out.
+        resources = copy.deepcopy(pod_extra["resources"])
+        if not sim:
+            resources.setdefault("limits", {}).setdefault(
+                pins.TPU_RESOURCE, chips_per_pod)
+    mounts = [
+        {"mountPath": "/.cache", "name": "torch-compile-cache"},
+        {"mountPath": "/.triton", "name": "triton-cache"},
+        {"mountPath": "/.config", "name": "vllm-config"},
+        {"mountPath": "/dev/shm", "name": "dshm"},
+    ]
+    if launch:
+        # A launch script decides its own cache layout; the three vLLM
+        # scratch mounts would shadow paths it may use.
+        mounts = [m for m in mounts if m["name"] == "dshm"]
+    source_init = _source_init_container(recipe)
+    if source_init:
+        mounts.append({"name": "workdir",
+                       "mountPath": source_init["volumeMounts"][0][
+                           "mountPath"]})
+    mounts += copy.deepcopy(pod_extra.get("volume_mounts") or [])
     container = {
         "name": MODELSERVER_CONTAINER,
         "image": recipe["image"],
-        **({} if sim else {"command": ["vllm", "serve"]}),
-        "args": sim_args(recipe, config, role) if sim else
-                vllm_args(recipe, config, role),
+        **({"command": command} if command else {}),
+        **({"args": args} if args else {}),
+        **({"workingDir": str(pod_extra["working_dir"])}
+           if pod_extra.get("working_dir") else {}),
         "env": env_list,
         "ports": ports,
-        "resources": {"limits": limits, "requests": dict(limits)},
-        "volumeMounts": [
-            {"mountPath": "/.cache", "name": "torch-compile-cache"},
-            {"mountPath": "/.triton", "name": "triton-cache"},
-            {"mountPath": "/.config", "name": "vllm-config"},
-            {"mountPath": "/dev/shm", "name": "dshm"},
-        ],
+        "resources": resources,
+        "volumeMounts": mounts,
         "startupProbe": {
-            "httpGet": {"path": "/v1/models", "port": MODELSERVER_CONTAINER},
+            "httpGet": {"path": ready_path, "port": MODELSERVER_CONTAINER},
             "initialDelaySeconds": 15,
             "periodSeconds": 30,
             "timeoutSeconds": 5,
-            "failureThreshold": 120,
+            "failureThreshold": max(1, startup_s // 30),
         },
         "livenessProbe": {
             "httpGet": {"path": "/health", "port": MODELSERVER_CONTAINER},
@@ -977,12 +1276,18 @@ def _server_deployment(name: str, role: str, recipe: dict[str, Any],
             "failureThreshold": 3,
         },
         "readinessProbe": {
-            "httpGet": {"path": "/v1/models", "port": MODELSERVER_CONTAINER},
+            "httpGet": {"path": ready_path, "port": MODELSERVER_CONTAINER},
             "periodSeconds": 5,
             "timeoutSeconds": 2,
             "failureThreshold": 3,
         },
     }
+    if pod_extra.get("privileged"):
+        container["securityContext"] = {
+            "privileged": True, "capabilities": {"add": ["IPC_LOCK"]}}
+    if pod_extra.get("security_context"):
+        container["securityContext"] = copy.deepcopy(
+            pod_extra["security_context"])
     node_selector: dict[str, str] = {}
     if sim:
         node_selector = dict(env.get("cpu_node_selector") or {})
@@ -994,24 +1299,41 @@ def _server_deployment(name: str, role: str, recipe: dict[str, Any],
         if hosts > 1 and accel.get("placement_policy"):
             node_selector[pins.PLACEMENT_POLICY_LABEL] = str(
                 accel["placement_policy"])
+    volumes: list[dict[str, Any]] = [
+        {"name": "torch-compile-cache", "emptyDir": {}},
+        {"name": "triton-cache", "emptyDir": {}},
+        {"name": "vllm-config", "emptyDir": {}},
+        {
+            "name": "dshm",
+            "emptyDir": {
+                "medium": "Memory",
+                "sizeLimit": (recipe.get("resources") or {}).get(
+                    "shm", SIM_SHM if sim else DEFAULT_SHM)
+            }
+        },
+    ]
+    if launch:
+        volumes = [v for v in volumes if v["name"] == "dshm"]
+    if source_init:
+        volumes.append({"name": "workdir", "emptyDir": {}})
+    volumes += copy.deepcopy(pod_extra.get("volumes") or [])
     pod_spec: dict[str, Any] = {
         "serviceAccountName": f"{name}-modelserver",
         **({"nodeSelector": node_selector} if node_selector else {}),
         "containers": [container],
-        "volumes": [
-            {"name": "torch-compile-cache", "emptyDir": {}},
-            {"name": "triton-cache", "emptyDir": {}},
-            {"name": "vllm-config", "emptyDir": {}},
-            {
-                "name": "dshm",
-                "emptyDir": {
-                    "medium": "Memory",
-                    "sizeLimit": resources.get(
-                        "shm", SIM_SHM if sim else DEFAULT_SHM)
-                }
-            },
-        ],
+        "volumes": volumes,
     }
+    if pod_extra.get("tolerations"):
+        pod_spec["tolerations"] = copy.deepcopy(pod_extra["tolerations"])
+    if pod_extra.get("termination_grace_period_s"):
+        pod_spec["terminationGracePeriodSeconds"] = int(
+            pod_extra["termination_grace_period_s"])
+    init_containers: list[dict[str, Any]] = copy.deepcopy(
+        pod_extra.get("init_containers") or [])
+    if source_init:
+        init_containers.append(source_init)
+    if init_containers:
+        pod_spec["initContainers"] = init_containers
     if pd and role == ROLE_DECODE:
         # The routing sidecar fronts decode on the model-server port and
         # forwards prefill to the pod the EPP named in PD_PREFILL_HEADER.
@@ -1019,22 +1341,23 @@ def _server_deployment(name: str, role: str, recipe: dict[str, Any],
         # guide's patch-sidecar.yaml adds it.
         sidecar_conn = (config["kv"].get("pd_connector") or {}).get(
             "sidecar_connector") or "nixlv2"
-        pod_spec["initContainers"] = [{
+        sidecar_args = list((launch or {}).get("sidecar_args") or
+                            pins.PD_SIDECAR_ARGS)
+        sidecar_args = [a.format(port=pins.MODEL_SERVER_PORT,
+                                 decode_port=engine_port,
+                                 connector=sidecar_conn)
+                        for a in sidecar_args]
+        pod_spec.setdefault("initContainers", []).append({
             "name": "routing-proxy",
-            "image": f"{pins.PD_SIDECAR_IMAGE}:{pins.PD_SIDECAR_VERSION}",
+            "image": router_images(recipe)["sidecar"],
             "restartPolicy": "Always",
-            "args": [
-                f"--port={pins.MODEL_SERVER_PORT}",
-                f"--kv-connector={sidecar_conn}",
-                "--zap-log-level=1",
-                "--secure-proxy=false",
-            ],
+            "args": sidecar_args,
             "ports": [{"name": "proxy",
                        "containerPort": pins.MODEL_SERVER_PORT,
                        "protocol": "TCP"}],
             "resources": {"requests": {"cpu": "1", "memory": "1Gi"},
                           "limits": {"memory": "4Gi"}},
-        }]
+        })
     metadata = {
         "name": f"{name}-{role}",
         "labels": pod_labels,
@@ -1242,6 +1565,59 @@ EXPERIMENTAL_PLUGINS = {p["type"] for p in PREDICTED_LATENCY_PLUGINS} | {
     "session-affinity-scorer"}
 
 
+def _document_epp_config(config: dict[str, Any]) -> dict[str, Any]:
+    """An EndpointPickerConfig from a whole-document profile.
+
+    The document is taken as its source wrote it; the profile *name* is
+    the A/B (turn-priority carries flow control, session-affinity does
+    not). Two knobs still apply: `router.flow_control` as an object merges
+    `saturation_detector` / `request_ttl` into a profile that has flow
+    control (and is refused on one that has not); `router.plugins`
+    overrides a plugin's parameters by its `name` or `type`.
+    """
+    router = config["router"]
+    profile = DOCUMENT_PROFILES[router["profile"]]
+    plugins = copy.deepcopy(profile["plugins"])
+    doc: dict[str, Any] = {"apiVersion": profile["api_version"],
+                           "kind": pins.EPP_CONFIG_KIND}
+    flow = router.get("flow_control")
+    if profile.get("flow_control"):
+        block = copy.deepcopy(profile["flow_control"])
+        if isinstance(flow, dict):
+            if flow.get("request_ttl"):
+                block["defaultRequestTTL"] = str(flow["request_ttl"])
+            detector = dict(flow.get("saturation_detector") or {})
+            if detector:
+                det_type = detector.pop("type", "utilization-detector")
+                block["saturationDetector"] = {"type": det_type,
+                                               **detector}
+        doc["featureGates"] = list(profile.get("feature_gates") or [])
+        doc["flowControl"] = block
+        plugins = copy.deepcopy(profile.get("flow_plugins") or []) + plugins
+    elif flow and not profile.get("flow_control"):
+        raise DeployError(
+            f"router.profile {router['profile']!r} has no flow-control"
+            " half to enable", error_code="INVALID_FIELD")
+    overrides = dict(router.get("plugins") or {})
+    known = {p.get("name") or p["type"] for p in plugins} | {
+        p["type"] for p in plugins}
+    unknown = set(overrides) - known
+    if unknown:
+        raise DeployError(
+            f"router.plugins names {sorted(unknown)}, which profile"
+            f" {router['profile']!r} does not instantiate",
+            error_code="INVALID_FIELD")
+    for p in plugins:
+        for key in (p.get("name"), p["type"]):
+            extra = dict(overrides.get(key) or {}) if key else {}
+            extra.pop("weight", None)
+            if extra:
+                p.setdefault("parameters", {}).update(extra)
+    doc["plugins"] = plugins
+    doc["schedulingProfiles"] = copy.deepcopy(profile["scheduling_profiles"])
+    return doc
+
+
 def epp_config(config: dict[str, Any]) -> dict[str, Any]:
     """The EndpointPickerConfig for the config's router profile and knobs.
 
@@ -1250,8 +1626,11 @@ def epp_config(config: dict[str, Any]) -> dict[str, Any]:
     and a disaggregated topology each add their documented block. The
     router profile's own scorers always stay in the decode-side profile so
     an advanced arm is "profile + one more thing", not a different router.
+    A whole-document profile (DOCUMENT_PROFILES) is rendered as written.
     """
     router = config["router"]
+    if router["profile"] in DOCUMENT_PROFILES:
+        return _document_epp_config(config)
     profile = ROUTER_PROFILES[router["profile"]]
     overrides = router.get("plugins") or {}
     plugins: list[dict[str, Any]] = []
@@ -1383,10 +1762,42 @@ def render_service_url(name: str, namespace: str, fleet: dict[str, Any]
     return f"http://{host}:{port}"
 
 
+def image_values(ref: str) -> dict[str, str]:
+    """Split an image reference into the chart's {registry, repository,
+    tag}. The chart renders `registry/repository:tag` and has no digest
+    field, so a `@sha256:` reference folds its `@sha256` into the
+    repository and its hex into the tag, which renders back to the same
+    reference."""
+    registry, _, rest = ref.partition("/")
+    if "." not in registry and ":" not in registry and registry != "localhost":
+        registry, rest = "docker.io", ref
+    if "@sha256:" in rest:
+        repository, _, digest = rest.partition("@sha256:")
+        return {"registry": registry, "repository": f"{repository}@sha256",
+                "tag": digest}
+    repository, _, tag = rest.rpartition(":")
+    if not repository:
+        repository, tag = rest, "latest"
+    return {"registry": registry, "repository": repository, "tag": tag}
+
+
+def router_images(recipe: dict[str, Any] | None) -> dict[str, str]:
+    """EPP and sidecar images for a release: the recipe's `router_images`
+    over the pinned v0.11.0 ones."""
+    images = dict((recipe or {}).get("router_images") or {})
+    return {
+        "epp": str(images.get("epp") or
+                   f"{pins.ROUTER_EPP_IMAGE}:{pins.ROUTER_EPP_VERSION}"),
+        "sidecar": str(images.get("sidecar") or
+                       f"{pins.PD_SIDECAR_IMAGE}:{pins.PD_SIDECAR_VERSION}"),
+    }
+
+
 def router_values(name: str, config: dict[str, Any],
                   fleet: dict[str, Any] | None = None,
                   env: dict[str, Any] | None = None,
-                  model: str = "", tenants: list[dict[str, Any]] | None = None
+                  model: str = "", tenants: list[dict[str, Any]] | None = None,
+                  recipe: dict[str, Any] | None = None,
                   ) -> dict[str, Any]:
     """Values for the standalone router chart: base + guide overrides.
 
@@ -1408,7 +1819,9 @@ def router_values(name: str, config: dict[str, Any],
         text = text.replace("${MODEL}", model or "").replace(
             "${RENDER_URL}", render_service_url(name, namespace, fleet))
     flags: dict[str, Any] = {"v": 2}
-    if any(p["type"] in EXPERIMENTAL_PLUGINS for p in epp_doc["plugins"]):
+    if any(p["type"] in EXPERIMENTAL_PLUGINS for p in epp_doc["plugins"]) \
+            or DOCUMENT_PROFILES.get(router["profile"], {}).get(
+                "experimental"):
         flags["allow-experimental-plugins"] = True
     if int(router.get("epp_replicas") or 1) > 1 and \
             router.get("epp_ha_mode") == "active-active":
@@ -1420,6 +1833,9 @@ def router_values(name: str, config: dict[str, Any],
         "pluginsCustomConfig": {EPP_CONFIG_KEY: text},
         "resources": sizing_for("epp", env),
     }
+    if (recipe or {}).get("router_images", {}).get("epp"):
+        epp["image"] = {**image_values(router_images(recipe)["epp"]),
+                        "pullPolicy": "IfNotPresent"}
     if env.get("control_plane_affinity"):
         epp["affinity"] = env["control_plane_affinity"]
     if env.get("control_plane_tolerations"):
@@ -1831,7 +2247,7 @@ def render_release(*,
     files["monitoring"] = MONITORING_FILE
     if router_installed:
         _write(out_dir / ROUTER_VALUES_FILE,
-               router_values(name, config, fleet, env=env,
+               router_values(name, config, fleet, env=env, recipe=recipe,
                              model=str(recipe["model"]),
                              tenants=profile["tenants"]))
         _write(out_dir / EPP_CONFIG_FILE, epp_config(config))

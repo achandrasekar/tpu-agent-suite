@@ -143,6 +143,27 @@ PD_PREFILL_HEADER = "x-prefiller-host-port"
 PD_SIDECAR_IMAGE = "ghcr.io/llm-d/llm-d-router-disagg-sidecar"
 PD_SIDECAR_VERSION = "v0.11.0"
 PD_DECODE_PORT = 8200  # vLLM behind the sidecar; the sidecar takes 8000
+# The v0.11.0 sidecar's flags. A recipe whose router images are a newer
+# main (the InferenceX AgentX stack names `--model-server-port` and
+# `--secure-serving`) overrides these through `launch.sidecar_args`.
+PD_SIDECAR_ARGS = ["--port={port}", "--kv-connector={connector}",
+                   "--zap-log-level=1", "--secure-proxy=false"]
+
+# The InferenceX AgentX llm-d stack for Qwen3.5-397B on tpu7x pins the
+# llm-d-router *main* builds it was validated against, by digest, because
+# v0.11.0 does not accept the `llm-d.ai/v1` EndpointPickerConfig its
+# turn-priority config uses (SemiAnalysisAI/InferenceX
+# runners/launch_tpuv7-llmd-gke.sh). Recipes name them in
+# `router_images`; nothing here selects them by default.
+AGENTX_EPP_IMAGE = ("ghcr.io/llm-d/llm-d-router-endpoint-picker@sha256:"
+                    "713f62c0f2db1b0805c23e04c6fedea9680fa6d82185d749cb4a8e"
+                    "416531b889")
+AGENTX_SIDECAR_IMAGE = ("ghcr.io/llm-d/llm-d-router-disagg-sidecar@sha256:"
+                        "98d3020eebe3a5605d52ef3a0cc0a0565ab7a5486f0205a33a"
+                        "3397a62e1ef1fe")
+AGENTX_SIDECAR_ARGS = ["--port={port}", "--model-server-port={decode_port}",
+                       "--kv-connector={connector}", "--secure-serving=false"]
+EPP_CONFIG_API_VERSION_V1 = "llm-d.ai/v1"
 
 # vLLM KV-event publishing for precise prefix routing
 # (guides/precise-prefix-cache-routing/modelserver/*/patch-vllm.yaml and
