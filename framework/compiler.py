@@ -621,6 +621,9 @@ def resource_registry(manifest: dict[str, Any]) -> dict[str, str]:
         "{{package}}": pkg_path,
         "{{package_tag}}": pkg_tag,
         "{{runs}}": utils.RUNS_HOME_SPELLING,
+        # The study store, for the few files that live beside a study
+        # rather than inside a run (a hypothesis bank sidecar).
+        "{{studies}}": utils.STUDIES_HOME_SPELLING,
         "{{runtime}}": runtime,
     }
 

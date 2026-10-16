@@ -7,8 +7,11 @@ description: >-
   recipe -- replica count, router profile, KV-reuse and engine fleet knobs --
   measured as goodput at the user's SLO per chip against a chosen workload.
   Reads the study state, harvests what returned, advances exactly one arm,
-  records the outcome, and exits. Not for making a single model faster, and
-  not for kernels, sharding or profiling.
+  records the outcome, and exits. When the fleet search plateaus with the
+  objective unmet it hands the bound role to tpu-performance-optimization as an engine
+  escalation and, on re-entry, folds the improved recipe back in. Not for
+  making a single model faster on its own, and not for kernels, sharding or
+  profiling.
 tools:
   - read
   - write
@@ -26,9 +29,13 @@ scripts:
   - scripts/tpu-llmd/render_protocol.py
   - scripts/tpu-llmd/seed_arms.py
   - scripts/tpu-llmd/evaluate_llmd_arm.py
+  - scripts/tpu-llmd/engine_escalation.py
+  - scripts/tpu-llmd/recipe_bump.py
+  - scripts/tpu-performance-optimization/hypothesis_bank.py
 references:
   - references/tpu-llmd/PROTOCOL.md
   - references/tpu-llmd/SEARCH.md
+  - references/tpu-llmd/ESCALATION.md
   - references/tpu-llmd/PLATFORM.md
   - references/tpu-llmd/ROUTER.md
   - references/tpu-llmd/HANDOFF.md
@@ -133,10 +140,13 @@ rebuild it from events.
     cannot hold) and `<llmd>/protocol/workload_profile.json`. The study
     exists after this; then `attach-run`.
 
-    If the study exists, `attach-run` and continue. Then read the
-    stopping rule out of what `status` just returned and go to **Finish**
-    when `round >= stopping_rule.max_rounds`, or when `plateau_rounds`
-    consecutive rounds produced no win. Branch on the number you just read.
+    If the study exists, `attach-run` and continue. **If your request
+    carries `engine_study_id`**, this is a re-entry round: go to
+    **Re-entry** below before anything else. Otherwise read the stopping
+    rule out of what `status` just returned; when `round >=
+    stopping_rule.max_rounds`, or when `plateau_rounds` consecutive rounds
+    produced no win, go to **Escalate or finish**. Branch on the number
+    you just read.
 
 2.  **Platform, once.** If the state carries no arms yet, dispatch
     {{agent:llmd-platform}} with an `llmd-platform-request` (`run_id`,
@@ -273,16 +283,21 @@ Fleet measurements are noisy: a load generator shares the cluster with the
 thing it measures. A round that reports a large improvement is a harness fault
 until it survives a repeat, and the executor's replicates exist for that.
 
-## Recommendations, not delegations
+## Recommendations, and the one hand-off
 
-The study tunes the fleet around a fixed single-replica recipe. When an arm's
+The study tunes the fleet around a single-replica recipe. When an arm's
 evidence says the *recipe* is the limit -- the SLO gate fails at every
-replica count because single-replica TPOT is already over the bound, or the
-knee of the sweep is below `target_qps / replicas` -- that is a finding for
-`tpu-performance-optimization` or `tpu-model-onboarding`, not for this study. Emit it as a
+shape because single-replica TPOT is already over the bound, or the knee
+of the sweep is below `target_qps / replicas` -- record it as a
 `recommendations[]` entry (`domain`, `finding`, the `operating_point`, the
-`evidence` path) in your result and keep the arm's verdict as measured. You
-do not delegate to those agents and you do not reopen the recipe.
+`evidence` path) and keep the arm's verdict as measured. You never
+delegate to `tpu-performance-optimization` or `tpu-model-onboarding` yourself.
+
+The engine escalation (**Escalate or finish**, below) is the one path by
+which the recipe is reopened, and it is a hand-off through the caller,
+not a delegation: you write the escalation artifact, open the engine
+study, and return `engine_escalation`; `tpu-coworker` runs the engine
+rounds and brings you back with `engine_study_id`.
 
 ## Mode and bound
 
@@ -303,6 +318,97 @@ name what they wait on -- a connector the image lacks
 (`blocked_on_adopted_fleet`) -- and they stay blocked until a probe or the
 recipe's `fleet.mode` changes, which is a user decision, not a round
 decision. Report them in the final table as findings.
+
+## Escalate or finish
+
+The stopping rule fired. Before closing, ask whether the fleet is the
+limit or the engine is (`{{reference:tpu-llmd/ESCALATION.md}}` has the
+reasoning; the script has the rule):
+
+```bash
+python3 {{script:tpu-llmd/engine_escalation.py}} prepare \
+    --study-state <llmd>/study-state.json --llmd-study <llmd>/protocol/llmd-study.json \
+    --protocol <llmd>/protocol/protocol.json --workload <workload_spec_path> \
+    --recipe <recipe_path> --incumbent <llmd>/incumbent/llmd-config.json \
+    --report <incumbent bench report> --profile <incumbent metrics.json> \
+    --arm-plans <llmd>/plans/arm_plans.json --plateau yes \
+    --run-id <run_id> --out <llmd>/escalations/<n>
+```
+
+(`<llmd>/study-state.json` is `study status` saved to a file; the
+incumbent's report and metrics are the paths in its arm's `artifacts`.)
+It writes `decision.json` and escalates only when **all** hold: the loop
+is enabled in `llmd-study.json`, the objective is unmet (a failed SLO
+gate at target rate, or a stated `objective_target` not reached), the
+search is at a plateau, fewer than `max_escalations` have happened, and
+the bound role was not already escalated and found exhausted. Otherwise
+go to **Finish** with its `blockers` in your `summary`.
+
+When it escalates it names a `role` (prefill, decode or the whole engine)
+and a bottleneck `kind`, and writes the operating point, an engine
+`study-protocol`, a microbenchmark config and hypothesis seeds. Then:
+
+1.  Open the engine study and admit the seeds:
+
+    ```bash
+    {{runtime}} study start --study-id <engine_study_id> --package {{package_tag}} \
+        --target <recipe model> --protocol <llmd>/escalations/<n>/engine-protocol.json
+    python3 {{script:tpu-performance-optimization/hypothesis_bank.py}} --study-id <engine_study_id> \
+        --run-id <run_id> --hypotheses-json <llmd>/escalations/<n>/hypotheses.json \
+        --tpu-version <recipe tpu_accelerator>
+    ```
+
+    The protocol's `mode` is the fleet protocol's; in `approve` mode the
+    caller asks the user before any engine round runs, which is why the
+    study is only opened here, never advanced.
+2.  Record the escalation on the fleet study: append `{n, engine_study_id,
+    role, kind, recipe_digest, opened_at}` to `engine_loop.escalations` in
+    `<llmd>/protocol/llmd-study.json`, `record-round` with every arm as it
+    stands, and `append-journal` a row naming the engine study and the
+    escalation path, so the next session finds the loop from the study
+    alone.
+3.  Return `study_status: engine_escalation` with the `engine_escalation`
+    block (`engine_study_id`, `role`, `kind`, `request_path` = the
+    `engine-escalation.json`, `mode`, `escalation`, `summary`). The fleet
+    study stays **open**: its rounds resume on re-entry. Do not close it.
+
+## Re-entry -- after the engine study closed
+
+Your request carries `engine_study_id`. Do not seed, plan or dispatch a
+search arm in this round. Instead:
+
+1.  `study status --study-id <engine_study_id>` saved to a file, and bump
+    the recipe from its win:
+
+    ```bash
+    python3 {{script:tpu-llmd/recipe_bump.py}} --recipe <recipe_path> \
+        --engine-study-state <llmd>/escalations/<n>/engine-study-state.json \
+        --hypothesis-bank {{studies}}/<engine_study_id>/hypothesis_bank.json \
+        --escalation <llmd>/escalations/<n>/engine-escalation.json \
+        --out <llmd>/escalations/<n>/bump
+    ```
+
+    `recipe-bump.json` says `bumped` (a new `serving-recipe.v<N+1>.json`
+    beside the old one, and an `llmd-protocol-amendment.json`), `no_win`
+    or `no_delta` (a win that recorded no serving change: report it, do
+    not guess at it).
+2.  On `bumped`: amend the fleet protocol so the fingerprint names the new
+    recipe (`study set-protocol` with the amendment's `fingerprint`), mark
+    every decided arm `stale_recipe` in your `round.json` summary field
+    (they stay in the ledger as history; none is the incumbent's
+    comparison any more), and dispatch the **incumbent shape** to
+    {{agent:llmd-arm-executor}} as a `baseline`-kind arm with
+    `recipe_path` = the new recipe. When it returns, `set-baseline` on its
+    measurement and copy its config to `<llmd>/incumbent/llmd-config.json`:
+    the search resumes next round on the new engine, from the shape that
+    was best on the old one. Report the bump in your result's
+    `recipe_bump` block and tell the caller the recipe path to use from
+    now on.
+3.  On `no_win` / `no_delta`: add the role to `engine_loop.exhausted_roles`
+    in `llmd-study.json`, record the round, and continue the fleet search
+    as a normal round (go to step 3b) -- the planner may still have arms;
+    if the stopping rule fires again, **Escalate or finish** will not
+    escalate that role twice.
 
 ## Finish
 

@@ -296,6 +296,8 @@ def resolve_workload(spec: dict[str, Any],
         "availability": availability,
         "budget": budget,
         "constraints": dict(spec.get("constraints") or {}),
+        # How far past the fleet the search may go (engine escalation).
+        "search": dict(spec.get("search") or {}),
         "overrides": {
             k: v for k, v in overrides.items() if k != "rate"
         },

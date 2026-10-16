@@ -43,6 +43,8 @@ seed_arms = _load("seed_arms")
 evaluate_llmd_arm = _load("evaluate_llmd_arm")
 plan_arms = _load("plan_arms")
 size_pd = _load("size_pd")
+engine_escalation = _load("engine_escalation")
+recipe_bump = _load("recipe_bump")
 promote_release = _load("promote_release")
 production_guard = _load("llmd_production_guard")
 chip_budget_guard = _load("llmd_chip_budget_guard")
@@ -973,6 +975,264 @@ class SizePdTest(_Quiet):
         self.assertEqual(doc["incumbent_shape"],
                          {"prefill_replicas": 1, "decode_replicas": 2})
         self.assertTrue(doc["neighbours"])
+
+
+def _llmd_state(arms, baseline_value=2.5, study_id="acme-chat"):
+    return {"study_id": study_id, "status": "open", "round": 4,
+            "protocol": {"primary_metric": {"name": "goodput_at_slo_per_chip",
+                                            "direction": "maximize",
+                                            "unit": "req/s/chip"},
+                         "replicate_count": 3, "noise_floor_pct": 5.0,
+                         "mode": "approve",
+                         "stopping_rule": {"max_rounds": 12,
+                                           "plateau_rounds": 3}},
+            "baseline": {"metric": {"name": "goodput_at_slo_per_chip",
+                                    "value": baseline_value},
+                         "execution_id": "e0"},
+            "arms": arms}
+
+
+def _failing_report(gate="tpot_p99_ms"):
+    rep = _report("e9", 2.4, admissible=False)
+    rep["tenants"] = {"interactive": {"slo": {
+        "ttft_p90_ms": {"pass": gate != "ttft_p90_ms", "measured_ms": 300},
+        gate: {"pass": False, "measured_ms": 80}}, "error_rate": 0.0,
+        "requests_per_sec": 84.0}}
+    return rep
+
+
+class EngineEscalationTest(_Quiet):
+    """The seam between the fleet search and the engine study."""
+
+    def _inputs(self, tmp, *, state, report, metrics=None, llmd_study=None,
+                incumbent=None, arm_plans=None):
+        from framework.deploy import render  # noqa: PLC0415
+        (tmp / "spec.json").write_text(json.dumps(SPEC))
+        (tmp / "recipe.json").write_text(json.dumps(RECIPE))
+        inc = incumbent or render.default_config(RECIPE, replicas=3)
+        (tmp / "inc.json").write_text(json.dumps(inc))
+        (tmp / "state.json").write_text(json.dumps(state))
+        (tmp / "report.json").write_text(json.dumps(report))
+        argv = ["prepare", "--study-state", str(tmp / "state.json"),
+                "--workload", str(tmp / "spec.json"),
+                "--recipe", str(tmp / "recipe.json"),
+                "--incumbent", str(tmp / "inc.json"),
+                "--report", str(tmp / "report.json"),
+                "--run-id", "run-1", "--out", str(tmp / "esc")]
+        if metrics is not None:
+            (tmp / "metrics.json").write_text(json.dumps(metrics))
+            argv += ["--profile", str(tmp / "metrics.json")]
+        if llmd_study is not None:
+            (tmp / "study.json").write_text(json.dumps(llmd_study))
+            argv += ["--llmd-study", str(tmp / "study.json")]
+        if arm_plans is not None:
+            (tmp / "plans.json").write_text(json.dumps(arm_plans))
+            argv += ["--arm-plans", str(tmp / "plans.json")]
+        return argv
+
+    def _run(self, argv):
+        import argparse  # noqa: PLC0415
+        parser = argparse.ArgumentParser()
+        sub = parser.add_subparsers(dest="cmd")
+        p = sub.add_parser("prepare")
+        for flag in ("--study-state", "--llmd-study", "--protocol",
+                     "--workload", "--recipe", "--incumbent", "--report",
+                     "--profile", "--arm-plans", "--plateau", "--study-id",
+                     "--run-id", "--out"):
+            p.add_argument(flag, default="no" if flag == "--plateau" else None)
+        return engine_escalation.prepare(parser.parse_args(argv))
+
+    def test_no_escalation_while_arms_are_open_or_objective_met(self):
+        arms = [{"arm": "a5", "kind": "routing-policy", "status": "open",
+                 "claim": "x", "since_round": 1}]
+        with tempfile.TemporaryDirectory() as d:
+            tmp = pathlib.Path(d)
+            res = self._run(self._inputs(tmp, state=_llmd_state(arms),
+                                         report=_failing_report()))
+            self.assertEqual(res["status"], "no_escalation")
+            self.assertIn("open arms", " ".join(res["decision"]["blockers"]))
+            # Objective met: nothing to escalate even at a plateau.
+            res = self._run(self._inputs(tmp, state=_llmd_state([]),
+                                         report=_report("e1", 2.6)))
+            self.assertEqual(res["status"], "no_escalation")
+            self.assertTrue(any("objective met" in b
+                                for b in res["decision"]["blockers"]))
+            # Loop disabled.
+            res = self._run(self._inputs(
+                tmp, state=_llmd_state([]), report=_failing_report(),
+                llmd_study={"engine_loop": {"enabled": False}}))
+            self.assertTrue(any("disabled" in b
+                                for b in res["decision"]["blockers"]))
+
+    def test_escalates_the_bound_role_with_protocol_and_seeds(self):
+        from framework import utils  # noqa: PLC0415
+        metrics = {"metrics": {"prefix_hit_rate": {"value": 0.7},
+                               "requests_running_mean": {"value": 60}},
+                   "roles": {"decode": {"requests_waiting_mean": {"value": 4},
+                                        "requests_running_mean": {"value": 96},
+                                        "kv_util_max": {"value": 0.5}},
+                             "prefill": {"requests_waiting_mean": {"value": 0}}}}
+        from framework.deploy import render  # noqa: PLC0415
+        inc = render.default_config(RECIPE, replicas=2)
+        inc["topology"]["mode"] = "disaggregated"
+        inc["topology"]["prefill"] = {"replicas": 1, "tp": 8}
+        inc["topology"]["decode"]["engine"] = {"max_num_seqs": 128}
+        plans = {"plans": {"a0": {"arm_kind": "topology.pd_shape",
+                                  "sweep_knobs": [
+                                      "topology.decode.engine.max_num_seqs"]}}}
+        arms = [{"arm": "a0", "kind": "fleet-topology", "status": "decided",
+                 "claim": "x", "since_round": 1,
+                 "result": {"verdict": "tie", "execution_id": "e9",
+                            "metric": {"name": "goodput_at_slo_per_chip",
+                                       "value": 2.4, "replicates": 3,
+                                       "delta_pct": -4.0,
+                                       "provenance": "measured"}}}]
+        with tempfile.TemporaryDirectory() as d:
+            tmp = pathlib.Path(d)
+            res = self._run(self._inputs(tmp, state=_llmd_state(arms),
+                                         report=_failing_report(),
+                                         metrics=metrics, incumbent=inc,
+                                         arm_plans=plans))
+            self.assertEqual(res["status"], "escalate", res)
+            esc = json.loads((tmp / "esc" / engine_escalation.ESCALATION_FILE)
+                             .read_text())
+            proto = json.loads((tmp / "esc" / engine_escalation.PROTOCOL_FILE)
+                               .read_text())
+            seeds = json.loads((tmp / "esc" / engine_escalation.HYPOTHESES_FILE)
+                               .read_text())
+            micro = json.loads(pathlib.Path(esc["microbench_path"]).read_text())
+            esc_schema = json.loads(
+                (_HERE.parents[1] / "schemas" / "engine-escalation.json")
+                .read_text())
+            proto_schema = json.loads(
+                (_HERE.parents[2] / "framework" / "schemas" /
+                 "study-protocol.json").read_text())
+        self.assertEqual(utils.validate_instance(esc, esc_schema), [])
+        self.assertEqual(utils.validate_instance(proto, proto_schema), [])
+        self.assertEqual(esc["role"], "decode")
+        self.assertEqual(esc["kind"], "scheduler-batching")
+        self.assertEqual(esc["engine_study_id"], "acme-chat-engine-decode-1")
+        self.assertEqual(proto["primary_metric"]["name"],
+                         "generation_tokens_per_s")
+        self.assertEqual(proto["measurement_cell"]["concurrency"], 96)
+        gate_metrics = {g["metric"] for g in proto["admissibility_gates"]}
+        self.assertIn("tpot_p90_ms", gate_metrics)
+        self.assertNotIn("ttft_p90_ms", gate_metrics)
+        self.assertEqual(proto["mode"], "approve")
+        self.assertEqual(proto["replicate_count"], 3)
+        # Seeds carry serving deltas; the knob the fleet swept is excluded.
+        self.assertEqual(esc["excluded_knobs"], ["--max-num-seqs"])
+        ids = [h["id"] for h in seeds["hypotheses"]]
+        self.assertNotIn("e-decode-max-seqs", ids)
+        self.assertIn("e-decode-kv-dtype", ids)
+        for h in seeds["hypotheses"]:
+            self.assertIn("serving", h["target_parameters"])
+            self.assertTrue(h["evidence"])
+        self.assertEqual(micro["load"]["stages"][0]["concurrency_level"], 96)
+        self.assertEqual(micro["data"]["shared_prefix"]["output_len"],
+                         int(esc["operating_point"]["osl_mean"]))
+
+    def test_target_value_counts_as_unmet_and_role_falls_back(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = pathlib.Path(d)
+            res = self._run(self._inputs(
+                tmp, state=_llmd_state([], baseline_value=2.0),
+                report=_report("e1", 2.0),
+                llmd_study={"objective_target": {"value": 3.0,
+                                                 "direction": "maximize"}}))
+            self.assertEqual(res["status"], "escalate", res)
+            self.assertEqual(res["decision"]["role"], "aggregated")
+            # A second escalation on an exhausted role is refused.
+            res2 = self._run(self._inputs(
+                tmp, state=_llmd_state([], baseline_value=2.0),
+                report=_report("e1", 2.0),
+                llmd_study={"objective_target": {"value": 3.0},
+                            "engine_loop": {"exhausted_roles": ["aggregated"],
+                                            "escalations": [{"n": 1}]}}))
+            self.assertEqual(res2["status"], "no_escalation")
+
+
+class RecipeBumpTest(_Quiet):
+    """An engine study's win comes back as a versioned recipe."""
+
+    def _engine_state(self, verdict="win", delta=12.0, arm="e-decode-max-seqs",
+                      metric_name="generation_tokens_per_s", value=9000.0):
+        return {"study_id": "acme-chat-engine-decode-1", "status": "closed",
+                "arms": [{"arm": arm, "kind": "scheduler-batching",
+                          "status": "decided", "claim": "x", "since_round": 1,
+                          "result": {"verdict": verdict, "execution_id": "x1",
+                                     "metric": {"name": metric_name,
+                                                "value": value,
+                                                "delta_pct": delta,
+                                                "replicates": 3,
+                                                "provenance": "measured"}}},
+                         {"arm": "e-other", "kind": "kernel-block",
+                          "status": "decided", "claim": "y", "since_round": 2,
+                          "result": {"verdict": "win", "execution_id": "x2",
+                                     "metric": {"name": metric_name,
+                                                "value": 8000.0,
+                                                "delta_pct": 3.0,
+                                                "replicates": 3,
+                                                "provenance": "measured"}}}]}
+
+    def _bank(self, arm="e-decode-max-seqs"):
+        return {"arms": {arm: {"hypothesis_id": arm, "target_parameters": {
+            "serving": {"args": {"--max-num-seqs": 256,
+                                 "--max-model-len": None},
+                        "env": {"VLLM_FOO": "1"}}}}}}
+
+    def _run(self, tmp, state, bank, escalation=None):
+        import argparse  # noqa: PLC0415
+        (tmp / "serving-recipe.json").write_text(json.dumps(RECIPE))
+        (tmp / "estate.json").write_text(json.dumps(state))
+        (tmp / "bank.json").write_text(json.dumps(bank))
+        (tmp / "esc.json").write_text(json.dumps(
+            escalation or {"role": "decode", "escalation": 1}))
+        ns = argparse.Namespace(recipe=str(tmp / "serving-recipe.json"),
+                                engine_study_state=str(tmp / "estate.json"),
+                                hypothesis_bank=str(tmp / "bank.json"),
+                                escalation=str(tmp / "esc.json"),
+                                out=str(tmp / "bump"))
+        return recipe_bump.bump(ns)
+
+    def test_bumps_the_recipe_from_the_best_win(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = pathlib.Path(d)
+            doc = self._run(tmp, self._engine_state(), self._bank())
+            new = json.loads(pathlib.Path(doc["recipe_after"]).read_text())
+            amend = json.loads((tmp / "bump" / recipe_bump.AMENDMENT_FILE)
+                               .read_text())
+        self.assertEqual(doc["status"], "bumped")
+        self.assertEqual(doc["winning_arm"], "e-decode-max-seqs")
+        self.assertTrue(doc["recipe_after"].endswith("serving-recipe.v2.json"))
+        # --max-model-len removed (null), --max-num-seqs set, env merged.
+        self.assertIn("--max-num-seqs=256", new["args"])
+        self.assertFalse(any(a.startswith("--max-model-len")
+                             for a in new["args"]))
+        self.assertEqual(new["env"]["VLLM_FOO"], "1")
+        self.assertEqual(new["measured"]["peak_decode_throughput"], 9000.0)
+        self.assertEqual(new["measured"]["knee_rps"], 45)
+        self.assertEqual(new["source"]["engine_study_id"],
+                         "acme-chat-engine-decode-1")
+        self.assertEqual(amend["fingerprint"]["commit_sha"],
+                         doc["recipe_digest_after"])
+        self.assertNotEqual(doc["recipe_digest_before"],
+                            doc["recipe_digest_after"])
+        self.assertEqual(recipe_bump.next_version_path(
+            pathlib.Path("/x/serving-recipe.v2.json")).name,
+            "serving-recipe.v3.json")
+
+    def test_no_win_and_no_delta_leave_the_recipe_alone(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = pathlib.Path(d)
+            state = self._engine_state(verdict="tie")
+            state["arms"][1]["result"]["verdict"] = "loss"
+            doc = self._run(tmp, state, self._bank())
+            self.assertEqual(doc["status"], "no_win")
+            self.assertFalse((tmp / "serving-recipe.v2.json").exists())
+            doc = self._run(tmp, self._engine_state(), {"arms": {}})
+            self.assertEqual(doc["status"], "no_delta")
+            self.assertFalse((tmp / "serving-recipe.v2.json").exists())
 
 
 class ProductionGuardTest(unittest.TestCase):

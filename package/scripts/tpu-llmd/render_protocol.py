@@ -151,6 +151,20 @@ def build_study_extras(profile: dict[str, Any], recipe: dict[str, Any], *,
         "max_chips": budget.get("max_chips"),
         "chip_hour_cost": budget.get("chip_hour_cost"),
         "chips_per_replica": render.chips_per_replica(recipe, config),
+        # The fleet <-> engine loop: when the fleet search plateaus with
+        # the objective unmet, the bound role goes to tpu-performance and
+        # the improved recipe comes back (engine_escalation.py). On by
+        # default; `search.engine_loop` in the workload spec bounds it.
+        "engine_loop": {
+            "enabled": bool(((profile.get("search") or {}).get("engine_loop")
+                             or {}).get("enabled", True)),
+            "max_escalations": int(((profile.get("search") or {}).get(
+                "engine_loop") or {}).get("max_escalations") or 3),
+            "escalations": [],
+            "exhausted_roles": [],
+        },
+        "objective_target": dict(
+            (profile["objective"].get("target") or {})) or None,
         "startup_timeout_s": DEFAULTS["startup_timeout_s"],
         "benchmark_duration_s": DEFAULTS["benchmark_duration_s"],
         "bench_timeout_s": DEFAULTS["bench_timeout_s"],

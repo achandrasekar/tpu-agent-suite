@@ -126,6 +126,23 @@
           ],
           "default": "goodput_at_slo_per_chip",
           "description": "The one number verdicts are computed on. Both are always reported. cost_per_1M_tokens_at_slo needs budget.chip_hour_cost."
+        },
+        "target": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Optional stopping target on the primary metric. Without it the objective is to attain the SLO at target_qps and keep improving until the search converges.",
+          "properties": {
+            "value": {
+              "type": "number"
+            },
+            "direction": {
+              "type": "string",
+              "enum": [
+                "maximize",
+                "minimize"
+              ]
+            }
+          }
         }
       }
     },
@@ -195,6 +212,29 @@
         "max_model_len": {
           "type": "integer",
           "minimum": 1
+        }
+      }
+    },
+    "search": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "How far the search may go past the fleet.",
+      "properties": {
+        "engine_loop": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "When the fleet search plateaus with the objective unmet, hand the bound role to tpu-performance and come back with the improved recipe.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true
+            },
+            "max_escalations": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 3
+            }
+          }
         }
       }
     }

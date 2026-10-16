@@ -53,6 +53,10 @@
       "type": "boolean",
       "default": false,
       "description": "The user explicitly approved promoting the incumbent to production in this request. Promotion never happens without it."
+    },
+    "engine_study_id": {
+      "type": "string",
+      "description": "Re-entry after an engine escalation: the tpu-performance study that has closed. The round bumps the recipe from its win, amends the protocol and re-baselines the incumbent shape before searching again."
     }
   },
   "examples": [

@@ -31,9 +31,10 @@
         "open",
         "closed",
         "ready_to_promote",
-        "promoted"
+        "promoted",
+        "engine_escalation"
       ],
-      "description": "'ready_to_promote' is 'closed' plus an admissible incumbent that beat the baseline; production still needs a separate request with promotion_approved. 'promoted' means a later request with promotion_approved moved the incumbent to production and the bundle exists."
+      "description": "'ready_to_promote' is 'closed' plus an admissible incumbent that beat the baseline; production still needs a separate request with promotion_approved. 'promoted' means a later request with promotion_approved moved the incumbent to production and the bundle exists. `engine_escalation`: the fleet search plateaued with the objective unmet and the round opened an engine study for tpu-performance (see engine_escalation); the fleet study stays open and resumes when the caller comes back with engine_study_id."
     },
     "incumbent": {
       "type": "object",
@@ -144,6 +145,72 @@
         }
       },
       "description": "Present only on a request that carried promotion_approved: true. Where the production release and its handoff bundle are, or why promotion did not happen."
+    },
+    "engine_escalation": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "description": "Present when study_status is engine_escalation.",
+      "properties": {
+        "engine_study_id": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "request_path": {
+          "type": "string",
+          "description": "The engine-escalation.json the caller hands to tpu-performance rounds."
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "approve",
+            "auto"
+          ]
+        },
+        "escalation": {
+          "type": "integer"
+        },
+        "summary": {
+          "type": "string"
+        }
+      }
+    },
+    "recipe_bump": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "description": "Present on the re-entry round after an engine study closed: what came back into the recipe.",
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "bumped",
+            "no_win",
+            "no_delta"
+          ]
+        },
+        "recipe_path": {
+          "type": "string"
+        },
+        "changes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "engine_study_id": {
+          "type": "string"
+        }
+      }
     }
   },
   "examples": [

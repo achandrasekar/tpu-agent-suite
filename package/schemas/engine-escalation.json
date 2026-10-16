@@ -1,0 +1,168 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "engine-escalation",
+  "description": "The hand-off from a tpu-llmd study to tpu-performance when the fleet search plateaus with the objective unmet: which role and bottleneck kind is bound, the operating point the fleet measured, the engine objective, and the files that open the engine study (protocol, microbenchmark, hypothesis seeds). Written by engine_escalation.py; read by tpu-coworker to drive the engine study and by recipe_bump.py to bring its win back.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "study_id",
+    "run_id",
+    "escalation",
+    "engine_study_id",
+    "role",
+    "kind",
+    "recipe_path",
+    "recipe_digest",
+    "operating_point",
+    "engine_objective",
+    "protocol_path",
+    "hypotheses_path",
+    "summary"
+  ],
+  "properties": {
+    "schema": {
+      "type": "string",
+      "enum": [
+        "engine-escalation"
+      ]
+    },
+    "study_id": {
+      "type": "string"
+    },
+    "run_id": {
+      "type": "string"
+    },
+    "escalation": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Ordinal of this escalation within the llm-d study (bounded by engine_loop.max_escalations)."
+    },
+    "engine_study_id": {
+      "type": "string",
+      "description": "Slug of the tpu-performance study to open: <study_id>-engine-<role>-<n>."
+    },
+    "role": {
+      "type": "string",
+      "enum": [
+        "prefill",
+        "decode",
+        "aggregated"
+      ]
+    },
+    "kind": {
+      "type": "string",
+      "description": "Bottleneck kind from the study taxonomy the attribution named (scheduler-batching, memory-capacity, kernel-block, ...)."
+    },
+    "recipe_path": {
+      "type": "string"
+    },
+    "recipe_digest": {
+      "type": "string"
+    },
+    "operating_point": {
+      "type": "object",
+      "description": "The load one replica of the role carries in the incumbent fleet: target_qps, isl_mean, osl_mean, prefix_hit_rate, concurrency_per_replica, replicas, the role's merged engine knobs, and the fleet shape."
+    },
+    "engine_objective": {
+      "type": "object",
+      "required": [
+        "metric",
+        "direction",
+        "gates"
+      ],
+      "properties": {
+        "metric": {
+          "type": "string"
+        },
+        "unit": {
+          "type": "string"
+        },
+        "direction": {
+          "type": "string",
+          "enum": [
+            "maximize",
+            "minimize"
+          ]
+        },
+        "gates": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    "protocol_path": {
+      "type": "string",
+      "description": "A study-protocol.json for the engine study: one replica of the role's slice at the measured concurrency."
+    },
+    "microbench_path": {
+      "type": "string",
+      "description": "inference-perf config that loads one replica the way the fleet loads this role."
+    },
+    "hypotheses_path": {
+      "type": "string",
+      "description": "{hypotheses: [...], excluded: [...]} in hypothesis_bank.py's shape; each seed's target_parameters.serving is the args/env/image delta recipe_bump.py reads back."
+    },
+    "excluded_knobs": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "vLLM flags the fleet's inner sweep already walked; the researcher does not re-propose them."
+    },
+    "evidence": {
+      "type": "object"
+    },
+    "return_contract": {
+      "type": "object"
+    },
+    "summary": {
+      "type": "string"
+    }
+  },
+  "examples": [
+    {
+      "schema": "engine-escalation",
+      "study_id": "acme-chat-tpu7x",
+      "run_id": "20261016T060000Z-000000000000",
+      "escalation": 1,
+      "engine_study_id": "acme-chat-tpu7x-engine-decode-1",
+      "role": "decode",
+      "kind": "scheduler-batching",
+      "recipe_path": "artifacts/onboarding/serving-recipe.json",
+      "recipe_digest": "3f9c0a1b2c3d4e5f",
+      "operating_point": {
+        "target_qps": 120,
+        "isl_mean": 4000,
+        "osl_mean": 300,
+        "prefix_hit_rate": 0.8,
+        "concurrency_per_replica": 96,
+        "replicas": 3
+      },
+      "engine_objective": {
+        "metric": "generation_tokens_per_s",
+        "unit": "tok/s",
+        "direction": "maximize",
+        "gates": [
+          {
+            "name": "slo.tpot_p99_ms",
+            "metric": "tpot_p99_ms",
+            "comparator": "lte",
+            "bound": 50,
+            "unit": "ms",
+            "same_execution": true
+          }
+        ]
+      },
+      "protocol_path": "artifacts/llmd/escalations/1/engine-protocol.json",
+      "microbench_path": "artifacts/llmd/escalations/1/microbench.decode.inference-perf.json",
+      "hypotheses_path": "artifacts/llmd/escalations/1/hypotheses.json",
+      "excluded_knobs": [
+        "--max-num-seqs"
+      ],
+      "summary": "escalate decode (scheduler-batching) to tpu-performance as acme-chat-tpu7x-engine-decode-1: gates failed at target rate: chat.tpot_p99_ms"
+    }
+  ]
+}
