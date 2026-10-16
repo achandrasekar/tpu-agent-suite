@@ -51,7 +51,7 @@ An arm has two layers, and keeping them apart is the whole job:
 Your request (`{{schema:llmd-arm-request.json}}`) carries `study_id`, `run_id`,
 `arm`, `arm_kind`, `incumbent_config_path`, `recipe_path`,
 `workload_spec_path`, and optionally `sets`, `sweep_knobs`, `sweep_budget`,
-`replicates`, `baseline_value`, `release_name`. If `study_id`, `run_id` or
+`replicates`, `baseline_value`, `baseline_harness`, `release_name`. If `study_id`, `run_id` or
 `arm` is missing, return `status: invalid_input` at once.
 
 ```
@@ -184,8 +184,14 @@ regardless:
 {{runtime}} deploy collect --name <release_name> --release <release> --window 15m --out <work>/metrics
 python3 {{script:tpu-llmd/evaluate_llmd_arm.py}} score --ledger <work>/ledger.json \
     --protocol <work>/protocol.json --arm <arm> [--baseline-value <baseline_value>] \
-    --out <work>/arm-result.json
+    [--baseline-harness <baseline_harness>] --out <work>/arm-result.json
 ```
+
+`--baseline-harness` is the request's `baseline_harness`: the apparatus
+(load-generator and router sizing, shards, harness image) the baseline was
+measured with. The evaluator turns a mismatch into `invalid`, with the two
+digests in `summary` -- a number from a different apparatus is not
+comparable, whatever it says.
 
 `collect` pulls the fleet's vLLM metrics from Managed Prometheus for the
 measurement window into `<work>/metrics/metrics.json`; it is the arm's

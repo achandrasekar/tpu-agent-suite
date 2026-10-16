@@ -473,6 +473,10 @@
             "object",
             "null"
           ]
+        },
+        "harness_digest": {
+          "type": "string",
+          "description": "release.harness_digest of the measurement this config's metric came from: the load-generator/router sizing, shard count and harness image. An arm measured by a different apparatus is not comparable to it."
         }
       }
     }

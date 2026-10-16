@@ -1470,6 +1470,20 @@ def _lifecycle_doc(*, ok: int, bad: int, ttft_s: float, tpot_s: float,
 
 class BenchTest(unittest.TestCase):
 
+    def test_harness_digest_follows_the_apparatus_not_the_fleet(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rel, _ = _render(pathlib.Path(tmp))
+        base = bench.harness_digest(rel)
+        self.assertEqual(len(base), 16)
+        # The fleet's own config does not move it...
+        other = json.loads(json.dumps(rel))
+        other["config_digest"] = "ffff"
+        other["replicas"] = 7
+        self.assertEqual(bench.harness_digest(other), base)
+        # ...the load generator's sizing does.
+        other["env"]["sizing"] = {"bench": {"requests": {"cpu": "1"}}}
+        self.assertNotEqual(bench.harness_digest(other), base)
+
     def test_client_limited_replicate_is_inadmissible(self):
         with tempfile.TemporaryDirectory() as tmp:
             out = pathlib.Path(tmp)

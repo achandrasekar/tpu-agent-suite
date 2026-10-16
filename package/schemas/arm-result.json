@@ -192,6 +192,10 @@
       "type": "integer",
       "minimum": 1,
       "description": "For fleet arms: chips the arm's release held while measured."
+    },
+    "harness_digest": {
+      "type": "string",
+      "description": "Fleet arms: release.harness_digest of the chosen measurement (load-generator and router sizing, shards, harness image). The orchestrator carries it on the incumbent so later arms are compared only within the same apparatus."
     }
   },
   "examples": [

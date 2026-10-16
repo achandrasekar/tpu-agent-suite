@@ -78,6 +78,7 @@ def ledger_entry(report: dict[str, Any], sets: dict[str, Any] | None,
         "execution_id": report["execution_id"],
         "sets": sets or {},
         "config_digest": report["release"]["config_digest"],
+        "harness_digest": report["release"].get("harness_digest", ""),
         "stage": report.get("stage"),
         "value": metric.get("value"),
         "admissible": bool(report.get("admissible"))
@@ -139,7 +140,8 @@ def cmd_ledger(args: argparse.Namespace) -> int:
 
 def score_arm(ledger: dict[str, Any], protocol: dict[str, Any], *,
               arm: str, baseline_value: float | None,
-              config_path: str) -> dict[str, Any]:
+              config_path: str,
+              baseline_harness: str | None = None) -> dict[str, Any]:
     direction = _direction(protocol)
     primary = protocol["primary_metric"]["name"]
     entries = ledger.get("entries") or []
@@ -161,6 +163,14 @@ def score_arm(ledger: dict[str, Any], protocol: dict[str, Any], *,
         "report") and pathlib.Path(chosen["report"]).is_file() else {}
     gates_passed = bool(chosen["admissible"])
     required = int(protocol["replicate_count"])
+    # The baseline and the arm must have been measured by the same
+    # apparatus (load-generator and router sizing, shards, harness image);
+    # a different one is a different measurement cell, so no verdict.
+    harness_mismatch = bool(
+        baseline_harness and chosen.get("harness_digest")
+        and chosen["harness_digest"] != baseline_harness)
+    if harness_mismatch:
+        gates_passed = False
     if baseline_value is None:
         # The baseline arm itself: no comparison, the measurement stands.
         verdict, delta = ("tie" if gates_passed else "invalid"), None
@@ -203,7 +213,12 @@ def score_arm(ledger: dict[str, Any], protocol: dict[str, Any], *,
                + (f" ({delta:+.2f}% vs baseline)" if delta is not None else "")
                + f" on {chosen['chips_total']} chips after"
                f" {len(entries)} measurement(s); gates"
-               f" {'pass' if gates_passed else 'FAIL'}")
+               f" {'pass' if gates_passed else 'FAIL'}"
+               + ("; harness differs from the baseline's"
+                  f" ({chosen.get('harness_digest')} vs {baseline_harness}):"
+                  " not comparable" if harness_mismatch else ""))
+    if harness_mismatch and verdict != "invalid":
+        verdict = "invalid"
     return {
         "status": "completed" if telemetry_valid else "failed",
         "arm": arm,
@@ -219,6 +234,7 @@ def score_arm(ledger: dict[str, Any], protocol: dict[str, Any], *,
                      "admissible", "report")
         } for e in entries],
         "chips_total": int(chosen["chips_total"]),
+        "harness_digest": chosen.get("harness_digest", ""),
         "summary": summary,
     }
 
@@ -239,12 +255,15 @@ def cmd_score(args: argparse.Namespace) -> int:
         config_path = str(dst)
     result = score_arm(ledger, protocol, arm=args.arm,
                        baseline_value=args.baseline_value,
-                       config_path=config_path)
+                       config_path=config_path,
+                       baseline_harness=args.baseline_harness)
     if config_path and result.get("execution_id"):
         cfg_doc = _load(pathlib.Path(config_path))
         prov = dict(cfg_doc.get("provenance") or {})
         prov["arm"] = args.arm
         prov["execution_id"] = result["execution_id"]
+        if result.get("harness_digest"):
+            prov["harness_digest"] = result["harness_digest"]
         if result.get("metric"):
             prov["metric"] = {
                 k: result["metric"][k]
@@ -281,6 +300,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--protocol", required=True, type=pathlib.Path)
     p.add_argument("--arm", required=True)
     p.add_argument("--baseline-value", type=float, default=None)
+    p.add_argument("--baseline-harness", default=None,
+                   help="The baseline report's release.harness_digest; an"
+                   " arm measured by a different apparatus is invalid")
     p.add_argument("--out", required=True, type=pathlib.Path)
     p.set_defaults(fn=cmd_score)
     args = parser.parse_args(argv)

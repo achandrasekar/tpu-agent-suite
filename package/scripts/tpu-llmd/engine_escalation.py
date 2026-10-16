@@ -212,6 +212,10 @@ def decide(*, loop: dict[str, Any], unmet: dict[str, Any],
                        f" {plateau['open_arms']}")
     if role in loop["exhausted_roles"]:
         reasons.append(f"role {role} already escalated and exhausted")
+    if role == "loadgen":
+        reasons.append("incumbent measurement is client-limited: scale the"
+                       " load generator out and re-measure before deciding"
+                       " anything about the engine")
     return {"escalate": not reasons, "role": role,
             "kind": attribution["kind"] if attribution["kind"] != "none"
             else "scheduler-batching",

@@ -226,6 +226,16 @@ def attribute(profile_doc: dict[str, Any] | None,
     evidence: list[str] = []
     role = "none"
     gates = _failed_gates(report)
+    # A client-limited measurement says nothing about either pool: the
+    # load generator fell behind, so its latencies are queueing on the
+    # client. Name the load generator and stop; the fix is scale-out
+    # (`workload.loadgen_shards`) or a bigger bench pod, not a shape.
+    # Seen on kind: three shape arms "decode bound" from a 1-CPU loadgen.
+    limited = list((report or {}).get("client_limited") or [])
+    if limited:
+        return {"role": "loadgen", "kind": "none",
+                "evidence": [f"client_limited replicates: {', '.join(limited)}"],
+                "failed_gates": gates}
     # TPOT first: a saturated decode pool inflates TTFT too (requests
     # queue before their first token), so a failed TPOT gate names decode
     # whatever TTFT did; a failed TTFT gate with TPOT intact is prefill.
@@ -283,6 +293,9 @@ def neighbours(p: int, d: int, bound: str, *, chips_per: int,
     attains wins on goodput per chip.
     """
     out: list[dict[str, Any]] = []
+    if bound == "loadgen":
+        # The measurement did not reach the fleet; no shape follows from it.
+        return out
     budget = (int(max_chips) // chips_per) if max_chips else None
 
     def add(np_: int, nd: int, why: str) -> None:

@@ -233,6 +233,7 @@ rebuild it from events.
       | `replicates` | `protocol.replicate_count` |
       | `sweep_budget` | `inner_sweep_budget` from `llmd-study.json` |
       | `baseline_value` | the current incumbent's metric value (`provenance.metric.value` in `<llmd>/incumbent/llmd-config.json`, or `baseline.metric.value` from the state if no arm has won yet) |
+      | `baseline_harness` | `provenance.harness_digest` from `<llmd>/incumbent/llmd-config.json` (the baseline arm's result carries it) |
       | `protocol_digest` | the state's protocol digest, if shown |
 
       In `approve` mode an arm that changes replica count or topology costs

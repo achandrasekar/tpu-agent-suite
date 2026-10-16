@@ -307,6 +307,34 @@ class EvaluateArmTest(_Quiet):
         self.assertEqual(res["verdict"], "invalid")
         self.assertEqual(res["status"], "failed")
 
+    def test_harness_change_makes_the_arm_invalid(self):
+        rep = _report("e1", 0.95)
+        rep["release"]["harness_digest"] = "h-arm"
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "r.json"
+            path.write_text(json.dumps(rep))
+            entry = evaluate_llmd_arm.ledger_entry(
+                rep, {}, "goodput_at_slo_per_chip")
+            entry["report"] = str(path)
+            self.assertEqual(entry["harness_digest"], "h-arm")
+            ledger = {"primary_metric": "goodput_at_slo_per_chip",
+                      "direction": "maximize", "entries": [entry]}
+            same = evaluate_llmd_arm.score_arm(
+                ledger, self._protocol(), arm="a", baseline_value=0.71,
+                config_path="", baseline_harness="h-arm")
+            other = evaluate_llmd_arm.score_arm(
+                ledger, self._protocol(), arm="a", baseline_value=0.71,
+                config_path="", baseline_harness="h-base")
+            # No baseline digest known (an older report): no check.
+            unknown = evaluate_llmd_arm.score_arm(
+                ledger, self._protocol(), arm="a", baseline_value=0.71,
+                config_path="")
+        self.assertEqual(same["verdict"], "win")
+        self.assertEqual(same["harness_digest"], "h-arm")
+        self.assertEqual(other["verdict"], "invalid")
+        self.assertIn("harness differs", other["summary"])
+        self.assertEqual(unknown["verdict"], "win")
+
     def test_unreported_protocol_gate_blocks_win(self):
         proto = self._protocol()
         proto["admissibility_gates"].append({
@@ -941,6 +969,12 @@ class SizePdTest(_Quiet):
         self.assertEqual(att2["role"], "decode")
         self.assertEqual(size_pd.attribute({"roles": {}}, None)["role"],
                          "none")
+        # Client-limited: the load generator is named, no pool, no shape.
+        limited = dict(report, client_limited=["chat/r0", "chat/r1"])
+        att3 = size_pd.attribute(prof, limited)
+        self.assertEqual((att3["role"], att3["kind"]), ("loadgen", "none"))
+        self.assertEqual(size_pd.neighbours(1, 2, "loadgen", chips_per=4,
+                                            max_chips=24), [])
 
     def test_neighbours_move_the_bound_axis_first(self):
         nb = size_pd.neighbours(2, 2, "prefill", chips_per=4, max_chips=16)
@@ -1062,6 +1096,15 @@ class EngineEscalationTest(_Quiet):
                 tmp, state=_llmd_state([]), report=_failing_report(),
                 llmd_study={"engine_loop": {"enabled": False}}))
             self.assertTrue(any("disabled" in b
+                                for b in res["decision"]["blockers"]))
+            # Client-limited incumbent: the load generator is the finding,
+            # not the engine.
+            res = self._run(self._inputs(
+                tmp, state=_llmd_state([]),
+                report=dict(_failing_report(), client_limited=["chat/r0"])))
+            self.assertEqual(res["status"], "no_escalation")
+            self.assertEqual(res["decision"]["role"], "loadgen")
+            self.assertTrue(any("client-limited" in b
                                 for b in res["decision"]["blockers"]))
 
     def test_escalates_the_bound_role_with_protocol_and_seeds(self):

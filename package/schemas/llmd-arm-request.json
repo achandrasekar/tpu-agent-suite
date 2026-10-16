@@ -115,6 +115,10 @@
     },
     "protocol_digest": {
       "type": "string"
+    },
+    "baseline_harness": {
+      "type": "string",
+      "description": "The baseline's (or incumbent's) provenance.harness_digest. The executor passes it to the evaluator, which refuses a verdict when the arm was measured by a different apparatus."
     }
   },
   "examples": [

@@ -285,6 +285,33 @@ CLIENT_RATE_TOLERANCE = 0.90
 CLIENT_SCHEDULE_DELAY_MAX_S = 1.0
 
 
+def harness_digest(release: dict[str, Any]) -> str:
+    """Digest of the measuring apparatus: load-generator and router sizing,
+    shard count, inference-perf image.
+
+    Two measurements are comparable only when the thing measuring them is
+    the same. Seen on kind: the baseline ran with a 2-CPU load generator
+    and a 1-CPU EPP, every arm after it with half of each, and three shape
+    arms came out "decode bound" from client-side queueing. The evaluator
+    refuses a verdict across differing digests.
+    """
+    env = release.get("env") or {}
+    sizing = env.get("sizing") or {}
+    doc = {
+        "bench": sizing.get("bench"),
+        "epp": sizing.get("epp"),
+        "proxy": sizing.get("proxy"),
+        "inference_perf_image": env.get("inference_perf_image"),
+        "loadgen_shards": (release.get("workload") or {}).get(
+            "loadgen_shards"),
+        "epp_replicas": ((release.get("router") or {}).get("epp_ha") or {}
+                         ).get("replicas"),
+    }
+    import hashlib  # noqa: PLC0415
+    return hashlib.sha256(json.dumps(doc, sort_keys=True).encode()
+                          ).hexdigest()[:16]
+
+
 def client_limited(load_summary: dict[str, Any] | None) -> bool:
     """True when the load generator fell behind its own schedule."""
     if not load_summary:
@@ -626,6 +653,7 @@ def run_bench(env: DeployEnv,
             "replicas": release["replicas"],
             "chips_total": release["chips"]["total"],
             "router_profile": release["router"]["profile"],
+            "harness_digest": harness_digest(release),
         },
         "workload": release["workload"],
         "primary_metric": profile["objective"]["primary_metric"],

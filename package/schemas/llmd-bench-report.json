@@ -64,6 +64,10 @@
         },
         "router_profile": {
           "type": "string"
+        },
+        "harness_digest": {
+          "type": "string",
+          "description": "Digest of the measuring apparatus: bench/EPP/proxy sizing, loadgen shard count, inference-perf image, EPP replicas. Two reports are comparable only when it matches."
         }
       }
     },
