@@ -195,6 +195,35 @@ class Kube:
         proc = self.kubectl(argv, check=False)
         return (proc.stdout or "") + (proc.stderr or "")
 
+    # -- pod proxy -----------------------------------------------------------
+    # The API server proxies HTTP to a pod port
+    # (/api/v1/namespaces/<ns>/pods/<pod>:<port>/proxy/<path>), which reaches
+    # an engine's /metrics or /reset_prefix_cache from anywhere kubectl
+    # works: no exec (distroless images have no shell), no port-forward,
+    # no Prometheus. `kubectl get --raw` is a GET, `create --raw` a POST.
+
+    def pod_proxy_get(self, pod: str, port: int, path: str,
+                      *, timeout: int | None = None) -> str | None:
+        """Body of GET <pod>:<port>/<path>, or None when it failed."""
+        raw = (f"/api/v1/namespaces/{self.namespace}/pods/{pod}:{port}"
+               f"/proxy/{path.lstrip('/')}")
+        proc = self.kubectl(["get", "--raw", raw], check=False,
+                            namespaced=False, timeout=timeout or 30)
+        if proc.returncode != 0:
+            return None
+        return proc.stdout or ""
+
+    def pod_proxy_post(self, pod: str, port: int, path: str,
+                       body: str = "{}", *, timeout: int | None = None
+                       ) -> tuple[bool, str]:
+        """POST <pod>:<port>/<path>; (ok, body or stderr)."""
+        raw = (f"/api/v1/namespaces/{self.namespace}/pods/{pod}:{port}"
+               f"/proxy/{path.lstrip('/')}")
+        proc = self.kubectl(["create", "--raw", raw, "-f", "-"],
+                            stdin=body, check=False, namespaced=False,
+                            timeout=timeout or 60)
+        return proc.returncode == 0, (proc.stdout or proc.stderr or "")
+
     # -- helm --------------------------------------------------------------
 
     def helm(self,

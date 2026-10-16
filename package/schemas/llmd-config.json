@@ -481,6 +481,21 @@
           "description": "release.harness_digest of the measurement this config's metric came from: the load-generator/router sizing, shard count and harness image. An arm measured by a different apparatus is not comparable to it."
         }
       }
+    },
+    "workload": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The benchmark's operating point when the workload is closed-loop (AgentX): a hot knob -- changing it re-benches, nothing redeploys.",
+      "properties": {
+        "concurrency": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1,
+          "description": "Sessions in flight for the next `bench --stage slo`; null means the spec's first ladder point."
+        }
+      }
     }
   },
   "examples": [

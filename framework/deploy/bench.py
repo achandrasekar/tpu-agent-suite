@@ -39,7 +39,7 @@ import time
 import uuid
 from typing import Any, Callable
 
-from . import render, workload
+from . import pins, render, workload
 from .config import DeployEnv
 from .kube import DeployError, Kube
 
@@ -299,6 +299,7 @@ def harness_digest(release: dict[str, Any]) -> str:
     sizing = env.get("sizing") or {}
     doc = {
         "bench": sizing.get("bench"),
+        "aiperf": sizing.get("aiperf"),
         "epp": sizing.get("epp"),
         "proxy": sizing.get("proxy"),
         "inference_perf_image": env.get("inference_perf_image"),
@@ -356,7 +357,29 @@ def score(release: dict[str, Any], profile: dict[str, Any],
     goodput = _median(goodput_reps) or 0.0
     good_tps = _median(tps_reps) or 0.0
 
-    metrics: dict[str, Any] = {
+    agentx_reps = [rep for rep in per_replicate
+                   if any("agentx" in t for t in rep.values())]
+    metrics: dict[str, Any] = {}
+    if agentx_reps:
+        # The leaderboard's numbers: total and output tok/s per physical
+        # chip of the whole fleet, median over replicates.
+        total_reps = [sum(float(t.get("total_tokens_per_sec") or 0.0)
+                          for t in rep.values()) for rep in agentx_reps]
+        out_reps = [sum(float(t.get("output_tokens_per_sec") or 0.0)
+                        for t in rep.values()) for rep in agentx_reps]
+        metrics["total_tokens_per_s_per_chip"] = {
+            "value": (_median(total_reps) or 0.0) / chips,
+            "unit": "tok/s/chip",
+            "replicates": [t / chips for t in total_reps]}
+        metrics["output_tokens_per_s_per_chip"] = {
+            "value": (_median(out_reps) or 0.0) / chips,
+            "unit": "tok/s/chip",
+            "replicates": [t / chips for t in out_reps]}
+        metrics["total_tokens_per_s"] = {"value": _median(total_reps) or 0.0,
+                                         "unit": "tok/s"}
+        metrics["output_tokens_per_s"] = {"value": _median(out_reps) or 0.0,
+                                          "unit": "tok/s"}
+    metrics.update({
         "goodput_at_slo": {
             "value": goodput,
             "unit": "req/s",
@@ -368,7 +391,7 @@ def score(release: dict[str, Any], profile: dict[str, Any],
             "replicates": [g / chips for g in goodput_reps],
         },
         "good_tokens_per_sec": {"value": good_tps, "unit": "tok/s"},
-    }
+    })
     cost = budget.get("chip_hour_cost")
     if cost and good_tps > 0:
         usd_per_hour = float(cost) * chips
@@ -533,6 +556,437 @@ def _wait_jobs(kube: Kube, names: list[str], *, timeout_s: int,
     return outcome
 
 
+# -- AgentX (aiperf, closed loop) ---------------------------------------------
+
+VLLM_GAUGES = ("vllm:num_requests_running", "vllm:num_requests_waiting",
+               "vllm:kv_cache_usage_perc", "vllm:gpu_cache_usage_perc")
+VLLM_COUNTERS = ("vllm:prefix_cache_hits", "vllm:prefix_cache_queries",
+                 "vllm:external_prefix_cache_hits",
+                 "vllm:external_prefix_cache_queries")
+DRAIN_TIMEOUT_S = 1800
+DRAIN_POLL_S = 10
+SAMPLE_EVERY_S = 30
+PREFIX_RESET_PATHS = ("/reset_prefix_cache?reset_external=true",
+                      "/reset_prefix_cache")
+
+
+def parse_prometheus(text: str) -> dict[str, float]:
+    """Sum of every sample per metric name, labels dropped."""
+    out: dict[str, float] = {}
+    for line in (text or "").splitlines():
+        if not line or line.startswith("#"):
+            continue
+        name = line.split("{", 1)[0].split(" ", 1)[0]
+        try:
+            value = float(line.rsplit(" ", 1)[-1])
+        except ValueError:
+            continue
+        out[name] = out.get(name, 0.0) + value
+    return out
+
+
+def engine_pods(kube: Kube, release: dict[str, Any]) -> list[dict[str, Any]]:
+    """Serving pods of the release with the port their engine answers on."""
+    selector = (f"{pins.RELEASE_LABEL}={release['name']},"
+                f"{pins.LLMD_SERVING_LABEL}=true")
+    doc = kube.kubectl_json(["get", "pods", "-l", selector], check=False)
+    ports = {p["role"]: int(p.get("engine_port") or pins.MODEL_SERVER_PORT)
+             for p in (release.get("pools") or [])}
+    pods = []
+    for item in doc.get("items") or []:
+        meta = item.get("metadata") or {}
+        labels = meta.get("labels") or {}
+        role = labels.get(pins.LLMD_ROLE_LABEL) or "decode"
+        ip = (item.get("status") or {}).get("podIP")
+        pods.append({"name": meta.get("name"), "role": role, "ip": ip,
+                     "port": ports.get(role, pins.MODEL_SERVER_PORT)})
+    return sorted(pods, key=lambda p: (p["role"], p["name"] or ""))
+
+
+def scrape_engines(kube: Kube, pods: list[dict[str, Any]]
+                   ) -> dict[str, dict[str, float]]:
+    """Per role: summed gauges and counters (kv util is the max)."""
+    out: dict[str, dict[str, float]] = {}
+    for pod in pods:
+        text = kube.pod_proxy_get(pod["name"], pod["port"], "/metrics")
+        if text is None:
+            continue
+        sample = parse_prometheus(text)
+        role = out.setdefault(pod["role"], {"pods": 0.0})
+        role["pods"] += 1
+        for key in VLLM_GAUGES + VLLM_COUNTERS:
+            if key in sample:
+                if key.endswith("usage_perc"):
+                    role["kv_util_max"] = max(role.get("kv_util_max", 0.0),
+                                              sample[key])
+                else:
+                    role[key] = role.get(key, 0.0) + sample[key]
+    return out
+
+
+def engines_busy(snapshot: dict[str, dict[str, float]]) -> float:
+    return sum(r.get("vllm:num_requests_running", 0.0) +
+               r.get("vllm:num_requests_waiting", 0.0)
+               for r in snapshot.values())
+
+
+def drain_engines(kube: Kube, pods: list[dict[str, Any]], *,
+                  timeout_s: int = DRAIN_TIMEOUT_S,
+                  sleep: Callable[[float], None] = time.sleep,
+                  clock: Callable[[], float] = time.monotonic
+                  ) -> dict[str, Any]:
+    """Wait until no engine has a request running or waiting, as the
+    InferenceX client does between points. Returns what it saw."""
+    started = clock()
+    last = None
+    while True:
+        snap = scrape_engines(kube, pods)
+        last = engines_busy(snap)
+        if not snap or last == 0:
+            return {"drained": True, "waited_s": clock() - started,
+                    "busy": last, "scraped_roles": sorted(snap)}
+        if clock() - started > timeout_s:
+            return {"drained": False, "waited_s": clock() - started,
+                    "busy": last, "scraped_roles": sorted(snap)}
+        sleep(DRAIN_POLL_S)
+
+
+def reset_prefix_caches(kube: Kube, pods: list[dict[str, Any]]
+                        ) -> list[dict[str, Any]]:
+    """POST /reset_prefix_cache on every engine before a point so points
+    do not inherit each other's caches (the hill-climb driver's step; it
+    falls back from `reset_external=true`, which offload-enabled engines
+    refuse). A refusal is recorded, never fatal."""
+    out = []
+    for pod in pods:
+        result = {"pod": pod["name"], "role": pod["role"], "ok": False}
+        for path in PREFIX_RESET_PATHS:
+            ok, body = kube.pod_proxy_post(pod["name"], pod["port"], path)
+            if ok and '"success":false' not in body.replace(" ", ""):
+                result.update({"ok": True, "path": path})
+                break
+            result["last"] = body[:200]
+        out.append(result)
+    return out
+
+
+class RoleSampler:
+    """Role metrics sampled while a point runs: what each pool was doing,
+    for attribution (a saturated decode pool, a thrashing prefill cache)."""
+
+    def __init__(self) -> None:
+        self.samples: list[dict[str, dict[str, float]]] = []
+
+    def add(self, snapshot: dict[str, dict[str, float]]) -> None:
+        if snapshot:
+            self.samples.append(snapshot)
+
+    def summary(self) -> dict[str, Any]:
+        roles: dict[str, Any] = {}
+        for role in {r for s in self.samples for r in s}:
+            series = [s[role] for s in self.samples if role in s]
+            run = [x.get("vllm:num_requests_running", 0.0) for x in series]
+            wait = [x.get("vllm:num_requests_waiting", 0.0) for x in series]
+            kv = [x.get("kv_util_max", 0.0) for x in series]
+            first, last = series[0], series[-1]
+
+            def delta(key: str) -> float:
+                return last.get(key, 0.0) - first.get(key, 0.0)
+            q = delta("vllm:prefix_cache_queries")
+            eq = delta("vllm:external_prefix_cache_queries")
+            roles[role] = {
+                "samples": len(series),
+                "pods": int(max(x.get("pods", 0) for x in series)),
+                "requests_running_mean": statistics.mean(run) if run else None,
+                "requests_running_max": max(run) if run else None,
+                "requests_waiting_mean": statistics.mean(wait) if wait else None,
+                "requests_waiting_max": max(wait) if wait else None,
+                "kv_util_mean": statistics.mean(kv) if kv else None,
+                "kv_util_max": max(kv) if kv else None,
+                "prefix_hit_rate": (delta("vllm:prefix_cache_hits") / q)
+                if q > 0 else None,
+                "external_hit_rate": (
+                    delta("vllm:external_prefix_cache_hits") / eq)
+                if eq > 0 else None,
+            }
+        return roles
+
+
+def summarize_agentx_point(point: dict[str, Any], tenant: dict[str, Any],
+                           error_rate_max: float) -> dict[str, Any]:
+    """One concurrency point in the shape `score` reads, from the reducer's
+    agentx_point.json. The gate values are the InferenceX percentiles
+    (seconds in the point, ms here)."""
+    reqs = point.get("requests") or {}
+    total = int(reqs.get("records_total") or 0)
+    profiled = int(reqs.get("records_profiled") or 0)
+    errors = int(reqs.get("records_error_dropped") or 0)
+    warm = int(reqs.get("records_warmup_dropped") or 0)
+    # The error rate over records that counted (warm-up rows are not
+    # requests the point serves), as validate_agentic_result.py divides
+    # errors by completed requests.
+    denom = profiled + errors
+    error_rate = (errors / denom) if denom else 1.0
+    lat = point.get("latency_s") or {}
+    throughput = point.get("throughput") or {}
+    slo: dict[str, Any] = {}
+    attains = profiled > 0 and point.get("status") == "ok"
+    for target in workload.slo_targets(tenant):
+        series = {"time_to_first_token": "ttft",
+                  "time_per_output_token": "tpot",
+                  "inter_token_latency": "itl",
+                  "request_latency": "e2el"}.get(target["field"], "ttft")
+        block = lat.get(series) or {}
+        value = block.get(target["percentile"])
+        measured = float(value) * 1000.0 if value is not None else None
+        passed = measured is not None and measured <= target["bound_ms"]
+        slo[target["key"]] = {"bound_ms": target["bound_ms"],
+                              "measured_ms": measured,
+                              "source_field": f"aiperf.{series}",
+                              "pass": passed}
+        attains = attains and passed
+    attains = attains and error_rate <= error_rate_max
+    total_tps = float(throughput.get("total_tokens_per_s") or 0.0)
+    out_tps = float(throughput.get("output_tokens_per_s") or 0.0)
+    ttft = lat.get("ttft") or {}
+    itl = lat.get("itl") or {}
+    e2e = lat.get("e2el") or {}
+    intvty = point.get("interactivity_tok_s_per_user") or {}
+    cache = point.get("cache") or {}
+    return {
+        "requests": {"ok": profiled, "failed": errors, "warmup": warm,
+                     "total": total},
+        "error_rate": round(error_rate, 6),
+        "requests_per_sec": float(throughput.get("requests_per_s") or 0.0),
+        "total_tokens_per_sec": total_tps,
+        "output_tokens_per_sec": out_tps,
+        "input_tokens_per_sec": float(
+            throughput.get("input_tokens_per_s") or 0.0),
+        "goodput_requests_per_sec": float(
+            throughput.get("requests_per_s") or 0.0) if attains else 0.0,
+        "goodput_tokens_per_sec": total_tps if attains else 0.0,
+        "goodput_source": "agentx-gate",
+        "slo": slo,
+        "attains": attains,
+        "failures_by_label": dict(reqs.get("error_categories") or {}),
+        "load_summary": None,
+        "client_limited": False,
+        "agentx": {
+            "concurrency": point.get("concurrency"),
+            "duration_s": throughput.get("duration_s"),
+            "ttft_s": {k: ttft.get(k) for k in ("mean", "p50", "p90", "p99")},
+            "tpot_ms": {k: (itl[k] * 1000.0 if itl.get(k) is not None
+                            else None) for k in ("mean", "p50", "p90")},
+            "e2e_s": {k: e2e.get(k) for k in ("mean", "p50", "p90")},
+            "interactivity_p50": intvty.get("p50"),
+            "input_tokens_mean": (point.get("tokens") or {}).get(
+                "input", {}).get("mean"),
+            "output_tokens_mean": (point.get("tokens") or {}).get(
+                "output", {}).get("mean"),
+            "gpu_prefix_hit_rate": cache.get("gpu_hit_rate"),
+            "cpu_prefix_hit_rate": cache.get("cpu_hit_rate"),
+            "aiperf": point.get("aiperf"),
+            "status": point.get("status"),
+        },
+    }
+
+
+def _wait_jobs_sampling(kube: Kube, names: list[str], *, timeout_s: int,
+                        sleep: Callable[[float], None],
+                        clock: Callable[[], float],
+                        on_tick: Callable[[], None] | None = None
+                        ) -> dict[str, str]:
+    started = clock()
+    last_sample = -1e9
+    outcome: dict[str, str] = {}
+    while len(outcome) < len(names):
+        # Sample first, so a point is seen at least once even when the Job
+        # is already done by the first poll.
+        if on_tick and clock() - last_sample >= SAMPLE_EVERY_S:
+            on_tick()
+            last_sample = clock()
+        for name in names:
+            if name in outcome:
+                continue
+            doc = kube.kubectl_json(["get", "job", name], check=False)
+            st = (doc.get("status") or {}) if doc else {}
+            if int(st.get("succeeded") or 0) >= 1:
+                outcome[name] = "succeeded"
+            elif int(st.get("failed") or 0) >= 1:
+                outcome[name] = "failed"
+        if len(outcome) < len(names):
+            if clock() - started > timeout_s:
+                for name in names:
+                    outcome.setdefault(name, "timeout")
+                break
+            sleep(POLL_S)
+    return outcome
+
+
+def run_agentx_bench(env: DeployEnv, release_dir: pathlib.Path, *,
+                     stage: str, replicates: int, out_dir: pathlib.Path,
+                     execution_id: str | None, timeout_s: int,
+                     runner: Any, sleep: Callable[[float], None],
+                     clock: Callable[[], float],
+                     concurrency: int | None = None) -> dict[str, Any]:
+    """One aiperf point per concurrency: drain, reset caches, run, sample
+    the pools, reduce. `slo` runs the config's operating point (or
+    `--concurrency`); `sweep` runs the spec's ladder -- the submission's
+    points. The report's primary metric is the best admissible point's."""
+    release_dir = pathlib.Path(release_dir)
+    release = render.load_release(release_dir)
+    profile = json.loads(
+        (release_dir / release["files"]["profile"]).read_text("utf-8"))
+    config = json.loads(
+        (release_dir / release["files"]["config"]).read_text("utf-8"))
+    kwargs: dict[str, Any] = {"namespace": release["namespace"],
+                              "kubeconfig": env.kubeconfig,
+                              "context": env.kube_context}
+    if runner is not None:
+        kwargs["runner"] = runner
+    kube = Kube(**kwargs)
+    execution_id = execution_id or new_execution_id()
+    out_dir = pathlib.Path(out_dir)
+    raw_dir = out_dir / "raw"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    started_at = _now()
+    tenant = profile["tenants"][0]
+    error_rate_max = float(
+        (profile.get("availability") or {}).get("error_rate_max", 0.1))
+    ladder = list(profile["agentx"]["concurrency"])
+    if stage == "sweep":
+        points = ladder
+    else:
+        point = concurrency or (config.get("workload") or {}).get(
+            "concurrency") or ladder[0]
+        points = [int(point)]
+    files = release["files"]["bench"][f"{workload.AGENTX_TENANT}.slo"]
+    kube.apply((release_dir / files["configmap"]).read_text("utf-8"))
+    job_tmpl = json.loads((release_dir / files["job"]).read_text("utf-8"))
+    pods = engine_pods(kube, release)
+    metrics_role = "prefill" if any(p["role"] == "prefill" for p in pods) \
+        else "decode"
+    metrics_urls = ",".join(
+        f"http://{p['ip']}:{p['port']}/metrics" for p in pods
+        if p["role"] == metrics_role and p.get("ip"))
+
+    results: list[dict[str, Any]] = []
+    failures: list[str] = []
+    for conc in points:
+        for rep in range(replicates):
+            drain = drain_engines(kube, pods, sleep=sleep, clock=clock)
+            resets = reset_prefix_caches(kube, pods) if pods else []
+            job = _job_doc_with_name(
+                job_tmpl, f"{job_tmpl['metadata']['name']}-"
+                          f"{execution_id[-8:]}-c{conc}-r{rep}")
+            for e in job["spec"]["template"]["spec"]["containers"][0]["env"]:
+                if e["name"] == render.AGENTX_CONC_ENV:
+                    e["value"] = str(conc)
+                if e["name"] == render.AGENTX_METRICS_ENV:
+                    e["value"] = metrics_urls
+            kube.apply(json.dumps(job))
+            name = job["metadata"]["name"]
+            sampler = RoleSampler()
+            outcome = _wait_jobs_sampling(
+                kube, [name], timeout_s=timeout_s, sleep=sleep, clock=clock,
+                on_tick=lambda: sampler.add(scrape_engines(kube, pods)))
+            proc = kube.kubectl(["logs", f"job/{name}", "--tail=-1"],
+                                check=False)
+            text = (proc.stdout or "") + (proc.stderr or "")
+            (raw_dir / f"{name}.log").write_text(text, encoding="utf-8")
+            reports = parse_report_logs(text)
+            (raw_dir / f"{name}.reports.json").write_text(
+                json.dumps(reports, indent=2), encoding="utf-8")
+            point_doc = reports.get(render.AGENTX_POINT_FILE)
+            kube.delete(["job", name])
+            if outcome.get(name) != "succeeded" or not isinstance(
+                    point_doc, dict) or point_doc.get("status") != "ok":
+                failures.append(f"{name}: {outcome.get(name)}; point:"
+                                f" {(point_doc or {}).get('status')}")
+                summary = summarize_agentx_point(
+                    point_doc if isinstance(point_doc, dict) else
+                    {"concurrency": conc, "status": "failed"},
+                    tenant, error_rate_max)
+            else:
+                summary = summarize_agentx_point(point_doc, tenant,
+                                                 error_rate_max)
+            summary["roles"] = sampler.summary()
+            summary["drain"] = drain
+            summary["prefix_reset"] = resets
+            summary["job"] = name
+            results.append({"concurrency": conc, "replicate": rep,
+                            "summary": summary})
+
+    chips = int(release["chips"]["total"]) or 1
+    per_point: list[dict[str, Any]] = []
+    for conc in points:
+        reps = [r["summary"] for r in results if r["concurrency"] == conc]
+        scored = score(release, profile, [{tenant["name"]: s} for s in reps])
+        per_point.append({
+            "concurrency": conc,
+            "chips": chips,
+            "admissible": scored["admissible"],
+            "metrics": scored["metrics"],
+            "gates": scored["gates"],
+            "tenant": scored["tenants"][tenant["name"]],
+            "roles": reps[-1].get("roles") if reps else {},
+        })
+    primary = profile["objective"]["primary_metric"]
+    admissible = [p for p in per_point if p["admissible"]]
+    best = max(admissible, key=lambda p: p["metrics"][primary]["value"]) \
+        if admissible else max(
+            per_point, key=lambda p: p["metrics"][primary]["value"])
+    report: dict[str, Any] = {
+        "schema": "llmd-bench-report",
+        "execution_id": execution_id,
+        "stage": stage,
+        "replicates": replicates,
+        "shards": {tenant["name"]: 1},
+        "started_at": started_at,
+        "finished_at": _now(),
+        "release": {
+            "name": release["name"],
+            "namespace": release["namespace"],
+            "config_digest": release["config_digest"],
+            "replicas": release["replicas"],
+            "chips_total": chips,
+            "router_profile": release["router"]["profile"],
+            "harness_digest": harness_digest(release),
+        },
+        "workload": release["workload"],
+        "primary_metric": primary,
+        "telemetry_valid": not failures,
+        "job_failures": failures,
+        "raw_dir": str(raw_dir),
+        "metrics": best["metrics"],
+        "tenants": {tenant["name"]: best["tenant"]},
+        "gates": best["gates"],
+        "client_limited": [],
+        "admissible": best["admissible"],
+        "agentx": {
+            "harness": "aiperf",
+            "aiperf_ref": profile["agentx"]["aiperf_ref"],
+            "dataset": profile["agentx"]["dataset"],
+            "duration_s": profile["agentx"]["duration_s"],
+            "submission_valid": profile["agentx"]["submission_valid"],
+            "best_concurrency": best["concurrency"],
+            "points": per_point,
+        },
+    }
+    (out_dir / "llmd-bench-report.json").write_text(
+        json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    release.setdefault("history", []).append({
+        "at": _now(), "action": "bench", "execution_id": execution_id,
+        "stage": stage, "config_digest": release["config_digest"],
+        "primary": (best["metrics"].get(primary) or {}).get("value"),
+        "admissible": best["admissible"],
+        "concurrency": [p["concurrency"] for p in per_point],
+        "report": str(out_dir / "llmd-bench-report.json"),
+    })
+    render.save_release(release_dir, release)
+    return report
+
+
 def run_bench(env: DeployEnv,
               release_dir: pathlib.Path,
               *,
@@ -543,7 +997,8 @@ def run_bench(env: DeployEnv,
               timeout_s: int = DEFAULT_JOB_TIMEOUT_S,
               runner: Any = None,
               sleep: Callable[[float], None] = time.sleep,
-              clock: Callable[[], float] = time.monotonic) -> dict[str, Any]:
+              clock: Callable[[], float] = time.monotonic,
+              concurrency: int | None = None) -> dict[str, Any]:
     """Run `replicates` rounds of the stage's tenant Jobs; write the report."""
     if stage not in render.BENCH_STAGES:
         raise DeployError("stage must be sweep or slo",
@@ -554,6 +1009,14 @@ def run_bench(env: DeployEnv,
     release = render.load_release(release_dir)
     profile = json.loads(
         (release_dir / release["files"]["profile"]).read_text("utf-8"))
+    if workload.is_agentx(profile):
+        return run_agentx_bench(
+            env, release_dir, stage=stage, replicates=replicates,
+            out_dir=out_dir, execution_id=execution_id, timeout_s=timeout_s,
+            runner=runner, sleep=sleep, clock=clock, concurrency=concurrency)
+    if concurrency is not None:
+        raise DeployError("--concurrency applies to an AgentX workload",
+                          error_code="INVALID_FIELD")
     kwargs: dict[str, Any] = {
         "namespace": release["namespace"],
         "kubeconfig": env.kubeconfig,

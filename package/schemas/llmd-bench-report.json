@@ -78,7 +78,9 @@
       "type": "string",
       "enum": [
         "goodput_at_slo_per_chip",
-        "cost_per_1M_tokens_at_slo"
+        "cost_per_1M_tokens_at_slo",
+        "total_tokens_per_s_per_chip",
+        "output_tokens_per_s_per_chip"
       ]
     },
     "telemetry_valid": {
@@ -182,6 +184,10 @@
         "type": "integer"
       },
       "description": "Load-generator pods per tenant in each replicate; above one, the tenant's shards ran together and their reports were pooled (rates summed, the worst shard's percentiles)."
+    },
+    "agentx": {
+      "type": "object",
+      "description": "Present when the harness was aiperf (an AgentX workload): the per-concurrency points with their metrics, gates and sampled role metrics; `best_concurrency` is the point the report's top-level metrics come from (best admissible by the primary metric)."
     }
   }
 }

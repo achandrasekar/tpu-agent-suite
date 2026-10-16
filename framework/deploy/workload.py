@@ -39,8 +39,18 @@ from .kube import DeployError
 
 CATALOG_DIR = pathlib.Path(__file__).resolve().parent / "workload_catalog"
 
-PRIMARY_METRICS = ("goodput_at_slo_per_chip", "cost_per_1M_tokens_at_slo")
+PRIMARY_METRICS = ("goodput_at_slo_per_chip", "cost_per_1M_tokens_at_slo",
+                   "total_tokens_per_s_per_chip",
+                   "output_tokens_per_s_per_chip")
 DEFAULT_PRIMARY_METRIC = "goodput_at_slo_per_chip"
+# The InferenceX AgentX leaderboard ranks on total tok/s per chip with
+# output tok/s per chip alongside; a closed-loop concurrency workload has
+# no goodput-at-rate to rank on.
+AGENTX_PRIMARY_METRICS = ("total_tokens_per_s_per_chip",
+                          "output_tokens_per_s_per_chip")
+AGENTX_DEFAULT_PRIMARY_METRIC = "total_tokens_per_s_per_chip"
+AGENTX_SHAPE_KIND = "agentx"
+AGENTX_TENANT = "agentx"
 
 # SLO keys the spec may carry per tenant. inference-perf reports these
 # latencies per stage; `bench` reads the matching percentile back out.
@@ -194,27 +204,155 @@ def _catalog_default_slo(shape: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in slos.items() if SLO_KEY.match(k)}
 
 
+def is_agentx(profile: dict[str, Any]) -> bool:
+    """Whether a resolved profile is the closed-loop AgentX replay."""
+    return (profile.get("shape") or {}).get("kind") == AGENTX_SHAPE_KIND
+
+
+def concurrency_points(agentx: dict[str, Any]) -> list[int]:
+    """The concurrency ladder of an AgentX spec: an explicit list, or
+    `{start, step, max}` (start, start+step, ... <= max)."""
+    conc = agentx.get("concurrency")
+    if isinstance(conc, list):
+        points = sorted({int(c) for c in conc})
+    elif isinstance(conc, dict):
+        start = int(conc.get("start") or 0)
+        step = int(conc.get("step") or 0)
+        top = int(conc.get("max") or 0)
+        if start < 1 or step < 1 or top < start:
+            raise DeployError(
+                "workload.agentx.concurrency {start, step, max} needs"
+                " start >= 1, step >= 1, max >= start",
+                error_code="INVALID_FIELD")
+        points = list(range(start, top + 1, step))
+    else:
+        raise DeployError(
+            "workload.agentx.concurrency must be a list of integers or"
+            " {start, step, max}", error_code="INVALID_FIELD")
+    if not points or min(points) < 1:
+        raise DeployError("workload.agentx.concurrency needs values >= 1",
+                          error_code="INVALID_FIELD")
+    return points
+
+
+def _resolve_agentx(spec: dict[str, Any]) -> dict[str, Any]:
+    """The profile of an AgentX spec: one tenant, a concurrency ladder,
+    aiperf's scenario parameters, the leaderboard objective and gates."""
+    agentx = dict((spec.get("workload") or {}).get("agentx") or {})
+    points = concurrency_points(agentx)
+    loader = str(agentx.get("dataset_loader") or pins.AGENTX_DATASET_LOADER)
+    dataset = agentx.get("dataset") or pins.AGENTX_DATASETS.get(loader)
+    if not dataset:
+        raise DeployError(
+            f"workload.agentx.dataset_loader {loader!r} is not one the"
+            " pins know; set workload.agentx.dataset to its HF id",
+            error_code="INVALID_FIELD")
+    fast = bool(agentx.get("fast"))
+    duration = int(agentx.get("duration_s") or (
+        pins.AGENTX_FAST_DURATION_S if fast else pins.AGENTX_DURATION_S))
+    warmup = int(agentx.get("warmup_requests_per_lane") or (
+        pins.AGENTX_FAST_WARMUP_PER_LANE if fast else
+        pins.AGENTX_WARMUP_PER_LANE))
+    objective = dict(spec.get("objective") or {})
+    primary = objective.get("primary_metric") or AGENTX_DEFAULT_PRIMARY_METRIC
+    if primary not in AGENTX_PRIMARY_METRICS:
+        raise DeployError(
+            f"objective.primary_metric for an AgentX workload must be one"
+            f" of {AGENTX_PRIMARY_METRICS}", error_code="INVALID_FIELD")
+    objective["primary_metric"] = primary
+    tenancy = list(spec.get("tenancy") or [])
+    if len(tenancy) > 1:
+        raise DeployError("an AgentX workload has one tenant (the replay)",
+                          error_code="INVALID_FIELD")
+    tenant = dict(tenancy[0]) if tenancy else {}
+    tenant.setdefault("name", AGENTX_TENANT)
+    tenant.setdefault("share", 1.0)
+    tenant.setdefault("priority", 0)
+    tenants = _validate_tenants(
+        [tenant], {"ttft_p50_ms": pins.AGENTX_TTFT_P50_GATE_MS})
+    availability = dict(spec.get("availability") or {})
+    # InferenceX's post-run validity gate, not this suite's 0.1 % default:
+    # the replay's own error accounting drops failed records first.
+    availability.setdefault("error_rate_max", pins.AGENTX_FAILED_THRESHOLD)
+    return {
+        "name": str(spec.get("name") or "agentx"),
+        "source": {"kind": AGENTX_SHAPE_KIND,
+                   "scenario": str(agentx.get("scenario") or
+                                   pins.AGENTX_SCENARIO),
+                   "dataset_loader": loader, "dataset": str(dataset),
+                   "aiperf_ref": str(agentx.get("aiperf_ref") or
+                                     pins.AIPERF_REF),
+                   "summary": f"InferenceX AgentX replay ({loader}),"
+                              f" concurrency {points}, {duration} s/point"},
+        "shape": {"kind": AGENTX_SHAPE_KIND, "data_type": "trace_replay",
+                  "multi_turn": True,
+                  "metadata": {"prefill_decode_ratio": "agentic",
+                               "suitable_optimizations": [
+                                   "pd_disaggregation", "session_affinity",
+                                   "prefix_caching", "kv_offload"]}},
+        "rate": {"target_qps": None, "peak_qps": None, "sweep": [],
+                 "sweep_explicit": [], "mode": "closed-loop"},
+        "agentx": {
+            "scenario": str(agentx.get("scenario") or pins.AGENTX_SCENARIO),
+            "dataset_loader": loader,
+            "dataset": str(dataset),
+            "aiperf_ref": str(agentx.get("aiperf_ref") or pins.AIPERF_REF),
+            "concurrency": points,
+            "duration_s": duration,
+            "fast": fast,
+            "warmup_requests_per_lane": warmup,
+            "warmup_grace_s": int(agentx.get("warmup_grace_s") or
+                                  pins.AGENTX_WARMUP_GRACE_S),
+            "trace_idle_gap_cap_s": int(agentx.get("trace_idle_gap_cap_s")
+                                        or pins.AGENTX_IDLE_GAP_CAP_S),
+            "live_failed_request_threshold": float(
+                agentx.get("live_failed_request_threshold") or
+                pins.AGENTX_LIVE_FAILED_THRESHOLD),
+            "num_dataset_entries": int(agentx.get("num_dataset_entries") or
+                                       pins.AGENTX_NUM_DATASET_ENTRIES),
+            "served_model_name": agentx.get("served_model_name"),
+            "tokenizer": agentx.get("tokenizer"),
+            "max_context_length": agentx.get("max_context_length"),
+            "extra_args": [str(a) for a in (agentx.get("extra_args") or [])],
+            "unsafe_override": duration < pins.AGENTX_MIN_VALID_DURATION_S
+            or bool(agentx.get("unsafe_override")),
+            "submission_valid": duration >= pins.AGENTX_MIN_VALID_DURATION_S
+            and not agentx.get("unsafe_override"),
+        },
+        "tenants": tenants,
+        "objective": objective,
+        "availability": availability,
+        "budget": dict(spec.get("budget") or {}),
+        "constraints": dict(spec.get("constraints") or {}),
+        "search": dict(spec.get("search") or {}),
+        "overrides": {},
+        "base_config": {},
+    }
+
+
 def resolve_workload(spec: dict[str, Any],
                      spec_dir: pathlib.Path | None = None) -> dict[str, Any]:
     """Resolve a workload spec into the profile every later step reads.
 
-    Exactly one of `workload.catalog_entry` and
-    `workload.inference_perf_config` must be set. `workload.trace` is
-    reserved: turning a request log into a replay config is a later
-    milestone, and refusing it here is better than silently benchmarking
-    something else.
+    Exactly one of `workload.catalog_entry`, `workload.inference_perf_config`
+    and `workload.agentx` must be set. `workload.trace` is reserved: turning
+    a request log into a replay config is a later milestone, and refusing
+    it here is better than silently benchmarking something else.
     """
     workload = spec.get("workload") or {}
     sources = [
-        k for k in ("catalog_entry", "inference_perf_config", "trace")
+        k for k in ("catalog_entry", "inference_perf_config", "trace",
+                    "agentx")
         if workload.get(k)
     ]
     if len(sources) != 1:
         raise DeployError(
             "workload must set exactly one of catalog_entry,"
-            " inference_perf_config, trace",
+            " inference_perf_config, trace, agentx",
             error_code="INVALID_FIELD")
     source_kind = sources[0]
+    if source_kind == "agentx":
+        return _resolve_agentx(spec)
     if source_kind == "trace":
         raise DeployError(
             "workload.trace is not supported yet; convert the trace to an"

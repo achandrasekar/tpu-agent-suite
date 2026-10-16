@@ -951,7 +951,7 @@ class MultiHostAndSimRenderTest(unittest.TestCase):
         self.assertEqual(env["TPU_MULTIHOST_BACKEND"], "ray")
         self.assertEqual(rel["pools"], [{
             "name": "mh-decode", "role": "decode", "kind": "LeaderWorkerSet",
-            "replicas": 2, "hosts": 2}])
+            "replicas": 2, "hosts": 2, "engine_port": 8000}])
         # The Service still selects by release + role, i.e. leaders only.
         svc = items[("Service", "mh-modelserver")]
         self.assertEqual(svc["spec"]["selector"],
@@ -2170,6 +2170,273 @@ class AgentXLaunchRenderTest(unittest.TestCase):
             render.modelserver_manifests("p", RECIPE, plain,
                                          dict(ENV_SUBSET), False)
         self.assertEqual(ctx.exception.error_code, "ENGINE_KNOB_UNMAPPED")
+
+
+AGENTX_SPEC = {
+    "name": "qwen35-agentx",
+    "workload": {"agentx": {"concurrency": [8, 16, 24], "fast": True}},
+    "budget": {"max_chips": 24, "accelerator": "tpu7x"},
+}
+
+
+def _agentx_records(n: int = 20, ttft_ms: float = 1200.0,
+                    itl_ms: float = 4.0, warm: int = 3,
+                    errors: int = 1) -> str:
+    """A profile_export.jsonl: `warm` warm-up rows, `errors` failed rows,
+    `n` profiled rows 10 s apart, 1000 in / 200 out tokens each."""
+    rows = []
+    t0 = 1_700_000_000_000_000_000
+    for i in range(warm):
+        rows.append({"metadata": {"benchmark_phase": "warmup",
+                                  "request_start_ns": t0,
+                                  "request_end_ns": t0 + 10**9},
+                     "metrics": {"time_to_first_token": {"value": 50.0}}})
+    for i in range(errors):
+        rows.append({"metadata": {"benchmark_phase": "profiling",
+                                  "request_start_ns": t0,
+                                  "request_end_ns": t0 + 10**9},
+                     "error": {"code": 502, "message": "bad gateway"}})
+    for i in range(n):
+        start = t0 + i * 10 * 10**9
+        rows.append({"metadata": {"benchmark_phase": "profiling",
+                                  "request_start_ns": start,
+                                  "request_end_ns": start + 5 * 10**9},
+                     "metrics": {"time_to_first_token": {"value": ttft_ms},
+                                 "request_latency": {"value": 5000.0},
+                                 "inter_token_latency": {"value": itl_ms},
+                                 "input_sequence_length": {"value": 1000},
+                                 "output_sequence_length": {"value": 200}}})
+    return "\n".join(json.dumps(r) for r in rows) + "\n"
+
+
+class AgentXWorkloadTest(unittest.TestCase):
+
+    def test_agentx_spec_resolves_to_a_closed_loop_profile(self):
+        profile = workload.resolve_workload(copy.deepcopy(AGENTX_SPEC))
+        self.assertTrue(workload.is_agentx(profile))
+        ax = profile["agentx"]
+        self.assertEqual(ax["concurrency"], [8, 16, 24])
+        self.assertEqual(ax["duration_s"], pins.AGENTX_FAST_DURATION_S)
+        self.assertEqual(ax["warmup_requests_per_lane"], 1)
+        self.assertEqual(ax["dataset"],
+                         "semianalysisai/cc-traces-weka-062126-256k")
+        self.assertTrue(ax["submission_valid"])
+        self.assertFalse(ax["unsafe_override"])
+        self.assertEqual(profile["objective"]["primary_metric"],
+                         "total_tokens_per_s_per_chip")
+        self.assertEqual(profile["tenants"][0]["name"], "agentx")
+        self.assertEqual(profile["tenants"][0]["slo"], {"ttft_p50_ms": 5000})
+        self.assertEqual(profile["availability"]["error_rate_max"], 0.10)
+        self.assertIsNone(profile["rate"]["target_qps"])
+        # A range ladder, a short duration, and the metric guard.
+        spec = copy.deepcopy(AGENTX_SPEC)
+        spec["workload"]["agentx"] = {"concurrency": {"start": 96, "step": 48,
+                                                      "max": 240},
+                                      "duration_s": 300}
+        prof = workload.resolve_workload(spec)
+        self.assertEqual(prof["agentx"]["concurrency"], [96, 144, 192, 240])
+        self.assertTrue(prof["agentx"]["unsafe_override"])
+        self.assertFalse(prof["agentx"]["submission_valid"])
+        spec["objective"] = {"primary_metric": "goodput_at_slo_per_chip"}
+        with self.assertRaises(DeployError):
+            workload.resolve_workload(spec)
+
+    def test_render_writes_one_aiperf_job_for_both_stages(self):
+        profile = workload.resolve_workload(copy.deepcopy(AGENTX_SPEC))
+        cfg = render.default_config(AGENTX_RECIPE, replicas=1)
+        cfg["topology"]["mode"] = "disaggregated"
+        cfg["topology"]["prefill"] = {"replicas": 2, "tp": 8}
+        cfg["topology"]["decode"]["tp"] = 8
+        cfg["router"]["profile"] = "agentx-session-affinity"
+        cfg["workload"]["concurrency"] = 96
+        with tempfile.TemporaryDirectory() as tmp:
+            out = pathlib.Path(tmp)
+            rel = render.render_release(
+                name="agx", config=cfg, recipe=AGENTX_RECIPE, profile=profile,
+                env=dict(ENV_SUBSET), out_dir=out,
+                now="2026-10-16T00:00:00+00:00")
+            files = rel["files"]["bench"]
+            self.assertEqual(files["agentx.slo"], files["agentx.sweep"])
+            job = json.loads((out / files["agentx.slo"]["job"]).read_text())
+            cm = json.loads((out / files["agentx.slo"]["configmap"]).read_text())
+            run = cm["data"]["run.sh"]
+            self.assertIn(render.AGENTX_AGGREGATE_FILE, cm["data"])
+        self.assertEqual(rel["workload"]["harness"], "aiperf")
+        self.assertEqual(rel["workload"]["agentx"]["operating_point"], 96)
+        self.assertEqual(rel["pools"][1]["engine_port"], 8000)
+        self.assertEqual(rel["pools"][0]["engine_port"], 7200)
+        c = job["spec"]["template"]["spec"]["containers"][0]
+        self.assertEqual(c["image"], pins.AIPERF_BENCH_IMAGE)
+        names = {e["name"] for e in c["env"]}
+        self.assertIn(render.AGENTX_CONC_ENV, names)
+        self.assertIn(render.AGENTX_METRICS_ENV, names)
+        # The command InferenceX builds, flag for flag.
+        for flag in ("--scenario \"inferencex-agentx-mvp\"",
+                     "--endpoint \"/v1/chat/completions\"",
+                     "--endpoint-type \"chat\"", "--streaming",
+                     "aiperf profile --scenario",
+                     "--concurrency $AGENTX_CONCURRENCY",
+                     "--benchmark-duration \"1200\"",
+                     "--random-seed \"42\"",
+                     "--failed-request-threshold \"0.25\"",
+                     "--trajectory-start-min-ratio \"0.25\"",
+                     "--warmup-requests-per-lane \"1\"",
+                     "--trace-idle-gap-cap-seconds \"300\"",
+                     "--warmup-grace-period \"1800\"",
+                     "--use-server-token-count", "--no-gpu-telemetry",
+                     "--tokenizer-trust-remote-code",
+                     "--num-dataset-entries \"393\"",
+                     "--slice-duration \"1.0\"",
+                     "--public-dataset"
+                     " \"semianalysis_cc_traces_weka_062126_256k\"",
+                     "--tokenizer \"Qwen/Qwen3.5-397B-A17B-FP8\"",
+                     f"git+{pins.AIPERF_REPO}@{pins.AIPERF_REF}",
+                     "hf download --repo-type dataset"
+                     " \"semianalysisai/cc-traces-weka-062126-256k\"",
+                     "AIPERF_HTTP_X_DYNAMO_SESSION_ID_FROM_CORRELATION_ID",
+                     "--server-metrics"):
+            self.assertIn(flag, run, flag)
+        self.assertNotIn("--unsafe-override", run)
+        self.assertNotIn("--max-context-length", run)
+
+    def test_reducer_applies_the_inferencex_formulas(self):
+        from framework.deploy import agentx_aggregate as agg
+        with tempfile.TemporaryDirectory() as tmp:
+            art = pathlib.Path(tmp) / "aiperf_artifacts"
+            art.mkdir()
+            (art / "profile_export.jsonl").write_text(_agentx_records())
+            (art / "profile_export_aiperf.json").write_text(json.dumps({
+                "metadata": {"dataset": {"name": "x"}, "concurrency": 8},
+                "request_count": {"avg": 24}}))
+            (art / "server_metrics_export.json").write_text(json.dumps([
+                {"name": "vllm:prefix_cache_hits", "value": 800},
+                {"name": "vllm:prefix_cache_queries", "value": 1000},
+                {"name": "vllm:external_prefix_cache_hits", "value": 50},
+                {"name": "vllm:external_prefix_cache_queries", "value": 1000},
+            ]))
+            doc = agg.aggregate(art.parent, 8)
+        self.assertEqual(doc["status"], "ok")
+        reqs = doc["requests"]
+        self.assertEqual((reqs["records_total"], reqs["records_profiled"],
+                          reqs["records_warmup_dropped"],
+                          reqs["records_error_dropped"]), (24, 20, 3, 1))
+        self.assertEqual(reqs["error_categories"], {"http_502": 1})
+        # 20 requests, first start to last end = 19*10 + 5 = 195 s.
+        th = doc["throughput"]
+        self.assertAlmostEqual(th["duration_s"], 195.0)
+        self.assertAlmostEqual(th["total_tokens_per_s"], 24000 / 195.0)
+        self.assertAlmostEqual(th["output_tokens_per_s"], 4000 / 195.0)
+        self.assertAlmostEqual(doc["latency_s"]["ttft"]["p50"], 1.2)
+        self.assertAlmostEqual(doc["latency_s"]["tpot"]["p50"], 0.004)
+        self.assertAlmostEqual(doc["interactivity_tok_s_per_user"]["p50"],
+                               250.0)
+        self.assertAlmostEqual(doc["cache"]["gpu_hit_rate"], 0.8)
+        self.assertAlmostEqual(doc["cache"]["cpu_hit_rate"], 0.05)
+        self.assertEqual(doc["aiperf"]["concurrency"], 8)
+
+    def test_run_agentx_bench_drains_resets_samples_and_scores(self):
+        class ProxyRunner(FakeRunner):
+            """Answers the pod proxy: /metrics with running=0 once drained,
+            counters that advance per call; records POSTs."""
+            def __init__(self, logs):
+                super().__init__(json_docs={
+                    "get job": {"status": {"succeeded": 1}},
+                    "get pods": {"items": [
+                        {"metadata": {"name": "agx-prefill-0", "labels": {
+                            pins.LLMD_ROLE_LABEL: "prefill"}},
+                         "status": {"podIP": "10.0.0.1"}},
+                        {"metadata": {"name": "agx-decode-0", "labels": {
+                            pins.LLMD_ROLE_LABEL: "decode"}},
+                         "status": {"podIP": "10.0.0.2"}}]}}, logs=logs)
+                self.scrapes = 0
+
+            def __call__(self, cmd, *, stdin=None, timeout=None):
+                joined = " ".join(cmd)
+                if "get job" in joined and self.scrapes < 6:
+                    # Still running for the first polls, so the sampler
+                    # sees the point more than once.
+                    self.calls.append(list(cmd))
+                    return subprocess.CompletedProcess(
+                        cmd, 0, '{"status": {"active": 1}}', "")
+                if "get --raw" in joined and "/metrics" in joined:
+                    self.calls.append(list(cmd))
+                    self.scrapes += 1
+                    text = ("vllm:num_requests_running{m=\"x\"} 0\n"
+                            "vllm:num_requests_waiting{m=\"x\"} 0\n"
+                            "vllm:kv_cache_usage_perc{m=\"x\"} 0.4\n"
+                            f"vllm:prefix_cache_hits{{m=\"x\"}} {80 * self.scrapes}\n"
+                            f"vllm:prefix_cache_queries{{m=\"x\"}} {100 * self.scrapes}\n")
+                    return subprocess.CompletedProcess(cmd, 0, text, "")
+                if "create --raw" in joined:
+                    self.calls.append(list(cmd))
+                    return subprocess.CompletedProcess(
+                        cmd, 0, '{"success": true}', "")
+                return super().__call__(cmd, stdin=stdin, timeout=timeout)
+
+        from framework.deploy import agentx_aggregate as agg
+        with tempfile.TemporaryDirectory() as tmp:
+            art = pathlib.Path(tmp) / "aiperf_artifacts"
+            art.mkdir()
+            (art / "profile_export.jsonl").write_text(_agentx_records())
+            point = agg.aggregate(art.parent, 16)
+        logs = "\n".join([f"{render.BENCH_REPORT_MARK} /reports/agentx_point.json",
+                          json.dumps(point), render.BENCH_REPORT_END])
+        runner = ProxyRunner(logs)
+        env = config.DeployEnv(namespace="llmd-study")
+        profile = workload.resolve_workload(copy.deepcopy(AGENTX_SPEC))
+        cfg = render.default_config(AGENTX_RECIPE, replicas=1)
+        cfg["topology"]["mode"] = "disaggregated"
+        cfg["topology"]["prefill"] = {"replicas": 1, "tp": 8}
+        cfg["topology"]["decode"]["tp"] = 8
+        cfg["router"]["profile"] = "agentx-session-affinity"
+        cfg["workload"]["concurrency"] = 16
+        ticks = iter(range(0, 100000, 40))
+        with tempfile.TemporaryDirectory() as tmp:
+            out = pathlib.Path(tmp) / "release"
+            render.render_release(name="agx", config=cfg, recipe=AGENTX_RECIPE,
+                                  profile=profile, env=dict(ENV_SUBSET),
+                                  out_dir=out, now="2026-10-16T00:00:00+00:00")
+            report = bench.run_bench(env, out, stage="slo", replicates=1,
+                                     out_dir=pathlib.Path(tmp) / "bench",
+                                     execution_id="exec-ax", timeout_s=600,
+                                     runner=runner, sleep=lambda s: None,
+                                     clock=lambda: float(next(ticks)))
+            schema = json.loads(
+                (_NEXUS / "package" / "schemas" /
+                 "llmd-bench-report.json").read_text(encoding="utf-8"))
+            self.assertEqual(utils.validate_instance(report, schema), [])
+        self.assertEqual(report["primary_metric"], "total_tokens_per_s_per_chip")
+        self.assertEqual(report["agentx"]["best_concurrency"], 16)
+        self.assertEqual(len(report["agentx"]["points"]), 1)
+        chips = report["release"]["chips_total"]
+        self.assertEqual(chips, 8)
+        self.assertAlmostEqual(report["metrics"]["total_tokens_per_s_per_chip"]
+                               ["value"], 24000 / 195.0 / 8)
+        self.assertTrue(report["admissible"])
+        t = report["tenants"]["agentx"]
+        self.assertAlmostEqual(t["slo"]["ttft_p50_ms"]["measured_ms"], 1200.0)
+        self.assertAlmostEqual(t["error_rate"], 1 / 21)
+        # The point's Job got its concurrency and the prefill metrics URL.
+        applied = [json.loads(s) for s in runner.stdins
+                   if s and s.lstrip().startswith("{") and '"Job"' in s]
+        env_map = {e["name"]: e.get("value") for e in applied[-1]["spec"]
+                   ["template"]["spec"]["containers"][0]["env"]}
+        self.assertEqual(env_map[render.AGENTX_CONC_ENV], "16")
+        self.assertEqual(env_map[render.AGENTX_METRICS_ENV],
+                         "http://10.0.0.1:8000/metrics")
+        # Drained through the pod proxy, reset both engines, sampled roles.
+        self.assertEqual(len(runner.matching("create", "--raw")), 2)
+        rep = report["agentx"]["points"][0]["tenant"]["replicates"][0]
+        self.assertTrue(rep["drain"]["drained"])
+        self.assertEqual([r["ok"] for r in rep["prefix_reset"]], [True, True])
+        self.assertIn("prefill", rep["roles"])
+        self.assertAlmostEqual(rep["roles"]["prefill"]["prefix_hit_rate"], 0.8)
+        self.assertEqual(rep["roles"]["decode"]["kv_util_max"], 0.4)
+
+    def test_concurrency_is_a_bench_path(self):
+        self.assertEqual(release.classify_path("workload.concurrency"),
+                         "bench")
+        self.assertEqual(release.classify_path("router.plugins.x"), "hot")
 
 
 if __name__ == "__main__":

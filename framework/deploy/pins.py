@@ -165,6 +165,40 @@ AGENTX_SIDECAR_ARGS = ["--port={port}", "--model-server-port={decode_port}",
                        "--kv-connector={connector}", "--secure-serving=false"]
 EPP_CONFIG_API_VERSION_V1 = "llm-d.ai/v1"
 
+# The InferenceX AgentX harness: aiperf at the submodule pin of
+# SemiAnalysisAI/InferenceX (utils/aiperf), run as
+# `aiperf profile --scenario inferencex-agentx-mvp ...` exactly as
+# benchmarks/benchmark_lib.sh build_replay_cmd composes it; traces are the
+# public HF dataset the scenario's `--public-dataset` loader names. The
+# bench image is a uv-equipped Python so the Job installs aiperf at the pin
+# into its own venv (InferenceX does the same inside the server image).
+AIPERF_REPO = "https://github.com/SemiAnalysisAI/aiperf.git"
+AIPERF_REF = "754356e9a39acc6cc6afb242d123bb57c3fb6f75"
+AIPERF_BENCH_IMAGE = "ghcr.io/astral-sh/uv:python3.11-bookworm"
+AGENTX_SCENARIO = "inferencex-agentx-mvp"
+AGENTX_DATASET_LOADER = "semianalysis_cc_traces_weka_062126_256k"
+AGENTX_DATASETS = {
+    "semianalysis_cc_traces_weka_062126_256k":
+        "semianalysisai/cc-traces-weka-062126-256k",
+    "semianalysis_cc_traces_weka_062126":
+        "semianalysisai/cc-traces-weka-062126",
+    "semianalysis_cc_traces_weka_061526_256k":
+        "semianalysisai/cc-traces-weka-061526-256k",
+    "semianalysis_cc_traces_weka_061526":
+        "semianalysisai/cc-traces-weka-061526",
+}
+AGENTX_DURATION_S = 3600
+AGENTX_FAST_DURATION_S = 1200
+AGENTX_MIN_VALID_DURATION_S = 900   # shorter runs need --unsafe-override
+AGENTX_WARMUP_PER_LANE = 10
+AGENTX_FAST_WARMUP_PER_LANE = 1
+AGENTX_WARMUP_GRACE_S = 1800
+AGENTX_IDLE_GAP_CAP_S = 300
+AGENTX_LIVE_FAILED_THRESHOLD = 0.25   # aiperf aborts the run past this
+AGENTX_FAILED_THRESHOLD = 0.10        # InferenceX's post-run validity gate
+AGENTX_TTFT_P50_GATE_MS = 5000        # default TTFT p50 qualifying gate
+AGENTX_NUM_DATASET_ENTRIES = 393
+
 # vLLM KV-event publishing for precise prefix routing
 # (guides/precise-prefix-cache-routing/modelserver/*/patch-vllm.yaml and
 # router/precise-prefix-cache-routing.values.yaml at LLMD_REF). The guide

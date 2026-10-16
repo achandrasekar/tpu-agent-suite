@@ -69,6 +69,9 @@ WARM_PREFIXES = ("engine.", "kv.block_size", "topology.prefill.engine.",
 # its own arm.
 COLD_EXCEPTIONS = ("router.profile", "router.flow_control",
                    "router.predicted_latency")
+# Paths that change what the benchmark does, not what runs: the closed-loop
+# operating point. Re-rendering the release is all they need.
+BENCH_PREFIXES = ("workload.",)
 
 # Kinds the release label selects, deleted at teardown in this order so the
 # Jobs stop sending before the servers go.
@@ -418,6 +421,8 @@ def classify_path(path: str) -> str:
         return "hot"
     if path.startswith(WARM_PREFIXES):
         return "warm"
+    if path.startswith(BENCH_PREFIXES):
+        return "bench"
     return "cold"
 
 
@@ -480,7 +485,8 @@ def reconfigure(env: DeployEnv,
     new_release = render.rerender(release_dir, config)
     kube = _kube_for(env, new_release, runner)
 
-    did = {"hot": False, "warm": False}
+    did = {"hot": False, "warm": False,
+           "bench": any(c == "bench" for c in classes.values())}
     if any(c == "warm" for c in classes.values()):
         kube.apply(_read(release_dir, new_release["files"]["modelserver"]))
         did["warm"] = True

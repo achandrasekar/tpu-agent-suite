@@ -403,6 +403,9 @@ def default_config(recipe: dict[str, Any], replicas: int = 1) -> dict[str, Any]:
             "epp_replicas": 1,
         },
         "engine": {},
+        # The operating point of a closed-loop (AgentX) workload: sessions
+        # in flight. A hot knob -- changing it re-benches, nothing redeploys.
+        "workload": {"concurrency": None},
         "provenance": {"arm": "baseline", "execution_id": "", "metric": None},
     }
 
@@ -429,6 +432,8 @@ def normalize_config(config: dict[str, Any]) -> dict[str, Any]:
     out["router"].setdefault("proxy_mode", None)
     out["router"].setdefault("proxy_replicas", None)
     out.setdefault("engine", {})
+    out.setdefault("workload", {})
+    out["workload"].setdefault("concurrency", None)
     out.setdefault("provenance", {})
     return out
 
@@ -507,6 +512,10 @@ def validate_config(config: dict[str, Any],
             "router.plugins has no effect under the passthrough profile;"
             " there is no EPP to configure",
             error_code="INVALID_FIELD")
+    conc = (config.get("workload") or {}).get("concurrency")
+    if conc is not None and (not isinstance(conc, int) or conc < 1):
+        raise DeployError("workload.concurrency must be an integer >= 1",
+                          error_code="INVALID_FIELD")
     allowed = set(ENGINE_FLAGS) | set(ENGINE_SWITCHES) | set(
         ENGINE_MAPPED_ONLY)
     scopes = [("engine", config["engine"])] + [
@@ -938,13 +947,17 @@ def pool_names(name: str, config: dict[str, Any]) -> list[str]:
     return out
 
 
-def pool_records(name: str, config: dict[str, Any]) -> list[dict[str, Any]]:
+def pool_records(name: str, config: dict[str, Any],
+                 recipe: dict[str, Any] | None = None
+                 ) -> list[dict[str, Any]]:
     """What each pool is on the cluster, so `wait`/`status`/`drill` read
     the right kind: a Deployment for single-host replicas, a
-    LeaderWorkerSet for multi-host ones."""
+    LeaderWorkerSet for multi-host ones. `engine_port` is where the
+    engine itself answers /metrics (behind the sidecar under P/D)."""
     roles = [ROLE_DECODE]
     if config["topology"].get("mode") == "disaggregated":
         roles.append(ROLE_PREFILL)
+    ports = engine_ports(recipe or {}, config)
     out = []
     for role in roles:
         hosts = pool_hosts(config, role)
@@ -955,6 +968,7 @@ def pool_records(name: str, config: dict[str, Any]) -> list[dict[str, Any]]:
             "replicas": int((config["topology"].get(role) or {}).get(
                 "replicas") or 1),
             "hosts": hosts,
+            "engine_port": ports[role],
         })
     return out
 
@@ -2099,6 +2113,12 @@ DEFAULT_SIZING: dict[str, dict[str, dict[str, str]]] = {
             "limits": {"memory": "16Gi"}},
     "proxy": {"requests": {"cpu": "4", "memory": "8Gi"},
               "limits": {"memory": "16Gi"}},
+    # aiperf reconstructs the 393 AgentX traces (256k-token contexts) in
+    # memory before the replay; the pod was OOM-killed at 8Gi on kind and
+    # finished at 16Gi. InferenceX runs it inside the server image with
+    # the node's whole memory.
+    "aiperf": {"requests": {"cpu": "4", "memory": "12Gi"},
+               "limits": {"memory": "32Gi"}},
 }
 
 
@@ -2170,6 +2190,181 @@ def bench_job(name: str, tenant: str, stage: str, env: dict[str, Any],
                 },
             },
         },
+    }
+
+
+AGENTX_AGGREGATE_FILE = "agentx_aggregate.py"
+AGENTX_POINT_FILE = "agentx_point.json"
+AGENTX_BENCH_CONTAINER = "aiperf"
+# Env the bench runner sets per point; the Job script reads them.
+AGENTX_CONC_ENV = "AGENTX_CONCURRENCY"
+AGENTX_METRICS_ENV = "AGENTX_SERVER_METRICS_URLS"
+
+
+def aiperf_command(profile: dict[str, Any], *, base_url: str,
+                   model_name: str, tokenizer: str | None) -> list[str]:
+    """`aiperf profile ...` for the AgentX scenario, flag for flag as
+    InferenceX's build_replay_cmd composes it (benchmarks/benchmark_lib.sh),
+    with the concurrency and server-metrics URLs read from
+    env at run time so one rendered Job serves every point."""
+    agentx = profile["agentx"]
+    served = str(agentx.get("served_model_name") or model_name)
+    tok = str(agentx.get("tokenizer") or tokenizer or model_name)
+    cmd = [
+        "aiperf", "profile", "--scenario", agentx["scenario"],
+        "--url", base_url,
+        "--endpoint", "/v1/chat/completions", "--endpoint-type", "chat",
+        "--streaming",
+        "--model", served, "--tokenizer", tok,
+        "--concurrency", f"${AGENTX_CONC_ENV}",
+        "--benchmark-duration", str(agentx["duration_s"]),
+        "--stats-interval", "30", "--random-seed", "42",
+        "--failed-request-threshold",
+        str(agentx["live_failed_request_threshold"]),
+        "--trajectory-start-min-ratio", "0.25",
+        "--trajectory-start-max-ratio", "0.75",
+        "--warmup-requests-per-lane", str(agentx["warmup_requests_per_lane"]),
+        "--trace-idle-gap-cap-seconds", str(agentx["trace_idle_gap_cap_s"]),
+        "--warmup-grace-period", str(agentx["warmup_grace_s"]),
+        "--use-server-token-count", "--no-gpu-telemetry",
+        "--tokenizer-trust-remote-code",
+    ]
+    if agentx.get("max_context_length"):
+        cmd += ["--max-context-length", str(agentx["max_context_length"])]
+    cmd += ["--num-dataset-entries", str(agentx["num_dataset_entries"]),
+            "--slice-duration", "1.0"]
+    cmd += list(agentx.get("extra_args") or [])
+    cmd += ["--output-artifact-dir", f"{BENCH_REPORT_DIR}/aiperf_artifacts"]
+    if agentx.get("unsafe_override"):
+        cmd.append("--unsafe-override")
+    cmd += ["--public-dataset", agentx["dataset_loader"]]
+    return cmd
+
+
+def agentx_bench_script(profile: dict[str, Any], *, base_url: str,
+                        model_name: str, tokenizer: str | None) -> str:
+    """The bench pod's script: aiperf at the pin in its own venv, the
+    dataset fetched, the replay run, the point reduced and echoed."""
+    agentx = profile["agentx"]
+    cmd = aiperf_command(profile, base_url=base_url, model_name=model_name,
+                         tokenizer=tokenizer)
+    quoted = " ".join(a if (a.startswith("$") or a.startswith("--") or
+                            a == "aiperf" or a == "profile")
+                      else json.dumps(a) for a in cmd)
+    metrics_flag = (f'if [ -n "${AGENTX_METRICS_ENV}" ]; then'
+                    f' set -- --server-metrics $(echo "${AGENTX_METRICS_ENV}"'
+                    f' | tr "," " "); else set --; fi')
+    lines = [
+        "set -euo pipefail",
+        "export PATH=/venv/bin:$PATH",
+        "uv venv --python 3.11 /venv >/dev/null",
+        f"uv pip install --python /venv/bin/python -q"
+        f" \"git+{pins.AIPERF_REPO}@{agentx['aiperf_ref']}\""
+        " \"datasets>=4.7.0\" \"huggingface_hub[cli]>=0.25.0\" urllib3"
+        " requests",
+        f"hf download --repo-type dataset {json.dumps(agentx['dataset'])}"
+        " >/dev/null",
+        # The EPP's agent-identity and session-affinity plugins read these
+        # headers; aiperf derives them from each trajectory's correlation
+        # id (qwen3.5_fp8_tpuv7_vllm-disagg-llmd.sh).
+        "export AIPERF_HTTP_X_DYNAMO_SESSION_ID_FROM_CORRELATION_ID="
+        "${AIPERF_HTTP_X_DYNAMO_SESSION_ID_FROM_CORRELATION_ID:-true}",
+        "export AIPERF_USE_DYNAMO_CONV_AWARE_ROUTING="
+        "${AIPERF_USE_DYNAMO_CONV_AWARE_ROUTING:-0}",
+        "export AIPERF_HTTP_TCP_USER_TIMEOUT="
+        "${AIPERF_HTTP_TCP_USER_TIMEOUT:-900000}",
+        "export AIPERF_DATASET_CONFIGURATION_TIMEOUT=1800",
+        "export AIPERF_SERVICE_PROFILE_CONFIGURE_TIMEOUT=1800",
+        "export AIPERF_UI_REALTIME_METRICS_ENABLED=true",
+        "export AIPERF_DATASET_WEKA_LIVE_ASSISTANT_RESPONSES="
+        "${AIPERF_DATASET_WEKA_LIVE_ASSISTANT_RESPONSES:-0}",
+        f'echo "concurrency=${AGENTX_CONC_ENV}"',
+        metrics_flag,
+        "rc=0",
+        f"{quoted} \"$@\" || rc=$?",
+        f"python3 {BENCH_CONFIG_DIR}/{AGENTX_AGGREGATE_FILE}"
+        f" {BENCH_REPORT_DIR}/aiperf_artifacts"
+        f" {BENCH_REPORT_DIR}/{AGENTX_POINT_FILE}"
+        f" --concurrency ${AGENTX_CONC_ENV} || true",
+        f"for f in {BENCH_REPORT_DIR}/{AGENTX_POINT_FILE}"
+        f" $(find {BENCH_REPORT_DIR}/aiperf_artifacts -maxdepth 2 -name"
+        " 'profile_export_aiperf.json' | head -1); do"
+        f" echo '{BENCH_REPORT_MARK}' \"$f\"; cat \"$f\"; echo;"
+        f" echo '{BENCH_REPORT_END}'; done",
+        "exit $rc",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def agentx_bench_job(name: str, env: dict[str, Any], production: bool,
+                     recipe: dict[str, Any]) -> dict[str, Any]:
+    """The aiperf Job. Concurrency and the server-metrics URLs are env the
+    bench runner fills per point; the script and the reducer come from
+    the ConfigMap."""
+    tenant, stage = workload.AGENTX_TENANT, "slo"
+    job_name = f"{name}-bench-{tenant}-{stage}"
+    labels = {
+        **release_labels(name, production),
+        "tpu-coworker.llmd/bench-tenant": tenant,
+        "tpu-coworker.llmd/bench-stage": stage,
+        "tpu-coworker.llmd/bench-harness": "aiperf",
+    }
+    env_list: list[dict[str, Any]] = [
+        {"name": "HF_TOKEN", "valueFrom": {"secretKeyRef": {
+            "name": env["hf_token_secret"], "key": "HF_TOKEN"}}},
+        {"name": AGENTX_CONC_ENV, "value": "1"},
+        {"name": AGENTX_METRICS_ENV, "value": ""},
+        {"name": "HF_HUB_CACHE", "value": f"{BENCH_REPORT_DIR}/hf"},
+        {"name": "UV_CACHE_DIR", "value": f"{BENCH_REPORT_DIR}/uv"},
+    ]
+    return {
+        "apiVersion": "batch/v1",
+        "kind": "Job",
+        "metadata": {"name": job_name, "labels": labels},
+        "spec": {
+            "backoffLimit": 0,
+            "ttlSecondsAfterFinished": 86400,
+            "template": {
+                "metadata": {"labels": labels},
+                "spec": {
+                    "restartPolicy": "Never",
+                    **({"nodeSelector": dict(env["cpu_node_selector"])}
+                       if env.get("cpu_node_selector") else {}),
+                    "containers": [{
+                        "name": AGENTX_BENCH_CONTAINER,
+                        "image": str(env.get("aiperf_image") or
+                                     pins.AIPERF_BENCH_IMAGE),
+                        "command": ["bash",
+                                    f"{BENCH_CONFIG_DIR}/run.sh"],
+                        "env": env_list,
+                        "volumeMounts": [
+                            {"name": "config", "mountPath": BENCH_CONFIG_DIR},
+                            {"name": "reports", "mountPath": BENCH_REPORT_DIR},
+                        ],
+                        "resources": sizing_for("aiperf", env),
+                    }],
+                    "volumes": [
+                        {"name": "config", "configMap": {"name": job_name}},
+                        {"name": "reports", "emptyDir": {}},
+                    ],
+                },
+            },
+        },
+    }
+
+
+def agentx_bench_configmap(name: str, production: bool, script: str
+                           ) -> dict[str, Any]:
+    reducer = (pathlib.Path(__file__).resolve().parent /
+               AGENTX_AGGREGATE_FILE).read_text(encoding="utf-8")
+    return {
+        "apiVersion": "v1",
+        "kind": "ConfigMap",
+        "metadata": {
+            "name": f"{name}-bench-{workload.AGENTX_TENANT}-slo",
+            "labels": release_labels(name, production)
+        },
+        "data": {"run.sh": script, AGENTX_AGGREGATE_FILE: reducer},
     }
 
 
@@ -2269,7 +2464,25 @@ def render_release(*,
 
     bench_files: dict[str, dict[str, str]] = {}
     base_url = bench_base_url(name, namespace, config, fleet)
-    for tenant in profile["tenants"]:
+    agentx = workload.is_agentx(profile)
+    if agentx:
+        # One aiperf Job per release; the runner sets the concurrency per
+        # point. Both stages read it: `slo` runs the config's operating
+        # point, `sweep` the spec's whole ladder.
+        script = agentx_bench_script(profile, base_url=base_url,
+                                     model_name=recipe["model"],
+                                     tokenizer=recipe.get("tokenizer"))
+        key = f"{workload.AGENTX_TENANT}.slo"
+        cm_path = f"{BENCH_DIR}/{key}.configmap.json"
+        job_path = f"{BENCH_DIR}/{key}.job.json"
+        _write(out_dir / cm_path,
+               agentx_bench_configmap(name, production, script))
+        _write(out_dir / job_path,
+               agentx_bench_job(name, env, production, recipe))
+        entry = {"configmap": cm_path, "job": job_path, "harness": "aiperf"}
+        bench_files[key] = {**entry, "shards": [entry]}
+        bench_files[f"{workload.AGENTX_TENANT}.sweep"] = bench_files[key]
+    for tenant in ([] if agentx else profile["tenants"]):
         for stage in BENCH_STAGES:
             ip_config = workload.render_inference_perf(
                 profile,
@@ -2363,6 +2576,15 @@ def render_release(*,
             "tenants": [t["name"] for t in profile["tenants"]],
             "target_qps": profile["rate"]["target_qps"],
             "primary_metric": profile["objective"]["primary_metric"],
+            "harness": "aiperf" if agentx else "inference-perf",
+            **({"agentx": {
+                "concurrency": profile["agentx"]["concurrency"],
+                "operating_point": config["workload"].get("concurrency"),
+                "duration_s": profile["agentx"]["duration_s"],
+                "aiperf_ref": profile["agentx"]["aiperf_ref"],
+                "dataset": profile["agentx"]["dataset"],
+                "submission_valid": profile["agentx"]["submission_valid"],
+            }} if agentx else {}),
         },
         "env": env,
         "files": {
@@ -2373,7 +2595,7 @@ def render_release(*,
             "bench": bench_files,
         },
         "deployments": [] if adopted else pool_names(name, config),
-        "pools": [] if adopted else pool_records(name, config),
+        "pools": [] if adopted else pool_records(name, config, recipe),
         "history": [],
     }
     _write(out_dir / RELEASE_FILE, release)

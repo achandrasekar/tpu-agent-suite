@@ -162,15 +162,22 @@ def register_deploy_parser(sub: Any) -> None:
     v.add_argument("--set", action="append", default=[], metavar="PATH=VALUE")
 
     v = verbs.add_parser("bench", parents=[common],
-                         help="Run the release's inference-perf Jobs")
+                         help="Run the release's benchmark Jobs"
+                              " (inference-perf, or aiperf for AgentX)")
     v.add_argument("--name", required=True)
     v.add_argument("--release", default=None)
-    v.add_argument("--stage", choices=list(render.BENCH_STAGES), required=True)
+    v.add_argument("--stage", choices=list(render.BENCH_STAGES), required=True,
+                   help="inference-perf: sweep = rate ladder, slo = target"
+                        " rate. AgentX: slo = the config's concurrency,"
+                        " sweep = the spec's whole concurrency ladder")
     v.add_argument("--replicates", type=int, default=1)
     v.add_argument("--out", required=True, type=pathlib.Path)
     v.add_argument("--execution-id", default=None)
     v.add_argument("--timeout", type=int,
                    default=bench_mod.DEFAULT_JOB_TIMEOUT_S)
+    v.add_argument("--concurrency", type=int, default=None,
+                   help="AgentX only: the point to run instead of the"
+                        " config's workload.concurrency")
 
     v = verbs.add_parser("collect", parents=[common],
                          help="Fleet metrics over a window from Prometheus")
@@ -336,7 +343,8 @@ def dispatch(args: argparse.Namespace) -> dict[str, Any] | str:
                                    replicates=args.replicates,
                                    out_dir=args.out,
                                    execution_id=args.execution_id,
-                                   timeout_s=args.timeout)
+                                   timeout_s=args.timeout,
+                                   concurrency=args.concurrency)
     if action == "collect":
         return collect_mod.collect(env, rd, window=args.window,
                                    out_dir=args.out)

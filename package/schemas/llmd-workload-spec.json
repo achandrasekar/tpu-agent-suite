@@ -15,7 +15,7 @@
     "workload": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Exactly one of catalog_entry, inference_perf_config, trace.",
+      "description": "Exactly one of catalog_entry, inference_perf_config, trace, agentx.",
       "properties": {
         "catalog_entry": {
           "type": "string",
@@ -81,6 +81,91 @@
               "type": "boolean"
             }
           }
+        },
+        "agentx": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "The SemiAnalysis InferenceX AgentX benchmark: aiperf's `inferencex-agentx-mvp` scenario replaying the public agentic-coding traces in closed loop at a fixed number of concurrent sessions. The suite runs the exact aiperf command InferenceX's benchmark_lib.sh builds (pin 754356e9) and reduces the export with InferenceX's formulas, so a point is the number the submission pipeline would compute. Ranking is total tok/s per chip; the qualifying gate defaults to TTFT p50 <= 5 s (tenancy[].slo overrides).",
+          "required": [
+            "concurrency"
+          ],
+          "properties": {
+            "concurrency": {
+              "type": [
+                "array",
+                "object"
+              ],
+              "description": "The ladder of points: a list of integers (InferenceX's conc-list, e.g. [8,16,24,32,48,64,80,96]) or {start, step, max}. The search climbs along it; a submission sweep measures all of it."
+            },
+            "scenario": {
+              "type": "string",
+              "description": "aiperf scenario (default inferencex-agentx-mvp)."
+            },
+            "dataset_loader": {
+              "type": "string",
+              "description": "aiperf --public-dataset loader (default semianalysis_cc_traces_weka_062126_256k)."
+            },
+            "dataset": {
+              "type": "string",
+              "description": "HF dataset id behind the loader when it is not one the pins know."
+            },
+            "duration_s": {
+              "type": "integer",
+              "minimum": 60,
+              "description": "Seconds per point (default 3600; 1200 in fast mode). Below 900 aiperf needs --unsafe-override and the point is not submission-valid."
+            },
+            "fast": {
+              "type": "boolean",
+              "description": "InferenceX's AIPERF_EXPERIMENTAL_FAST: 1200 s and one warm-up request per lane. For search rounds, not for the submission sweep."
+            },
+            "warmup_requests_per_lane": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "warmup_grace_s": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "trace_idle_gap_cap_s": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "live_failed_request_threshold": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "num_dataset_entries": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "served_model_name": {
+              "type": "string",
+              "description": "The name the front door serves the model under when it differs from the recipe's model (aiperf --model)."
+            },
+            "tokenizer": {
+              "type": "string",
+              "description": "HF tokenizer id for aiperf (default: the recipe's tokenizer, then its model)."
+            },
+            "max_context_length": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "aiperf --max-context-length; unset replays the whole corpus as the TPU recipe does."
+            },
+            "aiperf_ref": {
+              "type": "string",
+              "description": "aiperf commit to install (default: the InferenceX submodule pin)."
+            },
+            "extra_args": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "unsafe_override": {
+              "type": "boolean"
+            }
+          }
         }
       }
     },
@@ -122,10 +207,12 @@
           "type": "string",
           "enum": [
             "goodput_at_slo_per_chip",
-            "cost_per_1M_tokens_at_slo"
+            "cost_per_1M_tokens_at_slo",
+            "total_tokens_per_s_per_chip",
+            "output_tokens_per_s_per_chip"
           ],
           "default": "goodput_at_slo_per_chip",
-          "description": "The one number verdicts are computed on. Both are always reported. cost_per_1M_tokens_at_slo needs budget.chip_hour_cost."
+          "description": "The one number verdicts are computed on. Both are always reported. cost_per_1M_tokens_at_slo needs budget.chip_hour_cost. AgentX workloads rank on total_tokens_per_s_per_chip (default) or output_tokens_per_s_per_chip; the goodput metrics do not apply to a closed-loop replay."
         },
         "target": {
           "type": "object",
