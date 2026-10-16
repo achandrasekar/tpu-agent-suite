@@ -2474,6 +2474,44 @@ class AgentXWorkloadTest(unittest.TestCase):
         self.assertEqual(sample["vllm:prefix_cache_queries_total"], 1404219.0)
         self.assertEqual(sample["vllm:kv_cache_usage_perc"], 0.25)
 
+    def test_reducer_writes_a_trimmed_server_metrics_summary(self):
+        """The Job echoes the summary, not the export: a 25-minute point's
+        export (per-second timeslices) outgrew the container log on kind
+        and rotated the point itself away."""
+        from framework.deploy import agentx_aggregate as agg
+        counter = {"vllm:prefix_cache_hits": {"type": "counter", "series": [
+            {"endpoint_url": "u", "stats": {"total": 5.0},
+             "timeslices": [{"start_ns": 1, "total": 1.0}] * 500}]}}
+        export = {"schema_version": "1.1", "summary": {"x": 1},
+                  "metrics": counter, "warmup_metrics": counter}
+        trimmed = agg.server_metrics_summary(export)
+        self.assertNotIn("timeslices", trimmed["warmup_metrics"][
+            "vllm:prefix_cache_hits"]["series"][0])
+        series = trimmed["metrics"]["vllm:prefix_cache_hits"]["series"][0]
+        self.assertNotIn("timeslices", series)
+        self.assertEqual(series["stats"]["total"], 5.0)
+        self.assertEqual(trimmed["summary"], {"x": 1})
+        self.assertLess(len(json.dumps(trimmed)), len(json.dumps(export)) / 10)
+        with tempfile.TemporaryDirectory() as tmp:
+            art = pathlib.Path(tmp) / "aiperf_artifacts"
+            art.mkdir()
+            (art / "profile_export.jsonl").write_text(_agentx_records())
+            (art / "server_metrics_export.json").write_text(json.dumps(export))
+            doc = agg.aggregate(art.parent, 8, art.parent)
+            summary = art.parent / agg.SERVER_METRICS_SUMMARY_FILE
+            self.assertTrue(summary.is_file())
+            self.assertEqual(json.loads(summary.read_text())["trimmed"],
+                             "timeslices dropped")
+        self.assertTrue(doc["cache"]["present"])
+        script = render.agentx_bench_script(
+            workload.resolve_workload(copy.deepcopy(AGENTX_SPEC)),
+            base_url="http://router:80", model_name="m", tokenizer=None)
+        self.assertIn(render.AGENTX_SERVER_METRICS_SUMMARY_FILE, script)
+        self.assertNotIn("'server_metrics_export.json'", script)
+        # The point is echoed last.
+        self.assertGreater(script.rfind(render.AGENTX_POINT_FILE),
+                           script.rfind(render.AGENTX_SERVER_METRICS_SUMMARY_FILE))
+
     def test_concurrency_is_a_bench_path(self):
         self.assertEqual(release.classify_path("workload.concurrency"),
                          "bench")

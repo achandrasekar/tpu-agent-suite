@@ -272,6 +272,16 @@ def propose(profile: dict[str, Any], recipe: dict[str, Any],
     admissible = bool((incumbent_report or {}).get("admissible"))
     tried = {str(d.get("sets", {}).get("workload.concurrency"))
              for d in decided if "workload.concurrency" in (d.get("sets") or {})}
+    # The rung the incumbent shape could not hold (an operating-point arm
+    # above `cur` that failed its gate): the shape and bound-role arms
+    # claim *that* point, since the move exists to sustain it. Sets on a
+    # cold path cost nothing extra; on a warm path the operating point is
+    # a bench-only path anyway.
+    cliff = max((int(d["sets"]["workload.concurrency"]) for d in decided
+                 if str(d.get("arm_kind")) == "operating_point.concurrency"
+                 and d.get("verdict") in ("invalid", "loss")
+                 and int((d.get("sets") or {}).get("workload.concurrency")
+                         or 0) > cur), default=None)
     up = next_point(ladder, cur, direction="up")
     down = next_point(ladder, cur, direction="down")
     if admissible and up is not None and str(up) not in tried:
@@ -306,8 +316,11 @@ def propose(profile: dict[str, Any], recipe: dict[str, Any],
             continue
         bound = attribution["role"]
         head = 0.2 if bound == role else 0.1 - 0.02 * i
+        knob_sets = {f"topology.{role}.engine.{knob}": value}
+        if cliff and bound == role:
+            knob_sets["workload.concurrency"] = cliff
         add("engine.role_knob", claim, share=0.3, headroom=max(0.02, head),
-            sets={f"topology.{role}.engine.{knob}": value},
+            sets=knob_sets,
             rationale=f"{role} is {'the bound pool' if bound == role else 'not the bound pool'};"
                       f" reaches the engine through recipe.launch.knobs.{knob}",
             prerequisites={"fleet_mode": "managed"})
@@ -326,17 +339,24 @@ def propose(profile: dict[str, Any], recipe: dict[str, Any],
                                            max_chips)
         for i, nb in enumerate(neighbours):
             np_, nd = nb["prefill_replicas"], nb["decode_replicas"]
+            shape_sets = {"topology.prefill.replicas": np_,
+                          "topology.decode.replicas": nd}
+            at = cur
+            if cliff and bound != "none":
+                shape_sets["workload.concurrency"] = cliff
+                at = cliff
             add("topology.pd_shape",
                 f"{np_}P:{nd}D beats {p_cur}P:{d_cur}D on total tok/s/chip"
-                f" at {cur} sessions ({nb['why']})",
+                f" at {at} sessions ({nb['why']})"
+                + (f"; {p_cur}P:{d_cur}D broke the gate there" if at != cur
+                   else ""),
                 share=0.5, headroom=max(0.05, 0.25 - 0.05 * i),
-                sets={"topology.prefill.replicas": np_,
-                      "topology.decode.replicas": nd},
+                sets=shape_sets,
                 rationale="; ".join([nb["why"]] + attribution["evidence"]),
                 prerequisites={"capabilities": ["pd_connector"],
                                "chips": nb["chips"], "fleet_mode": "managed",
                                "attribution": attribution})
-    return {"attribution": attribution, "concurrency": cur,
+    return {"attribution": attribution, "concurrency": cur, "cliff": cliff,
             "ladder": ladder, "admissible": admissible}
 
 

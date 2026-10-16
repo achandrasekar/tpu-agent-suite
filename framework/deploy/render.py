@@ -2195,6 +2195,7 @@ def bench_job(name: str, tenant: str, stage: str, env: dict[str, Any],
 
 AGENTX_AGGREGATE_FILE = "agentx_aggregate.py"
 AGENTX_POINT_FILE = "agentx_point.json"
+AGENTX_SERVER_METRICS_SUMMARY_FILE = "server_metrics_summary.json"
 AGENTX_BENCH_CONTAINER = "aiperf"
 # Env the bench runner sets per point; the Job script reads them.
 AGENTX_CONC_ENV = "AGENTX_CONCURRENCY"
@@ -2286,10 +2287,16 @@ def agentx_bench_script(profile: dict[str, Any], *, base_url: str,
         f" {BENCH_REPORT_DIR}/aiperf_artifacts"
         f" {BENCH_REPORT_DIR}/{AGENTX_POINT_FILE}"
         f" --concurrency ${AGENTX_CONC_ENV} || true",
-        f"for f in {BENCH_REPORT_DIR}/{AGENTX_POINT_FILE}"
-        f" $(find {BENCH_REPORT_DIR}/aiperf_artifacts -maxdepth 2 \\( -name"
-        " 'profile_export_aiperf.json' -o -name 'server_metrics_export.json'"
-        " \\) | sort); do"
+        # The container log is capped (containerd rotates at ~10 MiB) and
+        # aiperf's full server_metrics_export.json carries per-second
+        # timeslices that outgrow it on a long point; echo the reducer's
+        # trimmed summary instead, and the point itself last so it is the
+        # block that survives rotation.
+        f"for f in $(find {BENCH_REPORT_DIR}/aiperf_artifacts -maxdepth 2"
+        " -name 'profile_export_aiperf.json' | sort)"
+        f" {BENCH_REPORT_DIR}/{AGENTX_SERVER_METRICS_SUMMARY_FILE}"
+        f" {BENCH_REPORT_DIR}/{AGENTX_POINT_FILE}; do"
+        " [ -f \"$f\" ] || continue;"
         f" echo '{BENCH_REPORT_MARK}' \"$f\"; cat \"$f\"; echo;"
         f" echo '{BENCH_REPORT_END}'; done",
         "exit $rc",

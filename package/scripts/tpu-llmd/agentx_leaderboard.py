@@ -190,7 +190,10 @@ def points_from_report(report: dict[str, Any], *, config: dict[str, Any] | None,
             "gpu_prefix_hit_rate": a.get("gpu_prefix_hit_rate"),
             "cpu_prefix_hit_rate": a.get("cpu_prefix_hit_rate"),
             "ok": (rep.get("requests") or {}).get("ok"),
-            "total": (rep.get("requests") or {}).get("total"),
+            # profiled requests: ok + failed (warm-ups are not measured)
+            "total": ((rep.get("requests") or {}).get("ok") or 0)
+            + ((rep.get("requests") or {}).get("failed") or 0)
+            if rep.get("requests") else None,
             "admissible": bool(p.get("admissible")),
             "gate_ttft_p50_ms": (gate or {}).get("bound"),
             "submission_valid": bool(ax.get("submission_valid")),
@@ -198,6 +201,36 @@ def points_from_report(report: dict[str, Any], *, config: dict[str, Any] | None,
             "harness": "aiperf",
         })
     return out
+
+
+def _config_for(path: pathlib.Path, report: dict[str, Any],
+                study_dir: pathlib.Path | None) -> dict[str, Any] | None:
+    """The llmd-config.json that produced a report: the arm ledger's
+    snapshot for its execution id first (exact, survives a later
+    reconfigure), then the release directory it ran against, then a
+    config beside the report."""
+    exec_id = str(report.get("execution_id") or "")
+    name = str((report.get("release") or {}).get("name") or "")
+    cands: list[pathlib.Path] = []
+    if study_dir and exec_id:
+        cands += sorted(pathlib.Path(study_dir).rglob(
+            f"configs/{exec_id}.json"))
+    if study_dir and name:
+        cands.append(pathlib.Path(study_dir) / "releases" / name /
+                     "llmd-config.json")
+    cands += [path.parent / "llmd-config.json",
+              path.parent.parent / "llmd-config.json"]
+    for rel in path.parents:
+        if (rel / "release.json").is_file():
+            cands.append(rel / "llmd-config.json")
+            break
+    for cand in cands:
+        if cand.is_file():
+            try:
+                return _read(cand)
+            except (OSError, ValueError):
+                continue
+    return None
 
 
 def collect_study_points(study_dir: pathlib.Path | None,
@@ -223,21 +256,7 @@ def collect_study_points(study_dir: pathlib.Path | None,
             continue
         if not report.get("agentx"):
             continue
-        config = None
-        # The release directory the bench ran against keeps its config.
-        for cand in (path.parent / "llmd-config.json",
-                     path.parent.parent / "llmd-config.json"):
-            if cand.is_file():
-                config = _read(cand)
-                break
-        if config is None:
-            hist = None
-            for rel in pathlib.Path(path).parents:
-                if (rel / "release.json").is_file():
-                    hist = rel
-                    break
-            if hist and (hist / "llmd-config.json").is_file():
-                config = _read(hist / "llmd-config.json")
+        config = _config_for(path, report, study_dir)
         for pt in points_from_report(report, config=config):
             pt["report"] = str(path)
             points.append(pt)
@@ -591,7 +610,8 @@ def build_charts(points: list[dict[str, Any]], lb_points: list[dict[str, Any]],
                     "label": f"c{p.get('conc')}" if (on or study) else "",
                     "hollow": not p.get("admissible", True)})
             out.append({"name": name, "points": plotted,
-                        "dashed": not study, "width": 3 if study else 2})
+                        "dashed": not study, "width": 3 if study else 2,
+                        **({"marker": "diamond"} if study else {})})
         return out
 
     x_label = X_LABELS.get(interactivity, interactivity)

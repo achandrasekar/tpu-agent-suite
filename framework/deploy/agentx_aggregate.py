@@ -321,9 +321,46 @@ def cache_rates(server_metrics: Any, endpoints: set[str] | None = None
     }
 
 
-def aggregate(artifact_dir: pathlib.Path, concurrency: int | None
-              ) -> dict[str, Any]:
+SERVER_METRICS_SUMMARY_FILE = "server_metrics_summary.json"
+
+
+def server_metrics_summary(doc: Any) -> Any:
+    """aiperf's server_metrics_export.json without the per-second
+    `timeslices`: the endpoint summary and each series' `stats`, which is
+    all the hit-rate and queue readings need. The full export stays in
+    the Job's artifact dir; the container log cannot hold it."""
+    if not isinstance(doc, dict):
+        return doc
+
+    def trim(metrics: Any) -> Any:
+        if not isinstance(metrics, dict):
+            return metrics
+        return {
+            name: {**{k: v for k, v in entry.items() if k != "series"},
+                   "series": [{k: v for k, v in (s or {}).items()
+                               if k != "timeslices"}
+                              for s in entry.get("series") or []]}
+            if isinstance(entry, dict) else entry
+            for name, entry in metrics.items()}
+    # `metrics` is the profiling phase; aiperf also keeps a full copy per
+    # other phase (`warmup_metrics`), each with its own timeslices.
+    out = {k: (trim(v) if k == "metrics" or k.endswith("_metrics") else v)
+           for k, v in doc.items()}
+    out["trimmed"] = "timeslices dropped"
+    return out
+
+
+def _write_server_metrics_summary(src: pathlib.Path, dst: pathlib.Path
+                                  ) -> None:
+    doc = json.loads(src.read_text(encoding="utf-8"))
+    dst.write_text(json.dumps(server_metrics_summary(doc)) + "\n",
+                   encoding="utf-8")
+
+
+def aggregate(artifact_dir: pathlib.Path, concurrency: int | None,
+              out_dir: pathlib.Path | None = None) -> dict[str, Any]:
     art = _find_artifact_dir(artifact_dir)
+    out_dir = out_dir or art.parent
     export = art / "profile_export.jsonl"
     if not export.is_file():
         return {"schema": "agentx-point", "status": "no_export",
@@ -355,6 +392,11 @@ def aggregate(artifact_dir: pathlib.Path, concurrency: int | None
                 doc.setdefault("aiperf_counts", {})[key] = block["avg"]
     sm_path = art / "server_metrics_export.json"
     if sm_path.is_file():
+        try:
+            _write_server_metrics_summary(
+                sm_path, out_dir / SERVER_METRICS_SUMMARY_FILE)
+        except (OSError, ValueError):
+            pass
         # The engine endpoints the Job was told to scrape; the runner sets
         # the env from the live pods of the metrics role.
         endpoints = {u.strip() for u in os.environ.get(
@@ -375,8 +417,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("out", type=pathlib.Path)
     parser.add_argument("--concurrency", type=int, default=None)
     args = parser.parse_args(argv)
-    doc = aggregate(args.artifact_dir, args.concurrency)
     args.out.parent.mkdir(parents=True, exist_ok=True)
+    doc = aggregate(args.artifact_dir, args.concurrency, args.out.parent)
     args.out.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
     print(json.dumps({"status": doc["status"],
                       "records": doc.get("requests", {}).get(

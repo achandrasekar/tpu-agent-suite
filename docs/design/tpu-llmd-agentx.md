@@ -119,3 +119,16 @@ measured ISL/OSL.
 | **M6d** leaderboard view | `agentx_leaderboard.py` (`build`, `fetch-live`, `import-inferencex`), `svgchart.py`, dashboard prices in `pins`, P90 interactivity in the reducer and report, docs | `leaderboard.md` and the two charts from a study |
 | **M6e** validation & pre-work | kind validation; `deploy stage-weights`; `source.patches[]`; per-role `recipe_bump` | unit-tested and kind-verified |
 
+## 6. Key implementation details validated on kind
+
+| area | implementation detail |
+| :--- | :--- |
+| aiperf `/metrics` scraping | reducer counts only the endpoints the runner gave the Job (`AGENTX_SERVER_METRICS_URLS`) so the router proxy Service is not double-counted |
+| pod discovery during rollout | `engine_pods` skips `deletionTimestamp` and non-Running pods |
+| container log rotation | Job echoes a trimmed `server_metrics_summary.json` (timeslices stripped) and echoes `agentx_point.json` last; a lost point is marked `telemetry_valid: false` |
+| pod-proxy timeouts | `pod_proxy_get/post` treat a transient timeout as a missed sample rather than aborting the benchmark |
+| shape arm operating point | a shape arm proposed after a cliff carries the failed rung (`workload.concurrency`) so shapes are evaluated at the concurrency rung they were sized to sustain |
+| protocol rendering | `render_protocol.py` supports AgentX primary metrics, closed-loop cells, and the AgentX block in `llmd-study.json` |
+| weights staging | `deploy stage-weights` (`framework/deploy/weights.py`) stages model weights into a RWO PVC or snapshots and clones a ReadOnlyMany PVC (`--ro-via-snapshot`, `--from-snapshot`) |
+| source patches | `source.patches[]` inlines unified diffs into a `<release>-source-patches` ConfigMap applied by the clone init container via `git apply` |
+| launch-recipe bumps | `recipe_bump.py` applies env deltas to `launch.role_env.<escalated role>` and maps vLLM flags through `launch.knobs` |

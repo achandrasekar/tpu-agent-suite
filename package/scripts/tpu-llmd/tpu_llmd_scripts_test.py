@@ -1495,6 +1495,53 @@ class AgentXSearchTest(_Quiet):
         shapes = [s for k, s in collected if k == "topology.pd_shape"]
         self.assertEqual(shapes[0]["topology.prefill.replicas"], 3)
 
+    def test_shape_arm_claims_the_rung_the_incumbent_could_not_hold(self):
+        """What the kind run showed: 1P:1D qualified at 4 and broke the
+        TTFT gate at 8 (prefill-bound). The shape move exists to sustain 8,
+        so the 2P:1D arm carries workload.concurrency 8, and so does the
+        bound role's knob; the other role's knob stays at the incumbent."""
+        from framework.deploy import render  # noqa: PLC0415
+        inc = render.default_config(AGENTX_RECIPE)
+        inc["topology"]["mode"] = "disaggregated"
+        inc["topology"]["prefill"] = {"replicas": 1, "tp": 8}
+        inc["topology"]["decode"]["replicas"] = 1
+        inc["router"]["profile"] = "agentx-session-affinity"
+        inc["workload"]["concurrency"] = 96
+        collected: list[tuple[str, dict]] = []
+
+        def add(arm_kind, claim, *, share, headroom, sets, rationale,
+                prerequisites=None):
+            collected.append((arm_kind, sets, claim))
+        failed = _agentx_report(admissible=False, ttft_p50_ms=11200,
+                                prefill_hit=0.67, dec_running=7, dec_kv=0.62)
+        failed["tenants"]["agentx"]["replicates"][0]["roles"]["prefill"][
+            "requests_waiting_max"] = 0
+        decided = [{"arm": "baseline", "arm_kind": "baseline",
+                    "verdict": "tie", "sets": {}},
+                   {"arm": "c1", "arm_kind": "operating_point.concurrency",
+                    "verdict": "invalid",
+                    "sets": {"workload.concurrency": 192}}]
+        model = agentx_search.propose(self._profile(), AGENTX_RECIPE, inc,
+                                      decided=decided,
+                                      incumbent_report=failed,
+                                      max_chips=24, chips_per=4, add=add)
+        self.assertEqual(model["cliff"], 192)
+        self.assertEqual(model["attribution"]["role"], "prefill")
+        shapes = [(s, c) for k, s, c in collected if k == "topology.pd_shape"]
+        self.assertEqual(shapes[0][0], {"topology.prefill.replicas": 2,
+                                        "topology.decode.replicas": 1,
+                                        "workload.concurrency": 192})
+        self.assertIn("broke the gate there", shapes[0][1])
+        knobs = {next(k for k in s if k.startswith("topology.")): s
+                 for kind, s, _ in collected if kind == "engine.role_knob"}
+        self.assertIn("workload.concurrency",
+                      knobs["topology.prefill.engine.kv_cpu_offload_bytes"])
+        self.assertNotIn("workload.concurrency",
+                         knobs["topology.decode.engine.max_num_seqs"])
+        # Not climbing (the gate failed) and not backing off (a pool is bound).
+        self.assertFalse(any(k == "operating_point.concurrency"
+                             for k, _, _ in collected))
+
     def test_plan_arms_routes_agentx_specs(self):
         from framework.deploy import render  # noqa: PLC0415
         inc = render.default_config(AGENTX_RECIPE)
