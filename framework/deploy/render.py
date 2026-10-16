@@ -1175,10 +1175,15 @@ def router_values(name: str, config: dict[str, Any],
         ],
         # The chart's envoy preset names its ConfigMap a bare `envoy`, so a
         # second release in the namespace (a production router beside a
-        # study arm, as found live) fails Helm's ownership check. The chart
-        # deep-merges `router.proxy` over the preset, so naming it here
-        # keeps the preset's envoy.yaml and makes it per-release.
-        "configMap": {"name": proxy_configmap_name(name)},
+        # study arm, as found live) fails Helm's ownership check. Both the
+        # ConfigMap template and the preset's volume mount read
+        # `presets.envoy.configMap.name` (the volume hard-codes that path),
+        # so the override must go there: naming `router.proxy.configMap`
+        # alone created a second ConfigMap while the pod still mounted
+        # `envoy`, which was found live when the pod was rescheduled after
+        # the study release that owned `envoy` was gone.
+        "presets": {"envoy": {"configMap": {
+            "name": proxy_configmap_name(name)}}},
         "resources": sizing_for("proxy", env),
     }
     if router.get("proxy_replicas"):

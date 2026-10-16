@@ -593,9 +593,13 @@ class AdvancedArmRenderTest(unittest.TestCase):
         out, _, _ = self._rendered(lambda cfg: None)
         values, _ = self._epp(out)
         proxy = values["router"]["proxy"]
-        self.assertEqual(proxy["configMap"],
+        # The preset path is what the chart's volume mount reads; a
+        # top-level `configMap` would rename the object but not the mount.
+        self.assertEqual(proxy["presets"]["envoy"]["configMap"],
                          {"name": render.proxy_configmap_name("adv")})
-        self.assertNotEqual(proxy["configMap"]["name"], "envoy")
+        self.assertNotIn("configMap", proxy)
+        self.assertNotEqual(proxy["presets"]["envoy"]["configMap"]["name"],
+                            "envoy")
         self.assertNotEqual(render.proxy_configmap_name("a"),
                             render.proxy_configmap_name("b"))
 
