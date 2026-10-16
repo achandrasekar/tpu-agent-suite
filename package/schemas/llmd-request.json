@@ -56,7 +56,7 @@
     },
     "engine_study_id": {
       "type": "string",
-      "description": "Re-entry after an engine escalation: the tpu-performance study that has closed. The round bumps the recipe from its win, amends the protocol and re-baselines the incumbent shape before searching again."
+      "description": "Re-entry after an engine escalation: the tpu-performance study that has closed. The round bumps the recipe from its win, opens the successor fleet study the amendment names and re-baselines the incumbent shape there before searching again."
     }
   },
   "examples": [

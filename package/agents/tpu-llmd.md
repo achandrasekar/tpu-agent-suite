@@ -141,8 +141,10 @@ rebuild it from events.
     exists after this; then `attach-run`.
 
     If the study exists, `attach-run` and continue. **If your request
-    carries `engine_study_id`**, this is a re-entry round: go to
-    **Re-entry** below before anything else. Otherwise read the stopping
+    carries `engine_study_id`**, this is a re-entry round: do **not**
+    `attach-run` yet (a run belongs to one study, and this round may close
+    this one and open its successor) and go to **Re-entry** below before
+    anything else. Otherwise read the stopping
     rule out of what `status` just returned; when `round >=
     stopping_rule.max_rounds`, or when `plateau_rounds` consecutive rounds
     produced no win, go to **Escalate or finish**. Branch on the number
@@ -355,9 +357,14 @@ and a bottleneck `kind`, and writes the operating point, an engine
         --target <recipe model> --protocol <llmd>/escalations/<n>/engine-protocol.json
     python3 {{script:tpu-performance-optimization/hypothesis_bank.py}} --study-id <engine_study_id> \
         --run-id <run_id> --hypotheses-json <llmd>/escalations/<n>/hypotheses.json \
-        --tpu-version <recipe tpu_accelerator>
+        --tpu-version <v5e|v5p|v6e|v7x>
     ```
 
+    `--tpu-version` takes `tpu-performance-optimization`'s short names: a recipe's
+    `accelerator.tpu_accelerator` of `tpu7x` is `v7x`, `tpu-v6e-slice` is
+    `v6e`.
+    Do **not** `attach-run` this run to the engine study: a run belongs
+    to one study, and the engine rounds attach their own.
     The protocol's `mode` is the fleet protocol's; in `approve` mode the
     caller asks the user before any engine round runs, which is why the
     study is only opened here, never advanced.
@@ -392,23 +399,36 @@ search arm in this round. Instead:
     beside the old one, and an `llmd-protocol-amendment.json`), `no_win`
     or `no_delta` (a win that recorded no serving change: report it, do
     not guess at it).
-2.  On `bumped`: amend the fleet protocol so the fingerprint names the new
-    recipe (`study set-protocol` with the amendment's `fingerprint`), mark
-    every decided arm `stale_recipe` in your `round.json` summary field
-    (they stay in the ledger as history; none is the incumbent's
-    comparison any more), and dispatch the **incumbent shape** to
+2.  On `bumped`: the runtime refuses to replace a baseline that arms were
+    measured against, so the fleet search continues in a **successor
+    study**. Close the current one and open the one the amendment names:
+
+    ```bash
+    {{runtime}} study close --study-id <study_id> --outcome "recipe bumped to <recipe v N+1> by <engine_study_id>; continues as <successor_study_id>"
+    {{runtime}} study start --study-id <successor_study_id> --package {{package_tag}} \
+        --target <recipe model> --protocol <llmd>/protocol/protocol.json
+    {{runtime}} study attach-run --study-id <successor_study_id> --run-id <run_id>
+    ```
+
+    Copy `<llmd>/protocol/llmd-study.json` forward with
+    `predecessor_study_id` set and `engine_loop.escalations` intact (the
+    escalation count is what `max_escalations` brakes). The old study's
+    ledger stays as history; nothing in it is the new incumbent's
+    comparison. Then dispatch the **incumbent shape** to
     {{agent:llmd-arm-executor}} as a `baseline`-kind arm with
-    `recipe_path` = the new recipe. When it returns, `set-baseline` on its
-    measurement and copy its config to `<llmd>/incumbent/llmd-config.json`:
-    the search resumes next round on the new engine, from the shape that
-    was best on the old one. Report the bump in your result's
-    `recipe_bump` block and tell the caller the recipe path to use from
-    now on.
-3.  On `no_win` / `no_delta`: add the role to `engine_loop.exhausted_roles`
-    in `llmd-study.json`, record the round, and continue the fleet search
-    as a normal round (go to step 3b) -- the planner may still have arms;
-    if the stopping rule fires again, **Escalate or finish** will not
-    escalate that role twice.
+    `recipe_path` = the new recipe. When it returns, `set-baseline` on the
+    successor with its measurement and the amendment's
+    `fingerprint.commit_sha`, and copy its config to
+    `<llmd>/incumbent/llmd-config.json`: the search resumes next round on
+    the new engine, from the shape that was best on the old one. Report
+    the bump in your result's `recipe_bump` block (with
+    `successor_study_id`) and tell the caller the recipe path and study id
+    to use from now on.
+3.  On `no_win` / `no_delta`: `attach-run` to this study now, add the role
+    to `engine_loop.exhausted_roles` in `llmd-study.json`, record the
+    round, and continue the fleet search as a normal round (go to step
+    3b) -- the planner may still have arms; if the stopping rule fires
+    again, **Escalate or finish** will not escalate that role twice.
 
 ## Finish
 

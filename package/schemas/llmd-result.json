@@ -209,6 +209,10 @@
         },
         "engine_study_id": {
           "type": "string"
+        },
+        "successor_study_id": {
+          "type": "string",
+          "description": "The fleet study the search continues in after a bump; the predecessor is closed with the bump as its outcome."
         }
       }
     }

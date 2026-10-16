@@ -28,9 +28,13 @@ round record's closed schema. This script:
   `measured.peak_prefill_throughput` / `peak_decode_throughput` from the
   arm's metric when it is that role's tokens/s;
 * writes `serving-recipe.v<N+1>.json` with `source.engine_study_id`, the
-  winning arm and its execution id, and a protocol amendment for the
-  llm-d study (`fingerprint.commit_sha` = the new recipe's digest) so the
-  next fleet round re-baselines on the new engine instead of comparing
+  winning arm and its execution id, and an amendment for the llm-d study:
+  the runtime refuses to replace a baseline that arms were measured
+  against ("amend the protocol and start a new study"), so the amendment
+  names the **successor** fleet study (`<study_id>-v<N+1>`) and the
+  baseline `fingerprint.commit_sha` (= the new recipe's digest) its first
+  measurement must carry. The next fleet round opens that study and
+  re-baselines the incumbent shape on the new engine instead of comparing
   across recipes.
 
 A study with no win writes `recipe-bump.json` saying so and leaves the
@@ -170,6 +174,25 @@ def next_version_path(recipe_path: pathlib.Path) -> pathlib.Path:
     return recipe_path.with_name(f"{stem}.v2.json")
 
 
+_SUCCESSOR_RE = re.compile(r"-v\d+$")
+
+
+def successor_study_id(fleet_study_id: str, recipe_path: pathlib.Path
+                       ) -> str:
+    """`acme-chat` + `serving-recipe.v2.json` -> `acme-chat-v2`.
+
+    The fleet study that measured arms against the old recipe is closed,
+    not amended: the runtime refuses a new baseline under measured arms,
+    and the deltas in the old ledger stay comparable to each other. The
+    successor carries the recipe version so a reader can line the two up.
+    """
+    m = _VERSION_RE.search(recipe_path.name)
+    version = int(m.group(1)) if m else 2
+    base = _SUCCESSOR_RE.sub("", fleet_study_id)
+    suffix = f"-v{version}"
+    return base[:64 - len(suffix)] + suffix
+
+
 def bump(args: argparse.Namespace) -> dict[str, Any]:
     recipe_path = pathlib.Path(args.recipe)
     recipe = json.loads(recipe_path.read_text(encoding="utf-8"))
@@ -230,10 +253,15 @@ def bump(args: argparse.Namespace) -> dict[str, Any]:
     new_path = next_version_path(recipe_path)
     new_path.write_text(json.dumps(new_recipe, indent=2) + "\n",
                         encoding="utf-8")
+    fleet_study = str(escalation.get("study_id") or "")
+    successor = successor_study_id(fleet_study, new_path) if fleet_study else ""
     amendment = {
         "reason": f"recipe bumped by engine study {state.get('study_id')}"
                   f" (arm {win['arm']}); every earlier measurement is on"
                   " the old engine and the incumbent shape is re-baselined",
+        "apply": "successor_study",
+        "predecessor_study_id": fleet_study,
+        "successor_study_id": successor,
         "fingerprint": {"commit_sha": _digest(new_recipe)},
         "recipe_path": str(new_path.resolve()),
     }

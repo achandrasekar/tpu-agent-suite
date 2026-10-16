@@ -81,13 +81,16 @@ takes the winning arm with the largest `delta_pct`, applies its
 replaced), refreshes `measured.peak_prefill_throughput` /
 `peak_decode_throughput` from the arm's metric when it is that role's
 tokens/s, and writes `serving-recipe.v<N+1>.json` with
-`source.engine_study_id` plus a protocol amendment whose fingerprint is
-the new recipe's digest.
+`source.engine_study_id` plus an amendment naming the **successor fleet
+study** (`<study_id>-v<N+1>`) and the baseline fingerprint
+(`commit_sha` = the new recipe's digest) its first measurement carries.
 
-The fleet study then re-baselines: the **incumbent shape** is measured on
-the new recipe and becomes the baseline; every earlier arm is kept in the
-ledger as `stale_recipe` history. A search never compares a measurement
-on one engine with a measurement on another. A win that recorded no
+The fleet search then re-baselines in that successor: the runtime refuses
+to replace a baseline that arms were measured against, so the old study
+is closed with the bump as its outcome and keeps its ledger as history,
+and the **incumbent shape** measured on the new recipe becomes the
+successor's baseline. A search never compares a measurement on one engine
+with a measurement on another. A win that recorded no
 serving delta (`no_delta`) is reported, not applied; a study with no win
 marks the role exhausted.
 

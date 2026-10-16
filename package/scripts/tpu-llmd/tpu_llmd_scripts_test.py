@@ -1187,7 +1187,8 @@ class RecipeBumpTest(_Quiet):
         (tmp / "estate.json").write_text(json.dumps(state))
         (tmp / "bank.json").write_text(json.dumps(bank))
         (tmp / "esc.json").write_text(json.dumps(
-            escalation or {"role": "decode", "escalation": 1}))
+            escalation or {"study_id": "acme-chat", "role": "decode",
+                           "escalation": 1}))
         ns = argparse.Namespace(recipe=str(tmp / "serving-recipe.json"),
                                 engine_study_state=str(tmp / "estate.json"),
                                 hypothesis_bank=str(tmp / "bank.json"),
@@ -1216,6 +1217,14 @@ class RecipeBumpTest(_Quiet):
                          "acme-chat-engine-decode-1")
         self.assertEqual(amend["fingerprint"]["commit_sha"],
                          doc["recipe_digest_after"])
+        # The runtime refuses a new baseline under measured arms, so the
+        # amendment names the successor study the search continues in.
+        self.assertEqual(amend["apply"], "successor_study")
+        self.assertEqual(amend["predecessor_study_id"], "acme-chat")
+        self.assertEqual(amend["successor_study_id"], "acme-chat-v2")
+        self.assertEqual(recipe_bump.successor_study_id(
+            "acme-chat-v2", pathlib.Path("/x/serving-recipe.v3.json")),
+            "acme-chat-v3")
         self.assertNotEqual(doc["recipe_digest_before"],
                             doc["recipe_digest_after"])
         self.assertEqual(recipe_bump.next_version_path(
