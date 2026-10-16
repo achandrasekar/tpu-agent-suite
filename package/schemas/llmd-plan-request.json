@@ -100,6 +100,14 @@
         "adopted"
       ],
       "description": "Adopted fleets cannot take engine-mutating arms; the planner still proposes them, `blocked_on_adopted_fleet`, so the finding is visible."
+    },
+    "incumbent_profile_path": {
+      "type": "string",
+      "description": "The incumbent arm's fleet metrics.json (deploy collect), with per-role `roles.prefill`/`roles.decode` under a split. The planner attributes the bound pool from it and moves that axis of the xP:yD shape; absent, it falls back to baseline_profile_path."
+    },
+    "incumbent_report_path": {
+      "type": "string",
+      "description": "The incumbent arm's llmd-bench-report.json; a failed TTFT or TPOT gate names the bound role before queueing does."
     }
   },
   "examples": [

@@ -34,9 +34,14 @@ at `max_num_seqs=256` and two at `max_num_seqs=512`.
 
 | class | paths | mechanism | who moves it |
 | :--- | :--- | :--- | :--- |
-| hot | `router.plugins.<plugin>.weight`, `router.plugins.<plugin>.<parameter>` | EPP ConfigMap rewrite; the picker reloads it | executor, inner sweep |
-| warm | `engine.*` (whitelisted flags), `kv.block_size` | model-server Deployment rollout | executor, inner sweep |
-| cold | `topology.*`, `router.profile`, `kv.precise_routing`, `kv.tiered_host`, `kv.pd_connector`, `router.flow_control`, `router.predicted_latency` | new release | orchestrator, one arm per round |
+| hot | `router.plugins.<plugin>.weight`, `router.plugins.<plugin>.<parameter>`, `topology.pd_decider.*` | EPP ConfigMap rewrite; the picker reloads it | executor, inner sweep |
+| warm | `engine.*` (whitelisted flags), `topology.prefill.engine.*`, `topology.decode.engine.*`, `kv.block_size` | model-server rollout of the pool(s) whose spec changed | executor, inner sweep |
+| cold | `topology.mode`, `topology.<role>.replicas/tp/slice/hosts`, `router.profile`, `kv.precise_routing`, `kv.tiered_host`, `kv.pd_connector`, `router.flow_control`, `router.predicted_latency` | new release | orchestrator, one arm per round |
+
+A pool's `engine` overlay merges over the fleet `engine` default key by
+key (null removes a key), so prefill and decode are tuned separately
+without a new release: a decode-only `max_num_seqs` change rolls the
+decode pods and nothing else.
 
 `router.profile` is cold even though it is "just" the EPP config, because a
 profile change swaps the plugin set and the data producers behind it; the
@@ -65,7 +70,21 @@ open arm (rank = modelled `headroom` x `share`):
    worse, prefix reuse is not this workload's lever and the planner cuts
    the reuse arms' headroom.
 4. **P/D disaggregation** (`a8`), seeded only when the catalog entry lists
-   it as a suitable optimisation (`{{reference:tpu-llmd/PD.md}}`).
+   it as a suitable optimisation (`{{reference:tpu-llmd/PD.md}}`). Its
+   opening shape is sized by `size_pd.py`, not fixed: from the workload's
+   token demand at `target_qps` and the recipe's measured
+   `peak_prefill_throughput` / `peak_decode_throughput` when it has them
+   (`modeled`), else from the token ratio over the incumbent's slices
+   (`heuristic`).
+5. **The xP:yD lattice** (`topology.pd_shape`, planner rounds only). Once
+   the incumbent is a split, each round's neighbours come from
+   attribution of the incumbent's per-role metrics and failed gates:
+   prefill-bound moves a slice toward prefill at constant chips first
+   (`P+1:D-1`), decode-bound the reverse, neither bound tries the leaner
+   shapes (`P-1:D`, `P:D-1`). Coordinate ascent: a neighbour that wins
+   becomes the incumbent and the walk continues from it; when every
+   neighbour has lost or tied the shape has converged, which is the
+   plateau the escalation rule reads.
 
 ### Gated, never pruned
 

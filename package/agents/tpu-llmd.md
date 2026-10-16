@@ -176,7 +176,10 @@ rebuild it from events.
     `run_id`, `study_id`, `workload_spec_path`, `recipe_path`,
     `incumbent_config_path` = `<llmd>/incumbent/llmd-config.json`,
     `capabilities_path` (from step 2), `baseline_profile_path` =
-    `baseline.profile` from the state, `decided_arms` (arm, `arm_kind`,
+    `baseline.profile` from the state, `incumbent_profile_path` and
+    `incumbent_report_path` = the incumbent arm's `metrics.json` and
+    bench report from its `artifacts` (what the planner attributes the
+    bound pool from under a split), `decided_arms` (arm, `arm_kind`,
     verdict, `sets` from `arm_plans.json`), `open_arms`, `max_chips` and
     `fleet_mode`. Its `llmd-plan-result` carries new arms (`p1`, `p2`,
     ...) and their plans: append the arms to the round, merge the plans

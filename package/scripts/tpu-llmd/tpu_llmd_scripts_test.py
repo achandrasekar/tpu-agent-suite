@@ -42,6 +42,7 @@ render_protocol = _load("render_protocol")
 seed_arms = _load("seed_arms")
 evaluate_llmd_arm = _load("evaluate_llmd_arm")
 plan_arms = _load("plan_arms")
+size_pd = _load("size_pd")
 promote_release = _load("promote_release")
 production_guard = _load("llmd_production_guard")
 chip_budget_guard = _load("llmd_chip_budget_guard")
@@ -383,6 +384,54 @@ class PlanArmsTest(_Quiet):
             self.assertIn("sets", plan)
             self.assertIn("evidence", plan)
             self.assertTrue(arm["arm"].startswith("p"))
+
+    def test_first_split_is_sized_and_a_split_walks_its_neighbours(self):
+        from framework.deploy import render  # noqa: PLC0415
+        recipe = dict(RECIPE, measured={"knee_rps": 45,
+                                        "peak_prefill_throughput": 60000,
+                                        "peak_decode_throughput": 6000})
+        incumbent = render.default_config(recipe, replicas=3)
+        with tempfile.TemporaryDirectory() as d:
+            tmp = pathlib.Path(d)
+            req = self._request(tmp, recipe, incumbent, caps={
+                "pd_connector": True})
+            result = plan_arms.propose(req)
+            pd = [p for p in result["plans"].values()
+                  if p["arm_kind"] == "topology.pd"]
+            self.assertEqual(len(pd), 1)
+            sets = pd[0]["sets"]
+            self.assertEqual(sets["topology.mode"], "disaggregated")
+            self.assertGreaterEqual(sets["topology.prefill"]["replicas"], 1)
+            self.assertIn("topology.decode.replicas", sets)
+            self.assertEqual(pd[0]["prerequisites"]["sizing_provenance"],
+                             "modeled")
+            # Now the incumbent is a 2P:2D split whose decode pool queues:
+            # the planner proposes shape neighbours that move the decode
+            # axis, and no aggregated capacity arms.
+            split = render.default_config(recipe, replicas=2)
+            split["topology"]["mode"] = "disaggregated"
+            split["topology"]["prefill"] = {"replicas": 2, "tp": 8}
+            (tmp / "inc2.json").write_text(json.dumps(split))
+            (tmp / "prof.json").write_text(json.dumps({"metrics": {}, "roles": {
+                "decode": {"requests_waiting_mean": {"value": 3.0}},
+                "prefill": {"requests_waiting_mean": {"value": 0.0}}}}))
+            req2 = self._request(tmp, recipe, split, caps={
+                "pd_connector": True})
+            req2["incumbent_config_path"] = str(tmp / "inc2.json")
+            req2["incumbent_profile_path"] = str(tmp / "prof.json")
+            req2["max_new_arms"] = 8
+            result2 = plan_arms.propose(req2)
+        shapes = [p for p in result2["plans"].values()
+                  if p["arm_kind"] == "topology.pd_shape"]
+        self.assertTrue(shapes)
+        self.assertEqual(shapes[0]["sets"], {"topology.prefill.replicas": 1,
+                                             "topology.decode.replicas": 3})
+        self.assertEqual(result2["model"]["attribution"]["role"], "decode")
+        self.assertFalse([p for p in result2["plans"].values()
+                          if p["arm_kind"] == "topology.replicas"])
+        for p in shapes:
+            self.assertIn("topology.decode.engine.max_num_seqs",
+                          p["sweep_knobs"])
 
     def test_dedup_against_decided_and_open(self):
         from framework.deploy import render  # noqa: PLC0415
@@ -820,6 +869,110 @@ class PromoteReleaseTest(_Quiet):
             self.assertEqual(rc, 0)
             ledger = (tmp / "bundle" / "search-ledger.md").read_text()
             self.assertIn("a0 **(incumbent)**", ledger)
+
+
+class SizePdTest(_Quiet):
+    """The ratio model opens the xP:yD lattice and names the bound pool."""
+
+    def _profile(self):
+        from framework.deploy import workload  # noqa: PLC0415
+        return workload.resolve_workload(json.loads(json.dumps(SPEC)))
+
+    def test_opening_from_measured_capacities(self):
+        from framework.deploy import render  # noqa: PLC0415
+        recipe = dict(RECIPE, measured={"knee_rps": 45,
+                                        "peak_prefill_throughput": 60000,
+                                        "peak_decode_throughput": 6000})
+        incumbent = render.default_config(recipe, replicas=3)
+        profile = self._profile()
+        opening = size_pd.opening_shape(profile, recipe, incumbent,
+                                        hit_rate=0.5, max_chips=64)
+        dem = opening["demand"]
+        isl = profile["shape"]["input_sequence_length"]["mean"]
+        osl = profile["shape"]["output_sequence_length"]["mean"]
+        self.assertAlmostEqual(dem["prefill_tokens_per_s"], 120 * isl * 0.5)
+        self.assertAlmostEqual(dem["decode_tokens_per_s"], 120 * osl)
+        import math  # noqa: PLC0415
+        self.assertEqual(opening["prefill_replicas"], max(1, math.ceil(
+            dem["prefill_tokens_per_s"] / (60000 * size_pd.HEADROOM))))
+        self.assertEqual(opening["decode_replicas"], max(1, math.ceil(
+            dem["decode_tokens_per_s"] / (6000 * size_pd.HEADROOM))))
+        self.assertEqual(opening["provenance"], "modeled")
+        self.assertLessEqual(opening["chips"], 64)
+
+    def test_opening_without_capacities_is_a_labelled_heuristic(self):
+        from framework.deploy import render  # noqa: PLC0415
+        incumbent = render.default_config(RECIPE, replicas=4)
+        opening = size_pd.opening_shape(self._profile(), RECIPE, incumbent,
+                                        hit_rate=None, max_chips=64)
+        self.assertEqual(opening["provenance"], "heuristic")
+        self.assertEqual(opening["prefill_replicas"]
+                         + opening["decode_replicas"], 4)
+        self.assertGreaterEqual(opening["prefill_replicas"], 1)
+        self.assertGreaterEqual(opening["decode_replicas"], 1)
+        self.assertEqual(opening["demand"]["prefix_hit_source"], "assumed")
+
+    def test_budget_shrinks_the_opening_shape(self):
+        from framework.deploy import render  # noqa: PLC0415
+        recipe = dict(RECIPE, measured={"peak_prefill_throughput": 1000,
+                                        "peak_decode_throughput": 100})
+        incumbent = render.default_config(recipe, replicas=1)
+        opening = size_pd.opening_shape(self._profile(), recipe, incumbent,
+                                        hit_rate=0.0, max_chips=16)
+        self.assertEqual(opening["chips"], 16)
+        self.assertEqual(opening["bound_by"], "max_chips")
+
+    def test_attribution_reads_gates_then_queues(self):
+        prof = {"metrics": {}, "roles": {
+            "prefill": {"requests_waiting_mean": {"value": 0.1},
+                        "kv_util_max": {"value": 0.3}},
+            "decode": {"requests_waiting_mean": {"value": 2.0},
+                       "kv_util_max": {"value": 0.95}}}}
+        report = {"tenants": {"chat": {"slo": {
+            "ttft_p99_ms": {"pass": True}, "tpot_p99_ms": {"pass": False}}}}}
+        att = size_pd.attribute(prof, report)
+        self.assertEqual(att["role"], "decode")
+        self.assertEqual(att["kind"], "memory-capacity")
+        self.assertIn("chat.tpot_p99_ms", att["failed_gates"])
+        # No failed gate: the queueing pool is named; no pressure: none.
+        att2 = size_pd.attribute(prof, None)
+        self.assertEqual(att2["role"], "decode")
+        self.assertEqual(size_pd.attribute({"roles": {}}, None)["role"],
+                         "none")
+
+    def test_neighbours_move_the_bound_axis_first(self):
+        nb = size_pd.neighbours(2, 2, "prefill", chips_per=4, max_chips=16)
+        self.assertEqual([(n["prefill_replicas"], n["decode_replicas"])
+                          for n in nb], [(3, 1), (2, 1)])  # (3,2) over budget
+        nb = size_pd.neighbours(2, 2, "decode", chips_per=4, max_chips=24)
+        self.assertEqual([(n["prefill_replicas"], n["decode_replicas"])
+                          for n in nb], [(1, 3), (2, 3), (1, 2)])
+        nb = size_pd.neighbours(2, 3, "none", chips_per=4, max_chips=None)
+        self.assertEqual([(n["prefill_replicas"], n["decode_replicas"])
+                          for n in nb], [(1, 3), (2, 2), (1, 2)])
+        self.assertEqual(size_pd.neighbours(1, 1, "none", chips_per=4,
+                                            max_chips=None), [])
+
+    def test_main_writes_the_sizing_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = pathlib.Path(d)
+            from framework.deploy import render  # noqa: PLC0415
+            (tmp / "spec.json").write_text(json.dumps(SPEC))
+            (tmp / "recipe.json").write_text(json.dumps(RECIPE))
+            cfg = render.default_config(RECIPE, replicas=2)
+            cfg["topology"]["mode"] = "disaggregated"
+            cfg["topology"]["prefill"] = {"replicas": 1}
+            (tmp / "inc.json").write_text(json.dumps(cfg))
+            rc = size_pd.main(["--workload", str(tmp / "spec.json"),
+                               "--recipe", str(tmp / "recipe.json"),
+                               "--incumbent", str(tmp / "inc.json"),
+                               "--max-chips", "64",
+                               "--out", str(tmp / "out")])
+            doc = json.loads((tmp / "out" / size_pd.SIZING_FILE).read_text())
+        self.assertEqual(rc, 0)
+        self.assertEqual(doc["incumbent_shape"],
+                         {"prefill_replicas": 1, "decode_replicas": 2})
+        self.assertTrue(doc["neighbours"])
 
 
 class ProductionGuardTest(unittest.TestCase):

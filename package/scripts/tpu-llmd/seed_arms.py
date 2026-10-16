@@ -58,6 +58,10 @@ try:
 except ImportError:  # shipped runtime: `deploy` is top-level
     from deploy import release, render, workload  # type: ignore  # noqa: E402
 
+if str(_HERE.parent) not in sys.path:
+    sys.path.insert(0, str(_HERE.parent))
+import size_pd  # noqa: E402  (same directory)
+
 BLOCKED_CAPABILITY = "blocked_on_engine_capability"
 BLOCKED_ADOPTED = "blocked_on_adopted_fleet"
 
@@ -97,7 +101,17 @@ SWEEP_KNOBS: dict[str, list[str]] = {
     "topology.pd": [
         "topology.pd_decider.parameters.nonCachedTokens",
         "router.plugins.token-load-scorer.weight",
-        "engine.max_num_batched_tokens",
+        "topology.prefill.engine.max_num_batched_tokens",
+        "topology.decode.engine.max_num_seqs",
+        "topology.decode.engine.max_num_batched_tokens",
+    ],
+    # A shape arm moves the xP:yD lattice; its inner sweep is the P/D one.
+    "topology.pd_shape": [
+        "topology.pd_decider.parameters.nonCachedTokens",
+        "router.plugins.token-load-scorer.weight",
+        "topology.prefill.engine.max_num_batched_tokens",
+        "topology.decode.engine.max_num_seqs",
+        "topology.decode.engine.max_num_batched_tokens",
     ],
     "router.flow_control": [
         "router.flow_control.saturation_detector.queueDepthThreshold",
@@ -117,12 +131,14 @@ NEEDS_CAPABILITY: dict[str, str] = {
     "kv.precise_routing": "kv_events",
     "kv.tiered_host": "offload_connector",
     "topology.pd": "pd_connector",
+    "topology.pd_shape": "pd_connector",
 }
 
 COARSE_KIND = {
     "baseline": "fleet-topology",
     "topology.replicas": "fleet-topology",
     "topology.pd": "fleet-topology",
+    "topology.pd_shape": "fleet-topology",
     "kv.precise_routing": "kv-reuse",
     "kv.tiered_host": "kv-reuse",
     "router.profile": "routing-policy",
@@ -356,19 +372,29 @@ def seed(profile: dict[str, Any], recipe: dict[str, Any], *,
             rationale=f"tenant priorities {sorted(priorities)} map to"
                       " InferenceObjective bands")
 
-    # Stage 4: P/D, when the workload is prefill heavy.
+    # Stage 4: P/D, when the workload is prefill heavy. The opening shape
+    # is sized (size_pd), not fixed at one prefill slice.
     if signals["pd_suggested"]:
+        baseline_cfg = dict(base)
+        baseline_cfg["topology"] = dict(base["topology"])
+        baseline_cfg["topology"]["decode"] = dict(base["topology"]["decode"],
+                                                  replicas=n0)
+        opening = size_pd.opening_shape(profile, recipe, baseline_cfg,
+                                        hit_rate=None, max_chips=cap)
+        p_n, d_n = opening["prefill_replicas"], opening["decode_replicas"]
         add("a8", "topology.pd",
-            "a prefill pool isolates long prefills from decode so TPOT"
-            " holds at target rate",
+            f"a {p_n}P:{d_n}D split isolates long prefills from decode so"
+            " TPOT holds at target rate",
             share=0.4, headroom=0.3,
             sets={"topology.mode": "disaggregated",
-                  "topology.prefill": {"replicas": 1, "tp": tp}},
-            rationale="catalog metadata lists P/D disaggregation; costs one"
-                      f" more slice ({chips} chips)",
+                  "topology.prefill": {"replicas": p_n, "tp": tp},
+                  "topology.decode.replicas": d_n},
+            rationale="catalog metadata lists P/D disaggregation;"
+                      f" {opening['note']}",
             prerequisites={"capabilities": ["pd_connector"],
-                           "chips": (n0 + 1) * chips,
-                           "fleet_mode": render.FLEET_MANAGED})
+                           "chips": opening["chips"],
+                           "fleet_mode": render.FLEET_MANAGED,
+                           "sizing_provenance": opening["provenance"]})
 
     return {"arms": arms}, {
         "capacity_floor": {"replicas": n0, "provenance": n0_provenance,

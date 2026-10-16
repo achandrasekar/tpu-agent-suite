@@ -54,6 +54,7 @@
         "baseline",
         "topology.replicas",
         "topology.pd",
+        "topology.pd_shape",
         "kv.precise_routing",
         "kv.tiered_host",
         "router.profile",
@@ -63,7 +64,7 @@
         "engine.fleet_knob",
         "platform.capacity"
       ],
-      "description": "The llm-d arm taxonomy entry; decides what the cold change is and which inner-sweep knobs open."
+      "description": "The llm-d arm taxonomy entry; decides what the cold change is and which inner-sweep knobs open. `topology.pd_shape` moves an existing split to a neighbouring xP:yD point (prefill and decode replica counts) and sweeps the P/D knobs there."
     },
     "claim": {
       "type": "string"

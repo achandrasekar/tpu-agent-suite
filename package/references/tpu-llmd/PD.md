@@ -1,3 +1,7 @@
+---
+references:
+  - references/tpu-llmd/PLATFORM.md
+---
 # Prefill/decode disaggregation on TPU
 
 `topology.mode: disaggregated` renders two model-server pools from one
@@ -78,6 +82,18 @@ tpu-inference issue in later releases; a managed P/D arm is where that is
 checked for the recipe's image, and `wait` failing is the arm's `invalid`,
 not a reason to retry.
 
+## Per-role engine overlays and the shape walk
+
+`topology.prefill.engine` and `topology.decode.engine` override the fleet
+`engine` default for one pool (same whitelist; a null removes the
+default). Prefill pools want a large `max_num_batched_tokens`; decode
+pools want `max_num_seqs`; both are warm paths, so the inner sweep moves
+them in place. The shape itself (`topology.<role>.replicas`) is cold: a
+`topology.pd_shape` arm renders the neighbouring `xP:yD` point and the
+planner chooses which neighbour from `roles.prefill` / `roles.decode` in
+the incumbent's `metrics.json` (`deploy collect` labels every sample with
+the pod's role) and from which gate failed in its bench report.
+
 ## Limits
 
 - P/D and `kv.tiered_host` together are refused (`NOT_IMPLEMENTED`): no
@@ -85,4 +101,9 @@ not a reason to retry.
 - On an adopted fleet P/D is `blocked_on_adopted_fleet`: it needs new
   pods and new flags on the ones that exist.
 - Needs `pd_connector` in `{{schema:engine-capabilities.json}}`.
-- Multi-host slices (LeaderWorkerSet) are not rendered.
+- A multi-host pool (`topology.<role>.hosts > 1`) renders as a
+  LeaderWorkerSet and needs the recipe's `multihost.worker_command` and a
+  host size; `{{reference:tpu-llmd/PLATFORM.md}}` has the rules. Whether a
+  given image's P/D connector works across a multi-host group is not
+  something this runtime has run; the first such arm is a verification
+  round.

@@ -19,6 +19,7 @@ delegates:
 scripts:
   - scripts/tpu-llmd/plan_arms.py
   - scripts/tpu-llmd/seed_arms.py
+  - scripts/tpu-llmd/size_pd.py
 references:
   - references/tpu-llmd/SEARCH.md
   - references/tpu-llmd/ROUTER.md
@@ -37,8 +38,9 @@ orchestrator picks from your ranking and the executor measures it.
 Your request (`{{schema:llmd-plan-request.json}}`) carries `run_id`,
 `study_id`, `workload_spec_path`, `recipe_path`, `incumbent_config_path`,
 and optionally `capabilities_path`, `baseline_profile_path`,
-`decided_arms`, `open_arms`, `max_chips`, `max_new_arms`, `fleet_mode`. If
-any of the five required fields is missing return `invalid_input`.
+`incumbent_profile_path`, `incumbent_report_path`, `decided_arms`,
+`open_arms`, `max_chips`, `max_new_arms`, `fleet_mode`. If any of the five
+required fields is missing return `invalid_input`.
 
 ```
 <work> = {{runs}}/<run_id>/artifacts/llmd/plans/<round or 'r'>
@@ -75,6 +77,26 @@ rules, and you do not override them:
   a new incumbent, say so in `summary`; do not re-add it.
 - **Incumbent-relative.** The script already composes `sets` over the
   incumbent. Do not add sets that restate what the incumbent has.
+- **The P/D shape is sized, then walked.** The first split
+  (`topology.pd`) opens at the `xP:yD` point `size_pd.py` derives from the
+  workload's token demand and the recipe's measured per-role throughput
+  (`prerequisites.sizing_provenance` is `modeled`), or from the token
+  ratio over the incumbent's own slices when the recipe has none
+  (`heuristic`). Once the incumbent is a split, the script proposes
+  `topology.pd_shape` neighbours ordered by **attribution**: the pool the
+  incumbent's per-role metrics and failed gates say is bound (the
+  `model.attribution` block). Prefill-bound moves a slice toward prefill
+  at constant chips first; decode-bound the reverse; neither bound tries
+  leaner shapes, because a shape that still attains with fewer chips wins
+  on goodput per chip. You may reorder neighbours on evidence you can
+  name; you may not add a shape the script did not derive. To look at the
+  sizing on its own:
+
+  ```bash
+  python3 {{script:tpu-llmd/size_pd.py}} --workload <spec> --recipe <recipe> \
+      --incumbent <incumbent llmd-config.json> --profile <metrics.json> \
+      --report <llmd-bench-report.json> --out <work>/sizing
+  ```
 
 ## 2. Apply judgement, within bounds
 

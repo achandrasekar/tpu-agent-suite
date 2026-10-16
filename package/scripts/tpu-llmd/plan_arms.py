@@ -64,6 +64,7 @@ except ImportError:  # shipped runtime: `deploy` is top-level
 if str(_HERE.parent) not in sys.path:
     sys.path.insert(0, str(_HERE.parent))
 import seed_arms  # noqa: E402  (same directory)
+import size_pd  # noqa: E402  (same directory)
 
 BLOCKED_CAPABILITY = seed_arms.BLOCKED_CAPABILITY
 BLOCKED_ADOPTED = seed_arms.BLOCKED_ADOPTED
@@ -79,6 +80,10 @@ EVIDENCE = {
         "https://github.com/llm-d/llm-d/blob/v0.10.0/guides/tiered-prefix-cache/benchmark-results/vllm-qwen3-32b-tpuv7.md",
     ],
     "topology.pd": [
+        "https://github.com/llm-d/llm-d/tree/v0.10.0/guides/pd-disaggregation",
+        "https://github.com/llm-d/llm-d-router/blob/v0.11.0/docs/disaggregation.md",
+    ],
+    "topology.pd_shape": [
         "https://github.com/llm-d/llm-d/tree/v0.10.0/guides/pd-disaggregation",
         "https://github.com/llm-d/llm-d-router/blob/v0.11.0/docs/disaggregation.md",
     ],
@@ -321,33 +326,66 @@ def propose(req: dict[str, Any]) -> dict[str, Any]:
             rationale="input length std-dev > 0.5 x mean; alpha plugins in"
                       " router v0.11.0, needs the predictor sidecars")
 
-    # -- 5. P/D, when prefill-heavy and chips allow -------------------------
-    if signals["pd_suggested"] and incumbent["topology"]["mode"] != \
-            "disaggregated":
-        need = used + chips_per
+    # -- 5. P/D: the opening shape, then the lattice around it -------------
+    incumbent_profile = _read(req.get("incumbent_profile_path")) or \
+        baseline_profile
+    incumbent_report = _read(req.get("incumbent_report_path"))
+    attribution = size_pd.attribute(incumbent_profile, incumbent_report)
+    pd_now = incumbent["topology"]["mode"] == "disaggregated"
+    tp = incumbent["topology"]["decode"].get("tp")
+    if signals["pd_suggested"] and not pd_now:
+        # The first split is sized, not guessed: the ratio model picks
+        # (P, D) from token demand and the recipe's per-role capacity,
+        # or the token ratio over the incumbent's own slices.
+        opening = size_pd.opening_shape(profile, recipe, incumbent,
+                                        hit_rate=hit_rate,
+                                        max_chips=max_chips)
+        p_n, d_n = opening["prefill_replicas"], opening["decode_replicas"]
+        need = opening["chips"]
         fits = max_chips is None or need <= int(max_chips)
         add("topology.pd",
-            "a prefill pool isolates long prefills from decode so TPOT holds"
-            " at target rate",
+            f"a {p_n}P:{d_n}D split isolates long prefills from decode so"
+            " TPOT holds at target rate",
             share=0.4, headroom=0.3 if fits else 0.0,
             sets={"topology.mode": "disaggregated",
-                  "topology.prefill": {"replicas": 1, "tp":
-                                       incumbent["topology"]["decode"].get("tp")}},
-            rationale=f"catalog lists P/D; needs {need} chips"
+                  "topology.prefill": {"replicas": p_n, "tp": tp},
+                  "topology.decode.replicas": d_n},
+            rationale=f"{opening['note']}; needs {need} chips"
                       f" (budget {max_chips})" + ("" if fits else
                                                  "; over budget"),
             prerequisites={"capabilities": ["pd_connector"],
-                           "chips": need, "fleet_mode": "managed"})
+                           "chips": need, "fleet_mode": "managed",
+                           "sizing_provenance": opening["provenance"]})
+    elif pd_now:
+        # Coordinate ascent on the shape: move the bound axis first, at
+        # constant chips when possible; shrink when neither pool is bound.
+        p_cur = int(incumbent["topology"]["prefill"]["replicas"])
+        d_cur = int(incumbent["topology"]["decode"]["replicas"])
+        for i, nb in enumerate(size_pd.neighbours(
+                p_cur, d_cur, attribution["role"], chips_per=chips_per,
+                max_chips=max_chips)):
+            np_, nd = nb["prefill_replicas"], nb["decode_replicas"]
+            add("topology.pd_shape",
+                f"{np_}P:{nd}D beats {p_cur}P:{d_cur}D on goodput per chip"
+                f" ({nb['why']})",
+                share=0.5, headroom=max(0.05, 0.25 - 0.05 * i),
+                sets={"topology.prefill.replicas": np_,
+                      "topology.decode.replicas": nd},
+                rationale="; ".join([nb["why"]] + attribution["evidence"]),
+                prerequisites={"capabilities": ["pd_connector"],
+                               "chips": nb["chips"], "fleet_mode": "managed",
+                               "attribution": attribution})
 
-    # -- 6. Capacity around the incumbent -----------------------------------
-    if replicas > 1:
+    # -- 6. Capacity around the incumbent (aggregated fleets; a split
+    #       moves through the shape lattice above) ------------------------
+    if replicas > 1 and not pd_now:
         add("topology.replicas",
             f"{replicas - 1} replicas still meet the SLO once the engine"
             " knobs are re-tuned, saving one slice",
             share=1.0, headroom=1.0 / replicas,
             sets={"topology.decode.replicas": replicas - 1},
             rationale="goodput per chip rises by N/(N-1) if attainment holds")
-    if max_chips is None or used + chips_per <= int(max_chips):
+    if not pd_now and (max_chips is None or used + chips_per <= int(max_chips)):
         add("topology.replicas",
             f"{replicas + 1} replicas recover attainment the incumbent"
             " misses at target rate",
@@ -392,6 +430,7 @@ def propose(req: dict[str, Any]) -> dict[str, Any]:
             "observed": {"prefix_hit_rate": hit_rate, "kv_util_mean": kv_util,
                          "requests_waiting_mean": waiting,
                          "kv_util_pod_stddev": kv_stddev},
+            "attribution": attribution,
             "reuse_headroom": round(reuse_headroom, 4),
             "load_only_won": load_only_won,
             "capabilities": caps,
