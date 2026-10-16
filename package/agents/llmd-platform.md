@@ -39,7 +39,9 @@ is missing return `invalid_input`.
 {{runtime}} deploy preflight [--fix]
 ```
 
-Pass `--fix` only when the request says `fix: true`. The verb reads the
+Pass `--fix` only when the request says `fix: true`, and `--sim` when the
+request says `sim: true` (a simulated fleet needs no TPU node; the check
+becomes a warning and the report still names it). The verb reads the
 cluster named by the package environment's `llmd` section and checks, in
 order: the CLI tools it needs, cluster reach, the study namespace (created by
 `--fix`), the Gateway API Inference Extension CRDs at the pinned version

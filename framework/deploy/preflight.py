@@ -85,7 +85,11 @@ def _tpu_capacity(kube: Kube, accelerator: str) -> tuple[int, int, int]:
 def run_preflight(env: DeployEnv,
                   *,
                   fix: bool = False,
+                  sim: bool = False,
                   runner: Any = None) -> dict[str, Any]:
+    """Check the cluster for a study; `sim` relaxes the accelerator check
+    for a simulated fleet (no TPU node is needed, and a kind cluster has
+    none), reporting it as a warning so the report still says so."""
     checks: list[Check] = []
     tools = tools_present()
     for tool in ("kubectl", "helm"):
@@ -183,10 +187,12 @@ def run_preflight(env: DeployEnv,
 
     nodes, capacity, free = _tpu_capacity(kube, env.tpu_accelerator)
     checks.append(
-        Check("tpu.nodes", "ok" if nodes else "fail",
+        Check("tpu.nodes",
+              "ok" if nodes else ("warn" if sim else "fail"),
               f"{nodes} node(s) with {pins.ACCELERATOR_LABEL}="
               f"{env.tpu_accelerator or '*'}; {capacity} chips allocatable,"
-              f" {free} unrequested",
+              f" {free} unrequested" + ("; simulated fleet needs none"
+                                        if sim and not nodes else ""),
               "create a TPU node pool matching compute.params.tpu_accelerator"))
 
     checks.append(

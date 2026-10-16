@@ -657,15 +657,33 @@ def _probe_front_door(kube: Kube, release: dict[str, Any]) -> bool | None:
         "port"]
     url = f"http://{host}:{port}/v1/models"
     name = f"{release['name'][:30]}-probe-{int(time.time()) % 100000}"
+    # No attach: `kubectl run -i` depends on an exec/attach upgrade that
+    # some clusters refuse intermittently (seen on kind), which reported
+    # a healthy front door as down. Run the pod, wait for it to finish,
+    # read its logs, delete it.
     try:
-        proc = kube.kubectl([
-            "run", name, "--rm", "-i", "--restart=Never", "--quiet",
+        kube.kubectl([
+            "run", name, "--restart=Never", "--quiet",
             f"--image={pins.PROBE_CURL_IMAGE}", "--command", "--", "curl",
             "-fsS", "--max-time", "10", url
+        ], check=False, timeout=60)
+        kube.kubectl([
+            "wait", f"pod/{name}", "--for=jsonpath={.status.phase}=Succeeded",
+            "--timeout=75s"
         ], check=False, timeout=90)
+        proc = kube.kubectl(["logs", f"pod/{name}"], check=False, timeout=30)
+        phase = kube.kubectl(["get", f"pod/{name}", "-o",
+                              "jsonpath={.status.phase}"], check=False,
+                             timeout=30)
     except DeployError:
         return False
-    return proc.returncode == 0 and "data" in (proc.stdout or "")
+    finally:
+        try:
+            kube.delete(["pod", name])
+        except DeployError:
+            pass
+    return (phase.stdout or "").strip() == "Succeeded" and \
+        "data" in (proc.stdout or "")
 
 
 def drill(env: DeployEnv,
@@ -784,6 +802,10 @@ def _drill_decode_pod_kill(env: DeployEnv, release_dir: pathlib.Path,
                           error_code="RELEASE_NOT_FOUND")
     victims = [p for p in items if _pod_ready(p)] or items
     victim = victims[0]["metadata"]["name"]
+    # A LeaderWorkerSet recreates the leader under the same pod name
+    # (found live on kind: the drill never saw the victim "leave"), so
+    # recovery is judged on the pod's UID, not its name.
+    victim_uid = victims[0]["metadata"].get("uid")
     before = kube.kubectl_json(["get", _pool_kind(pool), pool["name"]],
                                check=False)
     _, ready_before, want = _deployment_ready(before) if before else (
@@ -797,10 +819,14 @@ def _drill_decode_pod_kill(env: DeployEnv, release_dir: pathlib.Path,
                                 check=False)
         ready, have, spec = _deployment_ready(doc) if doc else (False, 0, 0)
         live = kube.kubectl_json(["get", "pods", "-l", selector], check=False)
-        names = [p["metadata"]["name"] for p in (live or {}).get("items", [])]
+        pods_now = (live or {}).get("items", [])
+        names = [p["metadata"]["name"] for p in pods_now]
+        uids = [p["metadata"].get("uid") for p in pods_now]
         last = {"ready": have, "want": spec, "pods": names,
                 "kind": _pool_kind(pool)}
-        if ready and victim not in names:
+        victim_gone = (victim not in names) if victim_uid is None else (
+            victim_uid not in uids)
+        if ready and victim_gone and all(_pod_ready(p) for p in pods_now):
             recovered_at = clock()
             break
         if clock() - started >= timeout_s:

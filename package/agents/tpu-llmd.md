@@ -153,7 +153,7 @@ rebuild it from events.
     `study_id`, `image` = the recipe's image, `fix: true`; for an adopted
     fleet also `selector` = the recipe's `fleet.selector`, so the probe
     runs inside a serving pod instead of pulling the image onto a CPU
-    node). It runs the cluster preflight and probes the image for the
+    node; for a recipe whose `engine_flavor` is `sim`, `sim: true`). It runs the cluster preflight and probes the image for the
     KV-events, P/D and offload connectors. If its result is not `checked`
     or `preflight.ok` is false, record a blocked row (step 6) naming
     `blockers[]` and stop: no release can be applied to a cluster that is

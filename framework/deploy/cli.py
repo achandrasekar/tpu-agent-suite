@@ -94,6 +94,8 @@ def register_deploy_parser(sub: Any) -> None:
                          help="Check the cluster is ready for a release")
     v.add_argument("--fix", action="store_true",
                    help="Create the namespace and install GAIE CRDs if missing")
+    v.add_argument("--sim", action="store_true",
+                   help="A simulated fleet: no TPU node is required")
 
     v = verbs.add_parser("probe", parents=[common],
                          help="Report what the serving image can do")
@@ -225,7 +227,9 @@ def dispatch(args: argparse.Namespace) -> dict[str, Any] | str:
     action = args.deploy_action
 
     if action == "preflight":
-        return preflight_mod.run_preflight(env, fix=args.fix)
+        return preflight_mod.run_preflight(env, fix=args.fix,
+                                           sim=bool(getattr(args, "sim",
+                                                            False)))
 
     if action == "probe":
         return probe_mod.run_probe(env,

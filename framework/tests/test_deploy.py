@@ -1163,8 +1163,12 @@ class ProductionTest(unittest.TestCase):
                             [_ready_pod("epp-a"), _ready_pod("epp-b", False)])
                     return subprocess.CompletedProcess(
                         cmd, 0, json.dumps({"items": pods}), "")
-                if cmd[-3:-1] == ["--max-time", "10"] or "curl" in joined:
+                if "curl" in joined or "-probe-" in joined:
+                    # The attach-free probe: run, wait, logs, phase, delete.
                     self.calls.append(list(cmd))
+                    if "jsonpath={.status.phase}" in joined and "get" in cmd:
+                        return subprocess.CompletedProcess(cmd, 0,
+                                                           "Succeeded", "")
                     return subprocess.CompletedProcess(
                         cmd, 0, '{"object":"list","data":[]}', "")
                 return super().__call__(cmd, stdin=stdin, timeout=timeout)
@@ -1203,12 +1207,22 @@ class ProductionTest(unittest.TestCase):
                 if "delete pod" in joined:
                     self.killed = True
                 if "get pods" in joined and "-o" in cmd:
-                    pods = ([_ready_pod("dec-b"), _ready_pod("dec-c")]
+                    # A LeaderWorkerSet recreates the leader under the
+                    # same name with a new UID; the drill must see that
+                    # as recovery.
+                    def pod(name, uid, ready=True):
+                        doc = _ready_pod(name, ready)
+                        doc["metadata"]["uid"] = uid
+                        return doc
+                    pods = ([pod("dec-a", "uid-a2"), pod("dec-b", "uid-b")]
                             if self.killed else
-                            [_ready_pod("dec-a"), _ready_pod("dec-b")])
+                            [pod("dec-a", "uid-a1"), pod("dec-b", "uid-b")])
                     return subprocess.CompletedProcess(
                         cmd, 0, json.dumps({"items": pods}), "")
-                if "curl" in joined:
+                if "curl" in joined or "-probe-" in joined:
+                    if "jsonpath={.status.phase}" in joined and "get" in cmd:
+                        return subprocess.CompletedProcess(cmd, 0,
+                                                           "Succeeded", "")
                     return subprocess.CompletedProcess(
                         cmd, 0, '{"object":"list","data":[]}', "")
                 return super().__call__(cmd, stdin=stdin, timeout=timeout)
