@@ -171,6 +171,13 @@
         "type": "string"
       },
       "description": "`<tenant>/r<replicate>` entries whose load generator fell behind its requested rate or schedule (inference-perf load_summary); any entry fails the `load.client_limited` gate, because a client-bound run measured the client."
+    },
+    "shards": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "integer"
+      },
+      "description": "Load-generator pods per tenant in each replicate; above one, the tenant's shards ran together and their reports were pooled (rates summed, the worst shard's percentiles)."
     }
   }
 }

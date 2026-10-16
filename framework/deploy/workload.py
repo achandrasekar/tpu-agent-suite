@@ -351,7 +351,8 @@ def render_inference_perf(profile: dict[str, Any],
                           duration_s: int = DEFAULT_SLO_STAGE_DURATION_S,
                           report_dir: str = "/reports",
                           objective: str | None = None,
-                          sweep_stage_s: int = DEFAULT_SWEEP_STAGE_DURATION_S
+                          sweep_stage_s: int = DEFAULT_SWEEP_STAGE_DURATION_S,
+                          tokenizer: str | None = None,
                           ) -> dict[str, Any]:
     """The inference-perf config one tenant's benchmark Job runs.
 
@@ -385,6 +386,13 @@ def render_inference_perf(profile: dict[str, Any],
         "base_url": base_url
     })
     config["server"] = server
+    # inference-perf counts tokens with a Hugging Face tokenizer named
+    # independently of the served model; a recipe whose model name is
+    # not a hub id (a simulated fleet, a private mirror) names one.
+    if tokenizer:
+        tok = dict(config.get("tokenizer") or {})
+        tok["pretrained_model_name_or_path"] = str(tokenizer)
+        config["tokenizer"] = tok
 
     api = dict(config.get("api") or {})
     if "streaming" in profile.get("overrides", {}):
@@ -495,6 +503,59 @@ def loadgen_sizing(rate: float) -> tuple[int, int]:
     concurrency = max(LOADGEN_MIN_CONCURRENCY,
                       math.ceil(inflight / workers))
     return workers, concurrency
+
+
+# One load-generator pod carries at most LOADGEN_MAX_WORKERS workers at
+# LOADGEN_RPS_PER_WORKER each; a rate above that is split across pods so
+# the client is never the knee it is measuring.
+LOADGEN_RPS_PER_POD = LOADGEN_RPS_PER_WORKER * LOADGEN_MAX_WORKERS
+
+
+def loadgen_shards(rate: float) -> int:
+    """How many load-generator pods an open-loop `rate` needs."""
+    return max(1, math.ceil(float(rate) / LOADGEN_RPS_PER_POD))
+
+
+def peak_rate(config: dict[str, Any]) -> float:
+    """The highest open-loop rate in a config's stages (0 for closed loop)."""
+    load = config.get("load") or {}
+    rates = [float(s.get("rate") or 0) for s in (load.get("stages") or [])]
+    return max(rates) if rates else 0.0
+
+
+def shard_load(config: dict[str, Any], shards: int) -> list[dict[str, Any]]:
+    """Split one inference-perf config into `shards` equal-rate configs.
+
+    Open-loop stages get `rate / shards` each and a worker pool sized for
+    that share; closed-loop stages get `concurrency_level / shards`
+    (ceiling, never below one). Every other field is shared, so the shards
+    are one measurement taken from several pods, and `bench` pools them.
+    """
+    shards = max(1, int(shards))
+    if shards == 1:
+        return [copy.deepcopy(config)]
+    out: list[dict[str, Any]] = []
+    for _ in range(shards):
+        piece = copy.deepcopy(config)
+        load = dict(piece.get("load") or {})
+        stages = []
+        for stage in load.get("stages") or []:
+            st = dict(stage)
+            if st.get("rate") is not None:
+                st["rate"] = round(float(st["rate"]) / shards, 4)
+            if st.get("concurrency_level") is not None:
+                st["concurrency_level"] = max(
+                    1, math.ceil(int(st["concurrency_level"]) / shards))
+            stages.append(st)
+        load["stages"] = stages
+        top = max([float(s.get("rate") or 0) for s in stages] or [0.0])
+        if top > 0:
+            workers, concurrency = loadgen_sizing(top)
+            load["num_workers"] = workers
+            load["worker_max_concurrency"] = concurrency
+        piece["load"] = load
+        out.append(piece)
+    return out
 
 
 # Request-level hardening. inference-perf retries only faults raised before

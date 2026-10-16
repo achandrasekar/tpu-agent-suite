@@ -902,7 +902,10 @@ def _server_deployment(name: str, role: str, recipe: dict[str, Any],
             }
         },
     }]
-    needs_pod_ip = pd or bool(config["kv"].get("precise_routing"))
+    # The simulator refuses to start its KV cache without POD_IP (found
+    # live: "IP should be defined in the environment (POD_IP)"), so a sim
+    # pod always carries it.
+    needs_pod_ip = pd or bool(config["kv"].get("precise_routing")) or sim
     if needs_pod_ip:
         env_list.append({"name": "POD_IP", "valueFrom": {
             "fieldRef": {"fieldPath": "status.podIP"}}})
@@ -1694,14 +1697,14 @@ def sizing_for(part: str, env: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def bench_job(name: str, tenant: str, stage: str, env: dict[str, Any],
-              production: bool) -> dict[str, Any]:
+              production: bool, suffix: str = "") -> dict[str, Any]:
     """A Job that runs inference-perf and prints every report it wrote.
 
     Reports are echoed between markers rather than copied out, so `bench`
     needs only the Job's logs -- no exec, no cp, no shared volume -- and the
     Job stays a plain Kubernetes object the reaper can delete.
     """
-    job_name = f"{name}-bench-{tenant}-{stage}"
+    job_name = f"{name}-bench-{tenant}-{stage}{suffix}"
     script = (f"set -e; inference-perf --config_file"
               f" {BENCH_CONFIG_DIR}/config.json;"
               f" for f in $(find {BENCH_REPORT_DIR} -name '*.json' | sort);"
@@ -1755,12 +1758,13 @@ def bench_job(name: str, tenant: str, stage: str, env: dict[str, Any],
 
 
 def bench_configmap(name: str, tenant: str, stage: str,
-                    config: dict[str, Any], production: bool) -> dict[str, Any]:
+                    config: dict[str, Any], production: bool,
+                    suffix: str = "") -> dict[str, Any]:
     return {
         "apiVersion": "v1",
         "kind": "ConfigMap",
         "metadata": {
-            "name": f"{name}-bench-{tenant}-{stage}",
+            "name": f"{name}-bench-{tenant}-{stage}{suffix}",
             "labels": release_labels(name, production)
         },
         "data": {"config.json": json.dumps(config, indent=2) + "\n"},
@@ -1857,6 +1861,7 @@ def render_release(*,
                 stage=stage,
                 base_url=base_url,
                 model_name=recipe["model"],
+                tokenizer=recipe.get("tokenizer"),
                 duration_s=int(env.get("slo_stage_duration_s")
                                or workload.DEFAULT_SLO_STAGE_DURATION_S),
                 report_dir=BENCH_REPORT_DIR,
@@ -1865,14 +1870,28 @@ def render_release(*,
                 sweep_stage_s=int(env.get("sweep_stage_duration_s")
                                   or workload.DEFAULT_SWEEP_STAGE_DURATION_S))
             key = f"{tenant['name']}.{stage}"
-            cm_path = f"{BENCH_DIR}/{key}.configmap.json"
-            job_path = f"{BENCH_DIR}/{key}.job.json"
-            _write(out_dir / cm_path,
-                   bench_configmap(name, tenant["name"], stage, ip_config,
-                                   production))
-            _write(out_dir / job_path,
-                   bench_job(name, tenant["name"], stage, env, production))
-            bench_files[key] = {"configmap": cm_path, "job": job_path}
+            # A rate one load-generator pod cannot carry is split across
+            # shards that `bench` runs together and pools; one shard is
+            # the plain case and keeps the old file names.
+            shards = workload.loadgen_shards(workload.peak_rate(ip_config))
+            pieces = workload.shard_load(ip_config, shards)
+            entries = []
+            for idx, piece in enumerate(pieces):
+                # Shard 0 keeps the plain name so a one-shard release and
+                # the first shard of a split read the same way.
+                suffix = "" if idx == 0 else f"-s{idx}"
+                cm_path = f"{BENCH_DIR}/{key}{suffix}.configmap.json"
+                job_path = f"{BENCH_DIR}/{key}{suffix}.job.json"
+                _write(out_dir / cm_path,
+                       bench_configmap(name, tenant["name"], stage, piece,
+                                       production, suffix=suffix))
+                _write(out_dir / job_path,
+                       bench_job(name, tenant["name"], stage, env,
+                                 production, suffix=suffix))
+                entries.append({"configmap": cm_path, "job": job_path})
+            bench_files[key] = {"configmap": entries[0]["configmap"],
+                                "job": entries[0]["job"],
+                                "shards": entries}
 
     _write(out_dir / CONFIG_FILE, config)
     _write(out_dir / RECIPE_FILE, recipe)

@@ -1001,9 +1001,11 @@ class MultiHostAndSimRenderTest(unittest.TestCase):
         # P/D still goes through the routing sidecar on decode.
         (sidecar,) = decode["spec"]["template"]["spec"]["initContainers"]
         self.assertIn("--kv-connector=nixlv2", sidecar["args"])
-        # No TPU side-channel env or ports on a simulated pod.
+        # No TPU side-channel env or ports on a simulated pod; POD_IP is
+        # always there (the simulator's KV cache needs it).
         names = {e["name"] for e in dc["env"]}
         self.assertNotIn("TPU_SIDE_CHANNEL_PORT", names)
+        self.assertIn("POD_IP", names)
         self.assertEqual([p["name"] for p in dc["ports"]],
                          [render.MODELSERVER_CONTAINER])
         # The prefill group is an LWS of sim leader + sleeping worker.
@@ -1555,11 +1557,13 @@ class BenchTest(unittest.TestCase):
             self.assertEqual(report["replicates"], 2)
             self.assertTrue(report["telemetry_valid"])
             self.assertTrue(report["admissible"])
-            # Two tenants x two replicates: a ConfigMap and a Job each time,
+            # Two replicates of (interactive at 84 rps = 2 shards, batch at
+            # 36 rps = 1 shard): a ConfigMap and a Job per shard each time,
             # and each Job deleted afterwards so a rerun starts clean.
-            self.assertEqual(len(runner.matching("kubectl", "apply")), 8)
+            self.assertEqual(len(runner.matching("kubectl", "apply")), 12)
             self.assertEqual(len(runner.matching("kubectl", "delete", "job")),
-                             4)
+                             6)
+            self.assertEqual(report["shards"], {"interactive": 2, "batch": 1})
             schema = json.loads(
                 (_NEXUS / "package" / "schemas" /
                  "llmd-bench-report.json").read_text(encoding="utf-8"))
@@ -1583,7 +1587,8 @@ class BenchTest(unittest.TestCase):
                                      sleep=lambda s: None, clock=lambda: 0.0)
             self.assertFalse(report["telemetry_valid"])
             self.assertFalse(report["admissible"])
-            self.assertEqual(len(report["job_failures"]), 2)
+            # Three Jobs (two interactive shards, one batch), all failed.
+            self.assertEqual(len(report["job_failures"]), 3)
 
 
 class CollectTest(unittest.TestCase):
@@ -1693,6 +1698,66 @@ class CollectTest(unittest.TestCase):
         self.assertIn("application-default", ctx.exception.stderr)
         self.assertIn("gcloud auth print-access-token", ctx.exception.stderr)
         self.assertIn("not logged in", ctx.exception.stderr)
+
+
+class LoadgenShardTest(unittest.TestCase):
+    """M5e: a rate one load-generator pod cannot carry is split and pooled."""
+
+    def test_shards_and_split_rates(self):
+        self.assertEqual(workload.loadgen_shards(20), 1)
+        self.assertEqual(workload.loadgen_shards(workload.LOADGEN_RPS_PER_POD),
+                         1)
+        self.assertEqual(workload.loadgen_shards(
+            workload.LOADGEN_RPS_PER_POD + 1), 2)
+        cfg = {"load": {"type": "poisson",
+                        "stages": [{"rate": 200.0, "duration": 120},
+                                   {"rate": 260.0, "duration": 120}],
+                        "num_workers": 8, "worker_max_concurrency": 1000},
+               "api": {"type": "completion"}}
+        pieces = workload.shard_load(cfg, 3)
+        self.assertEqual(len(pieces), 3)
+        for piece in pieces:
+            rates = [s["rate"] for s in piece["load"]["stages"]]
+            self.assertEqual(rates, [round(200 / 3, 4), round(260 / 3, 4)])
+            self.assertEqual(piece["api"], cfg["api"])
+            w, c = workload.loadgen_sizing(round(260 / 3, 4))
+            self.assertEqual(piece["load"]["num_workers"], w)
+            self.assertEqual(piece["load"]["worker_max_concurrency"], c)
+        closed = {"load": {"type": "concurrent",
+                           "stages": [{"concurrency_level": 5}]}}
+        self.assertEqual(workload.shard_load(closed, 2)[0]["load"]["stages"],
+                         [{"concurrency_level": 3}])
+        self.assertEqual(workload.shard_load(cfg, 1), [cfg])
+
+    def test_pool_reports_sums_rates_and_takes_the_worst_percentile(self):
+        def doc(ok, rps, p99, delay, goodput):
+            return {"successes": {"count": ok,
+                                  "throughput": {"requests_per_sec": rps,
+                                                 "output_tokens_per_sec": rps * 10},
+                                  "latency": {"time_to_first_token": {"p99": p99,
+                                                                      "mean": p99 / 2}},
+                                  "goodput_metrics": {"goodput_requests_per_sec": goodput}},
+                    "failures": {"count": 1, "by_label": {"timeout": {"count": 1}}},
+                    "load_summary": {"requested_rate": 40, "achieved_rate": rps,
+                                     "schedule_delay": {"mean": delay}}}
+        pooled = bench.pool_reports([doc(100, 39.0, 0.20, 0.01, 38.0),
+                                     doc(120, 40.0, 0.35, 0.02, 40.0)])
+        self.assertEqual(pooled["successes"]["count"], 220)
+        self.assertEqual(pooled["failures"]["count"], 2)
+        self.assertEqual(pooled["failures"]["by_label"]["timeout"]["count"], 2)
+        self.assertAlmostEqual(
+            pooled["successes"]["throughput"]["requests_per_sec"], 79.0)
+        self.assertAlmostEqual(
+            pooled["successes"]["latency"]["time_to_first_token"]["p99"], 0.35)
+        self.assertAlmostEqual(
+            pooled["successes"]["goodput_metrics"]["goodput_requests_per_sec"],
+            78.0)
+        self.assertAlmostEqual(pooled["load_summary"]["requested_rate"], 80.0)
+        self.assertAlmostEqual(pooled["load_summary"]["schedule_delay"]["mean"],
+                               0.02)
+        self.assertEqual(pooled["pooled"], "max-of-shards")
+        single = doc(1, 1.0, 0.1, 0.0, 1.0)
+        self.assertIs(bench.pool_reports([single]), single)
 
 
 class ProbeTest(unittest.TestCase):

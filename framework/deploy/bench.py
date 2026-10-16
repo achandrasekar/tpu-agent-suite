@@ -117,6 +117,82 @@ def _stage_reports(reports: dict[str, Any]) -> list[tuple[int, dict]]:
     return sorted(out, key=lambda t: t[0])
 
 
+def _zip_stages(per_shard: list[list[tuple[int, dict[str, Any]]]]
+                ) -> list[list[dict[str, Any]]]:
+    """Group the shards' per-stage reports by stage index."""
+    by_index: dict[int, list[dict[str, Any]]] = {}
+    for stages in per_shard:
+        for idx, doc in stages:
+            by_index.setdefault(idx, []).append(doc)
+    return [by_index[i] for i in sorted(by_index)]
+
+
+# Fields summed across shards (counts, rates) and fields where the worst
+# shard stands for the pool (latency percentiles, schedule delay): without
+# per-request records an exact pooled percentile is not computable, and
+# the conservative reading is the one a gate may be judged on.
+_SUM_THROUGHPUT = ("requests_per_sec", "total_tokens_per_sec",
+                   "output_tokens_per_sec", "input_tokens_per_sec")
+_SUM_GOODPUT_PREFIXES = ("goodput_", "good_")
+
+
+def pool_reports(docs: list[dict[str, Any]]) -> dict[str, Any]:
+    """One lifecycle report from several shards' reports.
+
+    A single shard is returned as is. For more: success/failure counts and
+    throughput rates sum; goodput rates sum; every latency percentile is
+    the maximum over shards (`pooled: max-of-shards`); the load summary's
+    requested and achieved rates sum and its schedule delay is the worst
+    shard's, so `client_limited` still fires if any shard fell behind.
+    """
+    if len(docs) == 1:
+        return docs[0]
+    out: dict[str, Any] = {"successes": {"count": 0, "throughput": {},
+                                         "latency": {}, "goodput_metrics": {}},
+                           "failures": {"count": 0, "by_label": {}},
+                           "load_summary": {}, "pooled": "max-of-shards",
+                           "shards": len(docs)}
+    succ, fail, load = out["successes"], out["failures"], out["load_summary"]
+    for doc in docs:
+        s = doc.get("successes") or {}
+        f = doc.get("failures") or {}
+        succ["count"] += int(s.get("count") or 0)
+        fail["count"] += int(f.get("count") or 0)
+        for label, entry in (f.get("by_label") or {}).items():
+            fail["by_label"].setdefault(label, {"count": 0})
+            fail["by_label"][label]["count"] += int(
+                (entry or {}).get("count") or 0)
+        for key, value in (s.get("throughput") or {}).items():
+            if isinstance(value, (int, float)) and key in _SUM_THROUGHPUT:
+                succ["throughput"][key] = succ["throughput"].get(key, 0.0) + \
+                    float(value)
+        goodput = s.get("goodput_metrics") or doc.get("goodput_metrics") or {}
+        for key, value in goodput.items():
+            if isinstance(value, (int, float)) and key.startswith(
+                    _SUM_GOODPUT_PREFIXES):
+                succ["goodput_metrics"][key] = succ["goodput_metrics"].get(
+                    key, 0.0) + float(value)
+        for metric, block in (s.get("latency") or {}).items():
+            if not isinstance(block, dict):
+                continue
+            pooled = succ["latency"].setdefault(metric, {})
+            for pct, value in block.items():
+                if isinstance(value, (int, float)):
+                    pooled[pct] = max(pooled.get(pct, float("-inf")),
+                                      float(value))
+        ls = doc.get("load_summary") or {}
+        for key in ("requested_rate", "achieved_rate", "count"):
+            if ls.get(key) is not None:
+                load[key] = load.get(key, 0.0) + float(ls[key])
+        delay = ls.get("schedule_delay") or {}
+        if isinstance(delay, dict) and delay.get("mean") is not None:
+            cur = (load.get("schedule_delay") or {}).get("mean", float("-inf"))
+            load["schedule_delay"] = {"mean": max(cur, float(delay["mean"]))}
+    if not succ["goodput_metrics"]:
+        succ.pop("goodput_metrics")
+    return out
+
+
 def _latency_ms(doc: dict[str, Any], field: str, percentile: str
                 ) -> tuple[float | None, str]:
     """A latency percentile in ms, and the field it was read from."""
@@ -470,48 +546,68 @@ def run_bench(env: DeployEnv,
     per_replicate: list[dict[str, dict[str, Any]]] = []
     per_tenant_stages: dict[str, list[dict[str, Any]]] = {}
     failures: list[str] = []
+    shard_counts: dict[str, int] = {}
     for rep in range(replicates):
-        names: dict[str, str] = {}
+        # One tenant may run as several load-generator shards (a rate one
+        # pod cannot carry); all shards of all tenants of a replicate run
+        # together and each tenant's shards are pooled into one report.
+        names: dict[str, list[str]] = {}
         for tenant in profile["tenants"]:
             key = f"{tenant['name']}.{stage}"
             files = release["files"]["bench"][key]
-            kube.apply((release_dir / files["configmap"]).read_text("utf-8"))
-            job = json.loads((release_dir / files["job"]).read_text("utf-8"))
-            job_name = (f"{job['metadata']['name']}-{execution_id[-8:]}"
-                        f"-r{rep}")
-            kube.apply(json.dumps(_job_doc_with_name(job, job_name)))
-            names[tenant["name"]] = job_name
+            shards = files.get("shards") or [files]
+            shard_counts[tenant["name"]] = len(shards)
+            names[tenant["name"]] = []
+            for idx, shard in enumerate(shards):
+                kube.apply((release_dir / shard["configmap"]).read_text(
+                    "utf-8"))
+                job = json.loads((release_dir / shard["job"]).read_text(
+                    "utf-8"))
+                job_name = (f"{job['metadata']['name']}-{execution_id[-8:]}"
+                            f"-r{rep}")
+                kube.apply(json.dumps(_job_doc_with_name(job, job_name)))
+                names[tenant["name"]].append(job_name)
         outcome = _wait_jobs(kube,
-                             list(names.values()),
+                             [n for group in names.values() for n in group],
                              timeout_s=timeout_s,
                              sleep=sleep,
                              clock=clock)
         summaries: dict[str, dict[str, Any]] = {}
         for tenant in profile["tenants"]:
-            job_name = names[tenant["name"]]
-            proc = kube.kubectl(["logs", f"job/{job_name}", "--tail=-1"],
-                                check=False)
-            text = (proc.stdout or "") + (proc.stderr or "")
-            (raw_dir / f"{job_name}.log").write_text(text, encoding="utf-8")
-            reports = parse_report_logs(text)
-            (raw_dir / f"{job_name}.reports.json").write_text(
-                json.dumps(reports, indent=2), encoding="utf-8")
-            summary_doc = _find(reports, "summary_lifecycle_metrics.json")
-            if outcome.get(job_name) != "succeeded" or summary_doc is None:
-                failures.append(
-                    f"{job_name}: {outcome.get(job_name)}; reports:"
-                    f" {sorted(reports)}")
+            summary_docs: list[dict[str, Any]] = []
+            stage_docs: list[list[tuple[int, dict[str, Any]]]] = []
+            failed = False
+            for job_name in names[tenant["name"]]:
+                proc = kube.kubectl(["logs", f"job/{job_name}", "--tail=-1"],
+                                    check=False)
+                text = (proc.stdout or "") + (proc.stderr or "")
+                (raw_dir / f"{job_name}.log").write_text(text,
+                                                         encoding="utf-8")
+                reports = parse_report_logs(text)
+                (raw_dir / f"{job_name}.reports.json").write_text(
+                    json.dumps(reports, indent=2), encoding="utf-8")
+                summary_doc = _find(reports, "summary_lifecycle_metrics.json")
+                if outcome.get(job_name) != "succeeded" or summary_doc is None:
+                    failures.append(
+                        f"{job_name}: {outcome.get(job_name)}; reports:"
+                        f" {sorted(reports)}")
+                    failed = True
+                else:
+                    summary_docs.append(summary_doc)
+                    stage_docs.append(_stage_reports(reports))
+                kube.delete(["job", job_name])
+            if failed or not summary_docs:
                 summaries[tenant["name"]] = summarize_report(
                     {}, tenant, error_rate_max)
-            else:
-                summaries[tenant["name"]] = summarize_report(
-                    summary_doc, tenant, error_rate_max)
-                if stage == "sweep":
-                    per_tenant_stages[tenant["name"]] = [
-                        summarize_report(doc, tenant, error_rate_max)
-                        for _, doc in _stage_reports(reports)
-                    ]
-            kube.delete(["job", job_name])
+                continue
+            summaries[tenant["name"]] = summarize_report(
+                pool_reports(summary_docs), tenant, error_rate_max)
+            if stage == "sweep":
+                per_tenant_stages[tenant["name"]] = [
+                    summarize_report(pool_reports(docs), tenant,
+                                     error_rate_max)
+                    for docs in _zip_stages(stage_docs)
+                ]
         per_replicate.append(summaries)
 
     scored = score(release, profile, per_replicate)
@@ -520,6 +616,7 @@ def run_bench(env: DeployEnv,
         "execution_id": execution_id,
         "stage": stage,
         "replicates": replicates,
+        "shards": shard_counts,
         "started_at": started_at,
         "finished_at": _now(),
         "release": {

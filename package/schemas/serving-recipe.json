@@ -223,6 +223,10 @@
           "description": "Extra env on every member of a multi-host group (leader and workers)."
         }
       }
+    },
+    "tokenizer": {
+      "type": "string",
+      "description": "Hugging Face tokenizer id the load generator counts tokens with, when the served model name is not a hub id (a simulated fleet, a private mirror). Defaults to `model`."
     }
   },
   "examples": [
