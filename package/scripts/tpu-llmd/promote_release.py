@@ -76,6 +76,10 @@ UNVERIFIED_ADOPTED = [
     "model-server drills (decode/prefill pod kill): refused on an adopted"
     " fleet, whose pods the release does not own",
 ]
+UNVERIFIED_MANAGED_NO_DECODE_DRILL = [
+    "decode pod kill: not run (ask for the `decode-pod-kill` drill by name;"
+    " it restarts a replica, a whole group under multi-host)",
+]
 UNVERIFIED_PASSTHROUGH = [
     "EPP HA, exposure and the EPP drill: the incumbent is the passthrough"
     " profile, so no router was installed",
@@ -625,6 +629,8 @@ def cmd_bundle(args: argparse.Namespace) -> int:
     unverified = list(UNVERIFIED_ALWAYS)
     if adopted:
         unverified += UNVERIFIED_ADOPTED
+    elif not any(d.get("drill") == "decode-pod-kill" for d in drills):
+        unverified += UNVERIFIED_MANAGED_NO_DECODE_DRILL
     if not router_installed:
         unverified += UNVERIFIED_PASSTHROUGH
 

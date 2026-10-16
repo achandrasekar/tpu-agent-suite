@@ -636,7 +636,13 @@ def events(env: DeployEnv, release_dir: pathlib.Path,
 # -- drills -----------------------------------------------------------------------
 
 DRILL_EPP_POD_KILL = "epp-pod-kill"
-DRILLS = (DRILL_EPP_POD_KILL,)
+# Kills one serving pod of the decode pool -- a group leader under
+# multi-host, which restarts the whole group -- and measures until the
+# pool is back and the front door answers. Managed fleets only: an
+# adopted fleet's pods are not the release's to kill. Costs a replica's
+# restart, so a user asks for it by name.
+DRILL_DECODE_POD_KILL = "decode-pod-kill"
+DRILLS = (DRILL_EPP_POD_KILL, DRILL_DECODE_POD_KILL)
 DEFAULT_DRILL_TIMEOUT_S = 300
 
 
@@ -688,6 +694,10 @@ def drill(env: DeployEnv,
                           error_code="INVALID_FIELD")
     release_dir = pathlib.Path(release_dir)
     release = render.load_release(release_dir)
+    if name == DRILL_DECODE_POD_KILL:
+        return _drill_decode_pod_kill(env, release_dir, release,
+                                      timeout_s=timeout_s, poll_s=poll_s,
+                                      runner=runner, sleep=sleep, clock=clock)
     if not _router_installed(release):
         raise DeployError(
             "the release has no router to drill (passthrough profile)",
@@ -733,6 +743,77 @@ def drill(env: DeployEnv,
         "release": release["name"],
         "killed": victim,
         "epp_ha": release["router"].get("epp_ha"),
+        "ready_before": ready_before,
+        "want": want,
+        "recovered": recovered_at is not None,
+        "recovery_s": (round(recovered_at - started, 1)
+                       if recovered_at is not None else None),
+        "front_door_ok": front_door,
+        "passed": bool(recovered_at is not None and front_door is not False),
+        "last": last,
+    }
+    _history(release, "drill", **{k: v for k, v in result.items()
+                                  if k not in ("last", "release")})
+    render.save_release(release_dir, release)
+    return result
+
+
+def _drill_decode_pod_kill(env: DeployEnv, release_dir: pathlib.Path,
+                           release: dict[str, Any], *, timeout_s: int,
+                           poll_s: int, runner: Any,
+                           sleep: Callable[[float], None],
+                           clock: Callable[[], float]) -> dict[str, Any]:
+    """Kill one Ready decode pod (a group leader under LWS) and time the
+    pool's return; see DRILL_DECODE_POD_KILL."""
+    if _adopted(release):
+        raise DeployError(
+            "decode-pod-kill is refused on an adopted fleet: its pods are"
+            " not the release's to kill", error_code="ADOPTED_FLEET_IMMUTABLE")
+    kube = _kube_for(env, release, runner)
+    pools = [p for p in _pools(release) if p.get("role", "decode") == "decode"]
+    if not pools:
+        raise DeployError("the release has no decode pool",
+                          error_code="NOTHING_TO_DRILL")
+    pool = pools[0]
+    selector = (f"{pins.RELEASE_LABEL}={release['name']},"
+                f"{pins.LLMD_ROLE_LABEL}=decode")
+    pods = kube.kubectl_json(["get", "pods", "-l", selector], check=False)
+    items = (pods or {}).get("items", [])
+    if not items:
+        raise DeployError("no decode pods match the release's selector",
+                          error_code="RELEASE_NOT_FOUND")
+    victims = [p for p in items if _pod_ready(p)] or items
+    victim = victims[0]["metadata"]["name"]
+    before = kube.kubectl_json(["get", _pool_kind(pool), pool["name"]],
+                               check=False)
+    _, ready_before, want = _deployment_ready(before) if before else (
+        False, 0, 0)
+    started = clock()
+    kube.delete(["pod", victim])
+    recovered_at: float | None = None
+    last: dict[str, Any] = {}
+    while True:
+        doc = kube.kubectl_json(["get", _pool_kind(pool), pool["name"]],
+                                check=False)
+        ready, have, spec = _deployment_ready(doc) if doc else (False, 0, 0)
+        live = kube.kubectl_json(["get", "pods", "-l", selector], check=False)
+        names = [p["metadata"]["name"] for p in (live or {}).get("items", [])]
+        last = {"ready": have, "want": spec, "pods": names,
+                "kind": _pool_kind(pool)}
+        if ready and victim not in names:
+            recovered_at = clock()
+            break
+        if clock() - started >= timeout_s:
+            break
+        sleep(poll_s)
+    front_door = (_probe_front_door(kube, release)
+                  if recovered_at is not None else False)
+    result = {
+        "drill": DRILL_DECODE_POD_KILL,
+        "release": release["name"],
+        "killed": victim,
+        "pool": {"name": pool["name"], "kind": _pool_kind(pool),
+                 "hosts": pool.get("hosts", 1)},
         "ready_before": ready_before,
         "want": want,
         "recovered": recovered_at is not None,

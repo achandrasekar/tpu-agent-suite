@@ -1183,8 +1183,46 @@ class ProductionTest(unittest.TestCase):
         history = render.load_release(out)["history"]
         self.assertEqual(history[-1]["action"], "drill")
         with self.assertRaises(DeployError):
-            release.drill(self.env, out, name="decode-pod-kill",
+            release.drill(self.env, out, name="no-such-drill",
                           runner=runner)
+
+    def test_decode_pod_kill_drill_waits_for_the_pool(self):
+        out, _ = self._prod()
+        pool_doc = {"metadata": {"generation": 1}, "spec": {"replicas": 2},
+                    "status": {"observedGeneration": 1, "readyReplicas": 2,
+                               "updatedReplicas": 2}}
+
+        class DrillRunner(FakeRunner):
+            def __init__(self):
+                super().__init__(json_docs={
+                    "get deployment acme-prod-decode": pool_doc})
+                self.killed = False
+
+            def __call__(self, cmd, *, stdin=None, timeout=None):
+                joined = " ".join(cmd)
+                if "delete pod" in joined:
+                    self.killed = True
+                if "get pods" in joined and "-o" in cmd:
+                    pods = ([_ready_pod("dec-b"), _ready_pod("dec-c")]
+                            if self.killed else
+                            [_ready_pod("dec-a"), _ready_pod("dec-b")])
+                    return subprocess.CompletedProcess(
+                        cmd, 0, json.dumps({"items": pods}), "")
+                if "curl" in joined:
+                    return subprocess.CompletedProcess(
+                        cmd, 0, '{"object":"list","data":[]}', "")
+                return super().__call__(cmd, stdin=stdin, timeout=timeout)
+
+        runner = DrillRunner()
+        clock = iter([0.0, 12.0, 12.5, 13.0, 14.0])
+        row = release.drill(self.env, out, name=release.DRILL_DECODE_POD_KILL,
+                            runner=runner, timeout_s=60, poll_s=0,
+                            sleep=lambda s: None, clock=lambda: next(clock))
+        self.assertEqual(row["killed"], "dec-a")
+        self.assertEqual(row["pool"]["name"], "acme-prod-decode")
+        self.assertTrue(row["recovered"])
+        self.assertTrue(row["passed"])
+        self.assertTrue(runner.matching("kubectl", "delete", "pod", "dec-a"))
 
     def test_drill_refuses_a_passthrough_release(self):
         out = pathlib.Path(self._tmp.name) / "pt"

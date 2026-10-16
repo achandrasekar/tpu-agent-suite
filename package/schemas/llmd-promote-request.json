@@ -98,13 +98,14 @@
       "items": {
         "type": "string",
         "enum": [
-          "epp-pod-kill"
+          "epp-pod-kill",
+          "decode-pod-kill"
         ]
       },
       "default": [
         "epp-pod-kill"
       ],
-      "description": "Fault drills to run after acceptance. Only drills the runtime implements are listed; anything else the design names is reported UNVERIFIED."
+      "description": "Fault drills to run after acceptance. Only drills the runtime implements are listed; anything else the design names is reported UNVERIFIED. `decode-pod-kill` kills one serving pod of the decode pool (a group leader under multi-host, restarting the group) and is refused on adopted fleets; ask for it by name, it costs a replica's restart."
     },
     "existing_production_release": {
       "type": "string",

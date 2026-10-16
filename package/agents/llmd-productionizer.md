@@ -140,15 +140,18 @@ For each name in `drills` (default `epp-pod-kill`):
     --drill epp-pod-kill --out <production>/drills/epp-pod-kill.json
 ```
 
-The drill deletes the Ready EPP pod, waits for the Deployment to recover to
-its HA-aware readiness, and probes the front door; its row says what was
-killed, the recovery time, and whether the front door answered. Drills the
-design names that the runtime does not implement -- decode or prefill pod
-kill, scale from zero, zonal failover -- are **not** run and are listed as
-UNVERIFIED by the bundler. Never kill a model-server pod by hand to fill
-that gap: on an adopted fleet they are not yours, and on a managed fleet it
-is a chip-costing experiment the user did not ask for. A passthrough
-incumbent has nothing to drill; skip this step.
+`epp-pod-kill` deletes the Ready EPP pod, waits for the Deployment to
+recover to its HA-aware readiness, and probes the front door; its row says
+what was killed, the recovery time, and whether the front door answered.
+`decode-pod-kill` (only when the request names it) deletes one Ready decode
+serving pod -- a group leader under multi-host, which restarts its whole
+group -- and waits for the pool and the front door; the runtime refuses it
+on an adopted fleet. Drills the design names that the runtime does not
+implement -- prefill pod kill, scale from zero, zonal failover -- are
+**not** run and are listed as UNVERIFIED by the bundler. Never kill a
+model-server pod by hand to fill that gap: on an adopted fleet they are not
+yours, and on a managed fleet it is a chip-costing experiment the user did
+not ask for. A passthrough incumbent has nothing to drill; skip this step.
 
 ## Step 4 -- the bundle and the verdict
 
