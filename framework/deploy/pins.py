@@ -199,6 +199,42 @@ AGENTX_FAILED_THRESHOLD = 0.10        # InferenceX's post-run validity gate
 AGENTX_TTFT_P50_GATE_MS = 5000        # default TTFT p50 qualifying gate
 AGENTX_NUM_DATASET_ENTRIES = 393
 
+# The InferenceX dashboard's price per accelerator-hour, from the app's
+# HW_REGISTRY (SemiAnalysisAI/InferenceX-app packages/constants/src/
+# gpu-keys.ts, citing "SemiAnalysis Market July 2026 Pricing Surveys & AI
+# Cloud TCO Model", https://semianalysis.com/ai-cloud-tco-model/) as read
+# on 2026-10-16. Three bases: `internal` is the dashboard default (the
+# owning tier, with tpuv7 repriced to Google's internal owner cost, 1.03,
+# in packages/app/src/lib/catalog/constants.ts getGpuSpecs); `external`
+# is the owning tier as an external buyer pays (costh); `rental` is the
+# retail tier (costr; for tpuv7 "GCP 3-year commit rental rate per
+# chip-hour"). tokens per $ = tok/s per chip x 3600 / price. TPU prices
+# are per physical chip-hour; no tpuv6e key exists on the dashboard.
+AGENTX_PRICE_SOURCE = ("InferenceX-app HW_REGISTRY (gpu-keys.ts) @ bbcf1128,"
+                       " SemiAnalysis AI Cloud TCO Model, July 2026")
+AGENTX_PRICES: dict[str, dict[str, float]] = {
+    "tpuv7": {"internal": 1.03, "external": 1.21, "rental": 2.00},
+    "tpu7x": {"internal": 1.03, "external": 1.21, "rental": 2.00},
+    "gb300": {"internal": 2.31, "external": 2.31, "rental": 5.00},
+    "gb200": {"internal": 1.86, "external": 1.86, "rental": 4.00},
+    "b300": {"internal": 2.26, "external": 2.26, "rental": 4.25},
+    "b200": {"internal": 1.73, "external": 1.73, "rental": 3.70},
+    "h200": {"internal": 1.22, "external": 1.22, "rental": 2.90},
+    "h100": {"internal": 1.17, "external": 1.17, "rental": 2.00},
+    "mi355x": {"internal": 1.50, "external": 1.50, "rental": 2.90},
+    "mi325x": {"internal": 1.10, "external": 1.10, "rental": 1.60},
+    "mi300x": {"internal": 0.95, "external": 0.95, "rental": 1.30},
+    "vr200": {"internal": 3.61, "external": 3.61, "rental": 8.50},
+    "rtx6000pro": {"internal": 0.68, "external": 0.68, "rental": 0.52},
+}
+AGENTX_TCO_BASES = ("internal", "external", "rental")
+# The dashboard's public, unauthenticated views API (docs at
+# https://inferencex.semianalysis.com/api): chart-ready points per
+# hardware/framework series for one model and the agentic sequence.
+AGENTX_LEADERBOARD_API = "https://inferencex.semianalysis.com/api/v1/views/inference"
+AGENTX_LEADERBOARD_MODEL = "Qwen-3.5-397B-A17B"
+AGENTX_LEADERBOARD_SEQUENCE = "agentic-traces"
+
 # vLLM KV-event publishing for precise prefix routing
 # (guides/precise-prefix-cache-routing/modelserver/*/patch-vllm.yaml and
 # router/precise-prefix-cache-routing.values.yaml at LLMD_REF). The guide

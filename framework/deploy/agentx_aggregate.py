@@ -45,6 +45,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import pathlib
 import statistics
 import sys
@@ -162,6 +163,12 @@ def reduce_records(records: list[dict[str, Any]]) -> dict[str, Any]:
     ttft = _ms_to_s(_floats(records, "time_to_first_token"))
     e2el = _ms_to_s(_floats(records, "request_latency"))
     itl = _ms_to_s(_floats(records, "inter_token_latency"))
+    # The dashboard's x axis: when aiperf reports the full-response ITL
+    # ((request_end - first_content) / (OSL - 1)) the ingest replaces ITL
+    # with it before taking 1 / pXX (InferenceX-app benchmark-mapper.ts,
+    # full-response-interactivity.ts); mirrored here as `dashboard_itl`.
+    full_itl = _ms_to_s(_floats(records, "full_response_inter_token_latency"))
+    dashboard_itl = full_itl if full_itl else itl
     isl = _floats(records, "input_sequence_length")
     osl = _floats(records, "output_sequence_length")
     starts = [int(r["metadata"]["request_start_ns"]) for r in records
@@ -172,6 +179,23 @@ def reduce_records(records: list[dict[str, Any]]) -> dict[str, Any]:
     itl_stats = stats(itl)
     intvty = {k: (1.0 / v if v else None) for k, v in itl_stats.items()
               if k.startswith("p") or k == "mean"}
+    # The dashboard's E2E-normalised interactivity (MODELS.md): per request
+    # E2EL / OSL, a percentile of that, inverted -- the whole response time
+    # per generated token, not just the inter-token gaps.
+    per_token = []
+    for r in records:
+        e = _metric(r, "request_latency")
+        o = _metric(r, "output_sequence_length")
+        try:
+            e, o = float(e), float(o)
+        except (TypeError, ValueError):
+            continue
+        if e > 0 and o > 0:
+            per_token.append((e / 1000.0) / o)
+    e2e_norm_stats = stats(per_token)
+    e2e_norm_intvty = {k: (1.0 / v if v else None)
+                       for k, v in e2e_norm_stats.items()
+                       if k.startswith("p") or k == "mean"}
     throughput: dict[str, Any] = {"duration_s": duration}
     if duration > 0:
         throughput.update({
@@ -180,10 +204,20 @@ def reduce_records(records: list[dict[str, Any]]) -> dict[str, Any]:
             "total_tokens_per_s": (sum(isl) + sum(osl)) / duration,
             "requests_per_s": len(records) / duration,
         })
+    dash_stats = stats(dashboard_itl)
+    dashboard_intvty = {k: (1.0 / v if v else None)
+                        for k, v in dash_stats.items()
+                        if k.startswith("p") or k == "mean"}
     return {
         "latency_s": {"ttft": stats(ttft), "e2el": stats(e2el),
-                      "itl": itl_stats, "tpot": itl_stats},
+                      "itl": itl_stats, "tpot": itl_stats,
+                      "full_response_itl": stats(full_itl),
+                      "dashboard_itl": dash_stats},
         "interactivity_tok_s_per_user": intvty,
+        "dashboard_interactivity_tok_s_per_user": dashboard_intvty,
+        "dashboard_interactivity_source": "full_response_itl" if full_itl
+        else "itl",
+        "e2e_norm_interactivity_tok_s_per_user": e2e_norm_intvty,
         "tokens": {"input": stats(isl), "output": stats(osl),
                    "input_total": sum(isl), "output_total": sum(osl)},
         "throughput": throughput,
@@ -209,30 +243,71 @@ def _metric_rows(doc: Any) -> list[dict[str, Any]]:
     return rows
 
 
-def cache_rates(server_metrics: Any) -> dict[str, Any]:
-    """HBM and CPU/external prefix-cache hit rates from the scrape, by the
-    same counters InferenceX's vLLM backend reads; absent when the export
-    has none of them."""
-    totals = {"vllm:prefix_cache_hits": 0.0, "vllm:prefix_cache_queries": 0.0,
-              "vllm:external_prefix_cache_hits": 0.0,
-              "vllm:external_prefix_cache_queries": 0.0}
+CACHE_COUNTERS = ("vllm:prefix_cache_hits", "vllm:prefix_cache_queries",
+                  "vllm:external_prefix_cache_hits",
+                  "vllm:external_prefix_cache_queries")
+
+
+def _series_totals(doc: Any, endpoints: set[str] | None = None
+                   ) -> tuple[dict[str, float], bool]:
+    """aiperf >= 0.12 `server_metrics_export.json` (schema_version 1.1):
+    `metrics.<name>.{type, series: [{endpoint_url, labels, stats: {total,
+    rate, ...}}]}`, totals over the profiling phase (`metrics_phase`).
+    Counter names carry no `_total` suffix. When `endpoints` is given only
+    those series count: aiperf also scrapes the inference URL's own
+    `/metrics`, which behind the router's proxy Service is one engine's
+    page again and would be double counted. Returns (totals, seen)."""
+    totals = {k: 0.0 for k in CACHE_COUNTERS}
     seen = False
-    for row in _metric_rows(server_metrics):
-        name = row.get("name") or row.get("metric")
-        if name in totals:
+    metrics = doc.get("metrics") if isinstance(doc, dict) else None
+    if not isinstance(metrics, dict):
+        return totals, False
+    for name in CACHE_COUNTERS:
+        entry = metrics.get(name) or metrics.get(name + "_total")
+        if not isinstance(entry, dict):
+            continue
+        for series in entry.get("series") or []:
+            if endpoints and (series or {}).get("endpoint_url") not in endpoints:
+                continue
+            stats = (series or {}).get("stats") or {}
+            value = stats.get("total")
+            if value is None:
+                value = stats.get("delta", stats.get("last"))
             try:
-                totals[name] += float(row.get("value") or
-                                      row.get("last") or 0.0)
+                totals[name] += float(value)
                 seen = True
             except (TypeError, ValueError):
                 continue
-        for key in list(totals):
-            if key in row and name is None:
+    return totals, seen
+
+
+def cache_rates(server_metrics: Any, endpoints: set[str] | None = None
+                ) -> dict[str, Any]:
+    """HBM and CPU/external prefix-cache hit rates from aiperf's server
+    metrics export, by the same counters InferenceX's vLLM backend reads
+    (`vllm:prefix_cache_{hits,queries}` for HBM,
+    `vllm:external_prefix_cache_{hits,queries}` for the CPU tier);
+    `present: false` when the export carries none of them. Reads the
+    schema-1.1 series shape first, then the older flat shapes."""
+    totals, seen = _series_totals(server_metrics, endpoints)
+    if not seen:
+        totals = {k: 0.0 for k in CACHE_COUNTERS}
+        for row in _metric_rows(server_metrics):
+            name = row.get("name") or row.get("metric")
+            if name in totals:
                 try:
-                    totals[key] += float(row[key])
+                    totals[name] += float(row.get("value") or
+                                          row.get("last") or 0.0)
                     seen = True
                 except (TypeError, ValueError):
                     continue
+            for key in list(totals):
+                if key in row and name is None:
+                    try:
+                        totals[key] += float(row[key])
+                        seen = True
+                    except (TypeError, ValueError):
+                        continue
     if not seen:
         return {"present": False}
     q = totals["vllm:prefix_cache_queries"]
@@ -280,9 +355,13 @@ def aggregate(artifact_dir: pathlib.Path, concurrency: int | None
                 doc.setdefault("aiperf_counts", {})[key] = block["avg"]
     sm_path = art / "server_metrics_export.json"
     if sm_path.is_file():
+        # The engine endpoints the Job was told to scrape; the runner sets
+        # the env from the live pods of the metrics role.
+        endpoints = {u.strip() for u in os.environ.get(
+            "AGENTX_SERVER_METRICS_URLS", "").split(",") if u.strip()}
         try:
             doc["cache"] = cache_rates(json.loads(
-                sm_path.read_text(encoding="utf-8")))
+                sm_path.read_text(encoding="utf-8")), endpoints or None)
         except json.JSONDecodeError:
             doc["cache"] = {"present": False}
     else:

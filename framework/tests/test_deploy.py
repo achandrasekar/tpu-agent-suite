@@ -2330,6 +2330,9 @@ class AgentXWorkloadTest(unittest.TestCase):
         self.assertAlmostEqual(doc["latency_s"]["tpot"]["p50"], 0.004)
         self.assertAlmostEqual(doc["interactivity_tok_s_per_user"]["p50"],
                                250.0)
+        # E2E-normalised: 5 s / 200 tokens = 25 ms per token -> 40 tok/s.
+        self.assertAlmostEqual(
+            doc["e2e_norm_interactivity_tok_s_per_user"]["p90"], 40.0)
         self.assertAlmostEqual(doc["cache"]["gpu_hit_rate"], 0.8)
         self.assertAlmostEqual(doc["cache"]["cpu_hit_rate"], 0.05)
         self.assertEqual(doc["aiperf"]["concurrency"], 8)
@@ -2432,6 +2435,44 @@ class AgentXWorkloadTest(unittest.TestCase):
         self.assertIn("prefill", rep["roles"])
         self.assertAlmostEqual(rep["roles"]["prefill"]["prefix_hit_rate"], 0.8)
         self.assertEqual(rep["roles"]["decode"]["kv_util_max"], 0.4)
+
+    def test_reducer_reads_aiperf_012_server_metrics_per_endpoint(self):
+        """aiperf 0.12's schema-1.1 export (observed on kind 2026-10-16):
+        per-series totals; the inference URL's own /metrics (the router's
+        proxy Service, one engine's page again) is not counted when the Job
+        knows its engine endpoints."""
+        from framework.deploy import agentx_aggregate as agg
+
+        def counter(*series):
+            return {"type": "counter", "series": [
+                {"endpoint_url": url, "labels": {"model_name": "m"},
+                 "stats": {"total": total, "rate": 1.0}}
+                for url, total in series]}
+        router = "http://agx-epp.ns.svc.cluster.local:80/metrics"
+        e1, e2 = "http://10.0.0.1:8000/metrics", "http://10.0.0.2:8000/metrics"
+        doc = {"schema_version": "1.1", "aiperf_version": "0.12.0",
+               "metrics_phase": "profiling", "metrics": {
+                   "vllm:prefix_cache_hits": counter((router, 800.0),
+                                                     (e1, 800.0), (e2, 100.0)),
+                   "vllm:prefix_cache_queries": counter((router, 1000.0),
+                                                        (e1, 1000.0),
+                                                        (e2, 200.0)),
+                   "vllm:prompt_tokens": counter((e1, 5.0))}}
+        both = agg.cache_rates(doc, {e1, e2})
+        self.assertTrue(both["present"])
+        self.assertAlmostEqual(both["gpu_hit_rate"], 900 / 1200)
+        self.assertIsNone(both["cpu_hit_rate"])
+        everything = agg.cache_rates(doc)
+        self.assertAlmostEqual(everything["gpu_hit_rate"], 1700 / 2200)
+        self.assertEqual(agg.cache_rates({"metrics": {}}), {"present": False})
+        # The exposition format spells the same counter with `_total`.
+        sample = bench.parse_prometheus(
+            'vllm:prefix_cache_hits_total{model_name="m"} 1.046016e+06\n'
+            'vllm:prefix_cache_queries_total{model_name="m"} 1.404219e+06\n'
+            'vllm:kv_cache_usage_perc{model_name="m"} 0.25\n')
+        self.assertEqual(sample["vllm:prefix_cache_hits"], 1046016.0)
+        self.assertEqual(sample["vllm:prefix_cache_queries_total"], 1404219.0)
+        self.assertEqual(sample["vllm:kv_cache_usage_perc"], 0.25)
 
     def test_concurrency_is_a_bench_path(self):
         self.assertEqual(release.classify_path("workload.concurrency"),

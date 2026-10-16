@@ -2287,8 +2287,9 @@ def agentx_bench_script(profile: dict[str, Any], *, base_url: str,
         f" {BENCH_REPORT_DIR}/{AGENTX_POINT_FILE}"
         f" --concurrency ${AGENTX_CONC_ENV} || true",
         f"for f in {BENCH_REPORT_DIR}/{AGENTX_POINT_FILE}"
-        f" $(find {BENCH_REPORT_DIR}/aiperf_artifacts -maxdepth 2 -name"
-        " 'profile_export_aiperf.json' | head -1); do"
+        f" $(find {BENCH_REPORT_DIR}/aiperf_artifacts -maxdepth 2 \\( -name"
+        " 'profile_export_aiperf.json' -o -name 'server_metrics_export.json'"
+        " \\) | sort); do"
         f" echo '{BENCH_REPORT_MARK}' \"$f\"; cat \"$f\"; echo;"
         f" echo '{BENCH_REPORT_END}'; done",
         "exit $rc",

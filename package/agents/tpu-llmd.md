@@ -31,6 +31,7 @@ scripts:
   - scripts/tpu-llmd/evaluate_llmd_arm.py
   - scripts/tpu-llmd/engine_escalation.py
   - scripts/tpu-llmd/recipe_bump.py
+  - scripts/tpu-llmd/agentx_leaderboard.py
   - scripts/tpu-performance-optimization/hypothesis_bank.py
 references:
   - references/tpu-llmd/PROTOCOL.md
@@ -39,6 +40,9 @@ references:
   - references/tpu-llmd/PLATFORM.md
   - references/tpu-llmd/ROUTER.md
   - references/tpu-llmd/HANDOFF.md
+  - references/tpu-llmd/AGENTX.md
+  - references/tpu-llmd/agentx/leaderboard.json
+  - references/tpu-llmd/agentx/qwen35-397b-tpu7x-llmd.serving-recipe.json
 ---
 
 # tpu-llmd Round
@@ -443,6 +447,24 @@ search arm in this round. Instead:
 
 3.  Report a short table: arm, `arm_kind`, verdict, the primary metric with
     `delta_pct` and provenance, chips, and the report path.
+    When the workload is AgentX (`workload.agentx` in the spec), also build
+    the leaderboard view and name its files in the report:
+
+    ```bash
+    python3 {{script:tpu-llmd/agentx_leaderboard.py}} build \
+        --study-dir <llmd> \
+        --leaderboard {{reference:tpu-llmd/agentx/leaderboard.json}} \
+        --tco-basis internal --interactivity intvty_p90 --png \
+        --out <llmd>/leaderboard
+    ```
+
+    It writes `leaderboard.md`, `throughput_vs_interactivity.svg` and
+    `tokens_per_dollar_vs_interactivity.svg` (total tok/s/chip and tokens
+    per dollar at the dashboard's tpu7x price against P90 interactivity,
+    this study's points next to the leaderboard's series; see
+    `{{reference:tpu-llmd/AGENTX.md}}`). Quote the best qualifying
+    point and where it falls against the TPU7x entry and the leader; a
+    `(short run)` point is a search measurement, not a submission.
 4.  Set `study_status: ready_to_promote` when the incumbent beat the
     baseline and passed every gate; otherwise `closed`. **Promotion is
     never automatic.** A later request carrying `promotion_approved: true`

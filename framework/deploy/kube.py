@@ -207,8 +207,11 @@ class Kube:
         """Body of GET <pod>:<port>/<path>, or None when it failed."""
         raw = (f"/api/v1/namespaces/{self.namespace}/pods/{pod}:{port}"
                f"/proxy/{path.lstrip('/')}")
-        proc = self.kubectl(["get", "--raw", raw], check=False,
-                            namespaced=False, timeout=timeout or 30)
+        try:
+            proc = self.kubectl(["get", "--raw", raw], check=False,
+                                namespaced=False, timeout=timeout or 30)
+        except CommandError:  # a slow engine is a missed sample, not a fault
+            return None
         if proc.returncode != 0:
             return None
         return proc.stdout or ""
@@ -219,9 +222,12 @@ class Kube:
         """POST <pod>:<port>/<path>; (ok, body or stderr)."""
         raw = (f"/api/v1/namespaces/{self.namespace}/pods/{pod}:{port}"
                f"/proxy/{path.lstrip('/')}")
-        proc = self.kubectl(["create", "--raw", raw, "-f", "-"],
-                            stdin=body, check=False, namespaced=False,
-                            timeout=timeout or 60)
+        try:
+            proc = self.kubectl(["create", "--raw", raw, "-f", "-"],
+                                stdin=body, check=False, namespaced=False,
+                                timeout=timeout or 60)
+        except CommandError as exc:
+            return False, str(exc)
         return proc.returncode == 0, (proc.stdout or proc.stderr or "")
 
     # -- helm --------------------------------------------------------------

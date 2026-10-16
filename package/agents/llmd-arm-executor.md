@@ -26,6 +26,7 @@ references:
   - references/tpu-llmd/ROUTER.md
   - references/tpu-llmd/KV_CACHE.md
   - references/tpu-llmd/PD.md
+  - references/tpu-llmd/AGENTX.md
 ---
 
 # llmd-arm-executor

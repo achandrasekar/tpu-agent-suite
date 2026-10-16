@@ -44,6 +44,7 @@ evaluate_llmd_arm = _load("evaluate_llmd_arm")
 plan_arms = _load("plan_arms")
 size_pd = _load("size_pd")
 agentx_search = _load("agentx_search")
+agentx_leaderboard = _load("agentx_leaderboard")
 engine_escalation = _load("engine_escalation")
 recipe_bump = _load("recipe_bump")
 promote_release = _load("promote_release")
@@ -147,6 +148,31 @@ class RenderProtocolTest(_Quiet):
                                                   plateau_rounds=2)
         self.assertEqual(protocol["primary_metric"]["direction"], "minimize")
         self.assertEqual(protocol["replicate_count"], 2)
+
+    def test_agentx_protocol_ranks_total_tokens_per_chip(self):
+        from framework.deploy import workload  # noqa: PLC0415
+        profile = workload.resolve_workload(json.loads(json.dumps(AGENTX_SPEC)))
+        protocol = render_protocol.build_protocol(profile, AGENTX_RECIPE,
+                                                  mode="auto", replicates=1,
+                                                  noise_floor_pct=5,
+                                                  max_rounds=6,
+                                                  plateau_rounds=2)
+        self.assertEqual(protocol["primary_metric"],
+                         {"name": "total_tokens_per_s_per_chip",
+                          "unit": "tok/s/chip", "direction": "maximize"})
+        self.assertTrue(protocol["measurement_cell"]["shape"].startswith(
+            "inferencex-agentx-mvp@c"))
+        names = [g["name"] for g in protocol["admissibility_gates"]]
+        self.assertIn("agentx.ttft_p50_ms", names)
+        self.assertIn("agentx.error_rate", names)
+        extras = render_protocol.build_study_extras(profile, AGENTX_RECIPE,
+                                                    inner_sweep_budget=4)
+        self.assertEqual(extras["secondary_metric"],
+                         "output_tokens_per_s_per_chip")
+        self.assertEqual(extras["workload"]["agentx"]["concurrency"],
+                         profile["agentx"]["concurrency"])
+        self.assertEqual(extras["benchmark_duration_s"],
+                         profile["agentx"]["duration_s"])
 
 
 class SeedArmsTest(_Quiet):
@@ -1496,6 +1522,170 @@ class AgentXSearchTest(_Quiet):
         self.assertEqual(kinds[0], "operating_point.concurrency")
         self.assertIn("router.profile", kinds)
         self.assertEqual(result["model"]["attribution"]["role"], "none")
+
+
+class AgentXLeaderboardTest(_Quiet):
+    """The leaderboard view: the dashboard's frontier, prices and axes."""
+
+    def test_pareto_is_the_dashboards_upper_left_frontier(self):
+        pts = [{"x": 500, "y": 10}, {"x": 300, "y": 30}, {"x": 400, "y": 5},
+               {"x": 100, "y": 60}, {"x": 200, "y": 20}, {"x": 0, "y": 99}]
+        front = agentx_leaderboard.pareto(pts, "x", "y")
+        self.assertEqual([(p["x"], p["y"]) for p in front],
+                         [(500, 10), (300, 30), (100, 60)])
+
+    def test_price_for_uses_the_pinned_table_per_basis_and_overrides(self):
+        self.assertEqual(agentx_leaderboard.price_for("tpuv7", "internal", {}),
+                         1.03)
+        self.assertEqual(agentx_leaderboard.price_for("tpu7x", "external", {}),
+                         1.21)
+        self.assertEqual(agentx_leaderboard.price_for("gb300_dynamo-sglang",
+                                                      "internal", {}), 2.31)
+        self.assertEqual(agentx_leaderboard.price_for("tpu7x", "internal",
+                                                      {"tpu7x": 2.0}), 2.0)
+        self.assertIsNone(agentx_leaderboard.price_for("abacus", "internal", {}))
+        # tokens/$ = tok/s/chip x 3600 / $/chip-hour.
+        self.assertAlmostEqual(agentx_leaderboard.tokens_per_dollar(
+            {"total_tokens_per_s_per_chip": 20000}, 1.03), 69_902_913, delta=1)
+
+    def test_views_to_entries_keeps_the_dashboards_x_y_and_chips(self):
+        doc = {"xAxis": {"field": "p90_intvty"}, "metric": {"key": "tpPerGpu"},
+               "count": 2, "series": [{
+                   "hwKey": "tpuv7_vllm", "label": "TPU7x (vLLM)", "gpu": "tpuv7",
+                   "framework": "vllm", "specMethod": "mtp",
+                   "deployment": "single-node", "bestPerSku": True,
+                   "points": [
+                       {"x": 100.0, "y": 20000.0, "concurrency": 32, "tp": 4,
+                        "precision": "fp8", "frontier": True,
+                        "topologyKey": "Single|GPU=4|TP=4|EP=1",
+                        "metrics": {"tpPerGpu": 20000.0,
+                                    "outputTputPerGpu": 400.0}},
+                       {"x": 120.0, "y": 15000.0, "concurrency": 16, "tp": 4,
+                        "precision": "fp8", "frontier": True,
+                        "metrics": {"tpPerGpu": 15000.0}}]}]}
+        out = agentx_leaderboard.views_to_entries(doc, "u")
+        e = out["entries"][0]
+        self.assertEqual(e["name"], "TPU7x (vLLM)")
+        self.assertEqual(e["hardware"], "tpuv7")
+        self.assertEqual(e["points"][0]["chips"], 4)
+        self.assertEqual(e["points"][0]["intvty_p90"], 100.0)
+        self.assertEqual(e["points"][0]["total_tokens_per_s_per_chip"], 20000.0)
+        self.assertTrue(e["points"][0]["dashboard_frontier"])
+        lb = agentx_leaderboard.leaderboard_points(out["entries"], "internal", {})
+        self.assertEqual(lb[0]["price_per_chip_hour"], 1.03)
+        self.assertEqual(agentx_leaderboard._topology_short(
+            "PD|GPU=32|P-GPU=20|D-GPU=12"), "PD 32 (P20/D12)")
+
+    def test_shipped_leaderboard_frontier_matches_the_dashboard_flag(self):
+        ref = _HERE.parents[1] / "references" / "tpu-llmd" / "agentx" / "leaderboard.json"
+        doc = json.loads(ref.read_text())
+        self.assertEqual(doc["entries"], [])
+        entries = [{
+            "name": "Synthetic (vLLM)", "hardware": "tpuv7", "framework": "vllm",
+            "points": [
+                {"conc": 8, "chips": 4, "intvty_p90": 150.0,
+                 "total_tokens_per_s_per_chip": 10000.0,
+                 "dashboard_frontier": True},
+                {"conc": 16, "chips": 4, "intvty_p90": 120.0,
+                 "total_tokens_per_s_per_chip": 18000.0,
+                 "dashboard_frontier": True},
+                {"conc": 24, "chips": 4, "intvty_p90": 110.0,
+                 "total_tokens_per_s_per_chip": 16000.0,
+                 "dashboard_frontier": False},
+            ],
+        }]
+        pts = agentx_leaderboard.leaderboard_points(entries, "internal", {})
+        agentx_leaderboard._frontier_flags(pts, "intvty_p90")
+        self.assertEqual([p["frontier"] for p in pts],
+                         [p["dashboard_frontier"] for p in pts])
+        for hw in ("tpuv7", "gb300", "b300", "b200", "mi355x", "h200", "h100"):
+            for basis in ("internal", "external", "rental"):
+                self.assertIsNotNone(agentx_leaderboard.price_for(
+                    hw, basis, {}), (hw, basis))
+
+    def test_build_draws_our_points_against_the_leaderboard(self):
+        report = {
+            "schema": "llmd-bench-report", "execution_id": "x",
+            "release": {"name": "ax", "chips_total": 8,
+                        "router_profile": "agentx-turn-priority"},
+            "agentx": {"submission_valid": True, "duration_s": 900, "points": [
+                {"concurrency": c, "admissible": c < 24,
+                 "gates": [{"name": "agentx.ttft_p50_ms", "bound": 5000}],
+                 "metrics": {"total_tokens_per_s_per_chip": {"value": y},
+                             "output_tokens_per_s_per_chip": {"value": y / 90},
+                             "total_tokens_per_s": {"value": y * 8}},
+                 "tenant": {"replicates": [{
+                     "requests": {"ok": 10, "total": 10},
+                     "agentx": {"interactivity_p90": x, "interactivity_p50": x * 1.3,
+                                "ttft_s": {"p50": 1.0, "p90": 2.0},
+                                "tpot_ms": {"p50": 1000 / x},
+                                "e2e_s": {"p50": 30}}}]}}
+                for c, x, y in ((8, 300.0, 9000.0), (16, 200.0, 18000.0),
+                                (24, 100.0, 26000.0))]}}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            rel = root / "releases" / "ax"
+            rel.mkdir(parents=True)
+            (rel / "release.json").write_text("{}")
+            (rel / "llmd-config.json").write_text(json.dumps({
+                "topology": {"mode": "disaggregated",
+                             "prefill": {"replicas": 1}, "decode": {"replicas": 1}},
+                "router": {"profile": "agentx-turn-priority"}}))
+            bench = rel / "bench" / "c"
+            bench.mkdir(parents=True)
+            (bench / "llmd-bench-report.json").write_text(json.dumps(report))
+            lb = {"entries": [{"name": "TPU7x (vLLM)", "hardware": "tpuv7",
+                               "framework": "vllm", "points": [
+                                   {"conc": 32, "chips": 4, "intvty_p90": 100.0,
+                                    "total_tokens_per_s_per_chip": 20000.0}]}]}
+            (root / "lb.json").write_text(json.dumps(lb))
+            rc = agentx_leaderboard.main([
+                "build", "--study-dir", str(root), "--leaderboard",
+                str(root / "lb.json"), "--out", str(root / "out")])
+            self.assertEqual(rc, 0)
+            pts = json.loads((root / "out" / "points.json").read_text())
+            ours = [p for p in pts["points"] if p["source"] == "study"]
+            self.assertEqual([p["conc"] for p in ours], [8, 16, 24])
+            self.assertEqual(ours[0]["series"], "1P1D turn-priority")
+            self.assertEqual(ours[0]["price_per_chip_hour"], 1.03)
+            self.assertAlmostEqual(ours[0]["tokens_per_dollar"],
+                                   9000 * 3600 / 1.03)
+            self.assertTrue(all(p["frontier"] for p in ours))
+            md = (root / "out" / "leaderboard.md").read_text()
+            self.assertIn("| 1P1D turn-priority | 16 |", md)
+            self.assertIn("internal", md)
+            svg = (root / "out" / "throughput_vs_interactivity.svg").read_text()
+            self.assertIn("c16", svg)
+            self.assertIn("TPU7x (vLLM)", svg)
+            # The gate-failing c24 point is hollow.
+            self.assertIn('fill="white"', svg)
+            tpd = (root / "out" / "tokens_per_dollar_vs_interactivity.svg"
+                   ).read_text()
+            self.assertIn("$1.03", tpd)
+            csv_text = (root / "out" / "points.csv").read_text()
+            self.assertIn("intvty_p90", csv_text.splitlines()[0])
+
+    def test_fetch_live_from_file_merges_non_live_entries(self):
+        doc = {"series": [{"hwKey": "h100_sglang", "label": "H100 (SGLang)",
+                           "gpu": "h100", "framework": "sglang",
+                           "points": [{"x": 50.0, "y": 5000.0,
+                                       "concurrency": 8, "tp": 8}]}]}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "views.json").write_text(json.dumps(doc))
+            (root / "base.json").write_text(json.dumps({"entries": [
+                {"name": "H100 (SGLang)", "points": []},
+                {"name": "custom series", "hardware": "tpu7x", "points": []}]}))
+            rc = agentx_leaderboard.main([
+                "fetch-live", "--from-file", str(root / "views.json"),
+                "--merge", str(root / "base.json"),
+                "--out", str(root / "lb.json")])
+            self.assertEqual(rc, 0)
+            out = json.loads((root / "lb.json").read_text())
+            self.assertEqual([e["name"] for e in out["entries"]],
+                             ["H100 (SGLang)", "custom series"])
+            self.assertEqual(out["entries"][0]["points"][0]["chips"], 8)
+            self.assertIn("snapshot", out)
 
 
 class ProductionGuardTest(unittest.TestCase):

@@ -50,6 +50,10 @@ except ImportError:  # shipped runtime: `deploy` is top-level
 METRIC_UNITS = {
     "goodput_at_slo_per_chip": ("req/s/chip", "maximize"),
     "cost_per_1M_tokens_at_slo": ("usd/1M-tokens", "minimize"),
+    # AgentX (InferenceX): the leaderboard ranks total tokens/s per
+    # physical chip; output tok/s/chip is the secondary.
+    "total_tokens_per_s_per_chip": ("tok/s/chip", "maximize"),
+    "output_tokens_per_s_per_chip": ("tok/s/chip", "maximize"),
 }
 
 DEFAULTS = {
@@ -114,6 +118,13 @@ def build_protocol(profile: dict[str, Any], recipe: dict[str, Any], *,
     })
     source = profile["source"]
     shape = source.get("catalog_entry") or "custom"
+    if profile.get("agentx"):
+        # Closed loop: the cell is the ladder, not a rate.
+        ladder = profile["agentx"]["concurrency"]
+        cell_shape = (f"{source.get('scenario') or 'agentx'}"
+                      f"@c{ladder[0]}-{ladder[-1]}")
+    else:
+        cell_shape = f"{shape}@{profile['rate']['target_qps']:g}qps"
     return {
         "primary_metric": {
             "name": primary,
@@ -122,7 +133,7 @@ def build_protocol(profile: dict[str, Any], recipe: dict[str, Any], *,
         },
         "measurement_cell": {
             "topology": f"{accel['tpu_accelerator']}-{accel['tpu_topology']}",
-            "shape": f"{shape}@{profile['rate']['target_qps']:g}qps",
+            "shape": cell_shape,
         },
         "replicate_count": int(replicates),
         "noise_floor_pct": float(noise_floor_pct),
@@ -135,6 +146,16 @@ def build_protocol(profile: dict[str, Any], recipe: dict[str, Any], *,
     }
 
 
+def _secondary_metric(primary: str) -> str:
+    if primary == "goodput_at_slo_per_chip":
+        return "cost_per_1M_tokens_at_slo"
+    if primary.startswith("total_tokens_per_s"):
+        return "output_tokens_per_s_per_chip"
+    if primary.startswith("output_tokens_per_s"):
+        return "total_tokens_per_s_per_chip"
+    return "goodput_at_slo_per_chip"
+
+
 def build_study_extras(profile: dict[str, Any], recipe: dict[str, Any], *,
                        inner_sweep_budget: int) -> dict[str, Any]:
     """What the protocol schema cannot hold but every round must respect."""
@@ -143,9 +164,8 @@ def build_study_extras(profile: dict[str, Any], recipe: dict[str, Any], *,
     return {
         "schema": "llmd-study",
         "primary_metric": profile["objective"]["primary_metric"],
-        "secondary_metric": ("cost_per_1M_tokens_at_slo" if profile["objective"]
-                             ["primary_metric"] == "goodput_at_slo_per_chip"
-                             else "goodput_at_slo_per_chip"),
+        "secondary_metric": _secondary_metric(
+            profile["objective"]["primary_metric"]),
         "inner_sweep_budget": int(inner_sweep_budget),
         "max_chip_hours": budget.get("max_chip_hours"),
         "max_chips": budget.get("max_chips"),
@@ -166,12 +186,19 @@ def build_study_extras(profile: dict[str, Any], recipe: dict[str, Any], *,
         "objective_target": dict(
             (profile["objective"].get("target") or {})) or None,
         "startup_timeout_s": DEFAULTS["startup_timeout_s"],
-        "benchmark_duration_s": DEFAULTS["benchmark_duration_s"],
+        "benchmark_duration_s": (profile["agentx"]["duration_s"]
+                                 if profile.get("agentx")
+                                 else DEFAULTS["benchmark_duration_s"]),
         "bench_timeout_s": DEFAULTS["bench_timeout_s"],
         "workload": {
             "name": profile["name"],
             "source": profile["source"],
             "target_qps": profile["rate"]["target_qps"],
+            **({"agentx": {"concurrency": profile["agentx"]["concurrency"],
+                           "duration_s": profile["agentx"]["duration_s"],
+                           "submission_valid": profile["agentx"][
+                               "submission_valid"]}}
+               if profile.get("agentx") else {}),
             "tenants": [{
                 "name": t["name"],
                 "share": t["share"],

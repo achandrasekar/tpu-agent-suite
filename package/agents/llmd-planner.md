@@ -26,6 +26,7 @@ references:
   - references/tpu-llmd/ROUTER.md
   - references/tpu-llmd/KV_CACHE.md
   - references/tpu-llmd/PD.md
+  - references/tpu-llmd/AGENTX.md
 ---
 
 # llmd-planner
@@ -113,7 +114,7 @@ rules, and you do not override them:
   the last point's role samples and prefix-hit rates (prefill cache
   thrash -> +1P; decode KV saturation -> +1D or `max_num_seqs`). The same
   bounds apply: reorder on named evidence, never add a shape or a knob the
-  script did not derive. `{{reference:tpu-llmd/SEARCH.md}}` has the order.
+  script did not derive. `{{reference:tpu-llmd/AGENTX.md}}` has the table.
 
 ## 2. Apply judgement, within bounds
 

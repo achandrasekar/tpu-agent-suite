@@ -571,7 +571,11 @@ PREFIX_RESET_PATHS = ("/reset_prefix_cache?reset_external=true",
 
 
 def parse_prometheus(text: str) -> dict[str, float]:
-    """Sum of every sample per metric name, labels dropped."""
+    """Sum of every sample per metric name, labels dropped. A counter's
+    `_total` suffix (the exposition format's spelling of
+    `vllm:prefix_cache_hits`) is folded into the bare name, which is
+    what vLLM's metric definitions, aiperf's export and `VLLM_COUNTERS`
+    use; the suffixed name is kept too."""
     out: dict[str, float] = {}
     for line in (text or "").splitlines():
         if not line or line.startswith("#"):
@@ -582,6 +586,9 @@ def parse_prometheus(text: str) -> dict[str, float]:
         except ValueError:
             continue
         out[name] = out.get(name, 0.0) + value
+        if name.endswith("_total"):
+            bare = name[:-len("_total")]
+            out[bare] = out.get(bare, 0.0) + value
     return out
 
 
@@ -595,9 +602,15 @@ def engine_pods(kube: Kube, release: dict[str, Any]) -> list[dict[str, Any]]:
     pods = []
     for item in doc.get("items") or []:
         meta = item.get("metadata") or {}
+        status = item.get("status") or {}
+        # A pod on its way out after a rollout still lists an IP; aiperf
+        # would wait on it and the sampler would count a dead engine.
+        if meta.get("deletionTimestamp") or status.get("phase") not in (
+                None, "Running"):
+            continue
         labels = meta.get("labels") or {}
         role = labels.get(pins.LLMD_ROLE_LABEL) or "decode"
-        ip = (item.get("status") or {}).get("podIP")
+        ip = status.get("podIP")
         pods.append({"name": meta.get("name"), "role": role, "ip": ip,
                      "port": ports.get(role, pins.MODEL_SERVER_PORT)})
     return sorted(pods, key=lambda p: (p["role"], p["name"] or ""))
@@ -779,6 +792,16 @@ def summarize_agentx_point(point: dict[str, Any], tenant: dict[str, Any],
                             else None) for k in ("mean", "p50", "p90")},
             "e2e_s": {k: e2e.get(k) for k in ("mean", "p50", "p90")},
             "interactivity_p50": intvty.get("p50"),
+            # The leaderboard's x: 1 / p90 of the (full-response) ITL.
+            "interactivity_p90": (point.get(
+                "dashboard_interactivity_tok_s_per_user") or {}).get("p90"),
+            "interactivity_p75": (point.get(
+                "dashboard_interactivity_tok_s_per_user") or {}).get("p75"),
+            "interactivity_source": point.get(
+                "dashboard_interactivity_source"),
+            "e2e_norm_interactivity_p90": (
+                point.get("e2e_norm_interactivity_tok_s_per_user") or {}
+            ).get("p90"),
             "input_tokens_mean": (point.get("tokens") or {}).get(
                 "input", {}).get("mean"),
             "output_tokens_mean": (point.get("tokens") or {}).get(
@@ -911,6 +934,16 @@ def run_agentx_bench(env: DeployEnv, release_dir: pathlib.Path, *,
                 summary = summarize_agentx_point(point_doc, tenant,
                                                  error_rate_max)
             summary["roles"] = sampler.summary()
+            # aiperf's own scrape when it saw the engines; else the hit rate
+            # the runner sampled through the pod proxy (the prefill pool
+            # under P/D, the one pool otherwise).
+            ax_block = summary.get("agentx") or {}
+            if ax_block.get("gpu_prefix_hit_rate") is None:
+                role_hit = (summary["roles"].get(metrics_role) or {}).get(
+                    "prefix_hit_rate")
+                if role_hit is not None:
+                    ax_block["gpu_prefix_hit_rate"] = role_hit
+                    ax_block["prefix_hit_source"] = "pod-proxy-sample"
             summary["drain"] = drain
             summary["prefix_reset"] = resets
             summary["job"] = name
