@@ -278,6 +278,8 @@ def dispatch(args: argparse.Namespace) -> dict[str, Any] | str:
         }
         if env.sizing:
             env_subset["sizing"] = env.sizing
+        if env.cpu_node_selector:
+            env_subset["cpu_node_selector"] = env.cpu_node_selector
         if getattr(args, "slo_duration", None):
             env_subset["slo_stage_duration_s"] = int(args.slo_duration)
         if getattr(args, "sweep_duration", None):

@@ -151,6 +151,23 @@ def run_preflight(env: DeployEnv,
                 Check(check_name, "fail", f"{crd} missing",
                       f"re-run with --fix to apply {url}"))
 
+    # Multi-host pools need the LeaderWorkerSet CRD; a cluster without it
+    # still serves single-host fleets, so missing is a warning that
+    # `apply` turns into LWS_MISSING only for a release that renders one.
+    if _crd_present(kube, pins.LWS_CRD):
+        checks.append(Check("crd.leaderworkerset", "ok", pins.LWS_CRD))
+    elif fix:
+        kube.kubectl(["apply", "--server-side", "-f", pins.LWS_MANIFEST_URL],
+                     namespaced=False)
+        fixed.append(f"applied LeaderWorkerSet {pins.LWS_VERSION}")
+        checks.append(Check("crd.leaderworkerset", "ok",
+                            f"installed from {pins.LWS_MANIFEST_URL}"))
+    else:
+        checks.append(
+            Check("crd.leaderworkerset", "warn", f"{pins.LWS_CRD} missing",
+                  "multi-host pools need it; re-run with --fix to apply"
+                  f" {pins.LWS_MANIFEST_URL}"))
+
     if env.gateway_mode == "gke":
         checks.append(
             Check("crd.gateway", "ok" if _crd_present(kube, GATEWAY_CRD) else

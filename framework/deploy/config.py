@@ -82,6 +82,9 @@ class DeployEnv:
     # cluster whose CPU pools are nearly full sets smaller ones here rather
     # than leaving every bench Job Pending.
     sizing: dict[str, Any] = dataclasses.field(default_factory=dict)
+    # Node selector for the release's CPU-only pods (bench Jobs, simulated
+    # engines). A shared cluster keeps them off GPU or system pools.
+    cpu_node_selector: dict[str, str] = dataclasses.field(default_factory=dict)
 
     @classmethod
     def from_environment(cls, env_data: dict[str, Any]) -> DeployEnv:
@@ -101,6 +104,12 @@ class DeployEnv:
         if not isinstance(sizing, dict):
             raise DeployError("llmd.sizing must be an object",
                               error_code="INVALID_FIELD")
+        cpu_sel = llmd.get("cpu_node_selector") or {}
+        if not isinstance(cpu_sel, dict) or not all(
+                isinstance(k, str) and isinstance(v, str)
+                for k, v in cpu_sel.items()):
+            raise DeployError("llmd.cpu_node_selector must be a map of"
+                              " node labels", error_code="INVALID_FIELD")
         return cls(
             namespace=namespace,
             production_namespace=str(
@@ -126,6 +135,7 @@ class DeployEnv:
                 llmd.get("max_chips_default") or DEFAULT_MAX_CHIPS),
             compute_backend=str(backend or ""),
             sizing=dict(sizing),
+            cpu_node_selector=dict(cpu_sel),
         )
 
     def kube(self, *, production: bool = False, runner: Any = None) -> Kube:

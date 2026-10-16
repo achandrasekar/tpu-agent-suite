@@ -39,6 +39,7 @@ needs beyond job submission.
 | `crd.inferenceobjective` | `inferenceobjectives.llm-d.ai` absent | **applies the pinned llm-d-router CRD manifest** (the release's `manifests.yaml`) | the chart renders one `InferenceObjective` (`llm-d.ai/v1alpha2`) per tenant; GAIE's bundle does not carry that group, so a GKE cluster with the Inference Gateway CRDs still fails the install without it |
 | `secret.hf_token` | the token secret is not in the namespace | no | create it; a model-server pod without it fails on weight download, after the chips were scheduled |
 | `tpu.nodes` | no nodes carry the recipe's accelerator label, or fewer free chips than one replica needs | no | add or resize the TPU node pool; `chips_free` is reported for the orchestrator's budget |
+| `crd.leaderworkerset` | `leaderworkersets.leaderworkerset.x-k8s.io` absent (warn) | **applies the pinned LWS release manifest** (server-side) | only a release with a multi-host pool (`topology.<role>.hosts > 1`) needs it; `apply` refuses such a release with `LWS_MISSING` until it is there |
 | `crd.podmonitoring` | Managed Prometheus CRD absent (warn) | no | enable managed collection on the cluster; without it `collect` has nothing to read |
 | `helm.router_chart` | the pinned standalone router chart cannot be pulled | no | registry access; the chart coordinates are pinned in the runtime, never typed by an agent |
 
@@ -96,3 +97,29 @@ checks cannot repair is a blocked study, reported with the action required,
 and that is the correct outcome: an arm applied to an unready cluster fails
 after the chips were scheduled, which is the most expensive way to learn
 the same thing.
+
+## Multi-host replicas and simulated fleets
+
+A replica that spans hosts (`topology.<role>.hosts > 1`) renders as a
+LeaderWorkerSet group: one pod per host, the leader running the engine
+and carrying the role/serving labels, the workers running the recipe's
+`multihost.worker_command` with no serving label, so the Service, the
+InferencePool and the PodMonitoring select leaders only. Every member
+requests all of its node's chips (`accelerator.chips_per_host`; tpu7x is
+pinned at 4 per host, https://docs.cloud.google.com/tpu/docs/tpu7x), and
+a TPU7x group adds the `cloud.google.com/placement-policy-name` selector
+from `accelerator.placement_policy`. How the hosts join (Ray, a
+torchrun-style launcher) is the recipe's knowledge: the renderer places
+the commands and the LWS-injected `LWS_LEADER_ADDRESS` /
+`LWS_GROUP_SIZE` / `LWS_WORKER_INDEX` environment, nothing more.
+
+`engine_flavor: sim` renders llm-d-inference-sim in place of vLLM: no
+accelerator request, no node selector, the simulator's own flags from the
+recipe's `args` (it aborts on vLLM flags it does not know, so none are
+passed), P/D through the routing sidecar's generic path, and a declared
+capability set (`sim: true`, `pd_connector: true`, no KV events, no host
+tier) in place of a probe. It exists to run the whole orchestration --
+router, pools, LWS groups, xP:yD arms, benchmarks, collect, the
+escalation hand-off -- on CPU nodes; nothing it measures says anything
+about an accelerator, and every artifact from a sim fleet says so.
+

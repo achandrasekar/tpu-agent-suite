@@ -71,6 +71,11 @@ DEFAULT_MEMORY = "64Gi"
 DEFAULT_CPU = "16"
 DEFAULT_SHM = "64Gi"
 MODELSERVER_CONTAINER = "modelserver"
+# A simulated engine is a small Go process; these keep a sim fleet of many
+# pools inside a CPU node pool.
+SIM_MEMORY = "1Gi"
+SIM_CPU = 1
+SIM_SHM = "256Mi"
 BENCH_CONTAINER = "inference-perf"
 BENCH_REPORT_DIR = "/reports"
 BENCH_CONFIG_DIR = "/config"
@@ -192,6 +197,8 @@ ADOPTED_IMMUTABLE_PATHS = (
     ("kv.pd_connector", lambda c: bool(c["kv"].get("pd_connector"))),
     ("kv.block_size", lambda c: c["kv"].get("block_size") is not None),
     ("engine", lambda c: bool(c["engine"])),
+    ("topology.decode.engine",
+     lambda c: bool((c["topology"].get("decode") or {}).get("engine"))),
 )
 
 
@@ -364,6 +371,11 @@ def validate_config(config: dict[str, Any],
             raise DeployError(
                 f"{hot} need an EPP; the passthrough profile has none",
                 error_code="INVALID_FIELD")
+    for role in (ROLE_PREFILL, ROLE_DECODE):
+        hosts = (config["topology"].get(role) or {}).get("hosts")
+        if hosts is not None and (not isinstance(hosts, int) or hosts < 1):
+            raise DeployError(f"topology.{role}.hosts must be an integer"
+                              " >= 1", error_code="INVALID_FIELD")
     ha = config["router"].get("epp_ha_mode")
     if ha not in (None, "active-passive", "active-active"):
         raise DeployError("router.epp_ha_mode must be active-passive or"
@@ -386,12 +398,23 @@ def validate_config(config: dict[str, Any],
             "router.plugins has no effect under the passthrough profile;"
             " there is no EPP to configure",
             error_code="INVALID_FIELD")
-    unknown = set(config["engine"]) - set(ENGINE_FLAGS) - set(ENGINE_SWITCHES)
-    if unknown:
+    allowed = set(ENGINE_FLAGS) | set(ENGINE_SWITCHES)
+    scopes = [("engine", config["engine"])] + [
+        (f"topology.{role}.engine",
+         (config["topology"].get(role) or {}).get("engine") or {})
+        for role in (ROLE_PREFILL, ROLE_DECODE)]
+    for scope, knobs in scopes:
+        unknown = set(knobs) - allowed
+        if unknown:
+            raise DeployError(
+                f"{scope} knobs {sorted(unknown)} are outside the fleet"
+                f" whitelist {sorted(allowed)}; hand them to the"
+                " engine-optimization domain instead",
+                error_code="INVALID_FIELD")
+    if (config["topology"].get("prefill") or {}).get("engine") and \
+            mode != "disaggregated":
         raise DeployError(
-            f"engine knobs {sorted(unknown)} are outside the fleet whitelist"
-            f" {sorted(ENGINE_FLAGS) + sorted(ENGINE_SWITCHES)}; hand them to"
-            " the engine-optimization domain instead",
+            "topology.prefill.engine is set but there is no prefill pool",
             error_code="INVALID_FIELD")
     if fleet and fleet["mode"] == FLEET_ADOPTED:
         touched = [path for path, is_on in ADOPTED_IMMUTABLE_PATHS
@@ -420,6 +443,34 @@ def validate_recipe(recipe: dict[str, Any]) -> None:
     fleet_spec(recipe)
 
 
+def validate_recipe_config(recipe: dict[str, Any],
+                           config: dict[str, Any]) -> None:
+    """Refusals that need both the recipe and the config.
+
+    A simulated engine has no KV connector and publishes no events the EPP
+    can index without a tokenizer service, so precise routing and host
+    tiering are `NOT_IMPLEMENTED` on it rather than silently inert: an arm
+    the sim cannot exercise must say so, not tie.
+    """
+    engine_flavor(recipe)
+    if is_sim(recipe):
+        if config["kv"].get("precise_routing"):
+            raise DeployError(
+                "kv.precise_routing has no simulated counterpart"
+                " (engine_flavor sim)", error_code="NOT_IMPLEMENTED")
+        if config["kv"].get("tiered_host"):
+            raise DeployError(
+                "kv.tiered_host has no simulated counterpart"
+                " (engine_flavor sim)", error_code="NOT_IMPLEMENTED")
+    for role in (ROLE_PREFILL, ROLE_DECODE):
+        if pool_hosts(config, role) > 1:
+            chips_per_replica(recipe, config, role)  # refuses without a host size
+            if not (recipe.get("multihost") or {}).get("worker_command"):
+                raise DeployError(
+                    f"topology.{role}.hosts > 1 needs recipe.multihost."
+                    "worker_command", error_code="INVALID_FIELD")
+
+
 def config_digest(config: dict[str, Any]) -> str:
     """Digest of what the config deploys, ignoring where it came from."""
     body = {k: v for k, v in config.items() if k != "provenance"}
@@ -439,9 +490,40 @@ def chips_for_topology(topology: str, default: int = 4) -> int:
     return product or default
 
 
+def pool_hosts(config: dict[str, Any], role: str = "decode") -> int:
+    """Hosts per replica of a pool: 1 is a Deployment, more an LWS group."""
+    pool = config["topology"].get(role) or config["topology"]["decode"]
+    return max(1, int(pool.get("hosts") or 1))
+
+
+def chips_per_host(recipe: dict[str, Any]) -> int | None:
+    """Chips one node exposes, from the recipe or the pinned generation
+    table; None when neither says (a multi-host render then refuses)."""
+    accel = recipe.get("accelerator") or {}
+    explicit = accel.get("chips_per_host")
+    if explicit:
+        return int(explicit)
+    return pins.CHIPS_PER_HOST.get(str(accel.get("tpu_accelerator") or ""))
+
+
 def chips_per_replica(recipe: dict[str, Any], config: dict[str, Any],
                       role: str = "decode") -> int:
+    """Chips one replica of a pool holds.
+
+    Single-host: the recipe's explicit count or the slice's product.
+    Multi-host (`hosts > 1`): hosts x chips per host, because each pod of
+    the group requests all the chips on its node.
+    """
     accel = recipe.get("accelerator") or {}
+    hosts = pool_hosts(config, role)
+    if hosts > 1:
+        per_host = chips_per_host(recipe)
+        if not per_host:
+            raise DeployError(
+                f"topology.{role}.hosts={hosts} needs accelerator."
+                "chips_per_host (chips one node exposes) in the recipe",
+                error_code="INVALID_FIELD")
+        return hosts * per_host
     explicit = accel.get("chips_per_replica")
     if explicit:
         return int(explicit)
@@ -523,9 +605,26 @@ ENGINE_FLAVORS: dict[str, dict[str, str]] = {
         "offload_module": pins.TPU_OFFLOAD_MODULE_TORCHTPU,
         "offload_connector": pins.TPU_OFFLOAD_CONNECTOR_TORCHTPU,
     },
+    # llm-d-inference-sim in place of vLLM: a simulated fleet that runs the
+    # whole orchestration (router, pools, LWS groups, P/D through the
+    # sidecar, benchmarks, collect) on CPU nodes. It has no KV connector
+    # (the sidecar's nixlv2 path is generic enough for the sim's
+    # do_remote_prefill), no KV events the EPP can consume without a
+    # tokenizer service, and no host tier.
+    "sim": {
+        "pd_module": "",
+        "pd_connector": "",
+        "offload_module": "",
+        "offload_connector": "",
+    },
 }
+SIM_FLAVOR = "sim"
 ROLE_DECODE = "decode"
 ROLE_PREFILL = "prefill"
+
+
+def is_sim(recipe: dict[str, Any]) -> bool:
+    return str(recipe.get("engine_flavor") or "") == SIM_FLAVOR
 
 
 def engine_flavor(recipe: dict[str, Any]) -> dict[str, str]:
@@ -595,6 +694,25 @@ def kv_events_config(model: str, port: int) -> dict[str, Any]:
     }
 
 
+def role_engine(config: dict[str, Any], role: str) -> dict[str, Any]:
+    """The engine knobs one pool runs: the fleet default under the pool's
+    own overlay.
+
+    Prefill and decode want different engines (prefill: large batched-token
+    budgets; decode: many sequences), so `topology.<role>.engine` overrides
+    `engine` key by key. The whitelist is the same; an overlay never adds
+    a knob the fleet may not tune.
+    """
+    merged = dict(config.get("engine") or {})
+    pool = (config.get("topology") or {}).get(role) or {}
+    for key, value in (pool.get("engine") or {}).items():
+        if value is None:
+            merged.pop(key, None)
+        else:
+            merged[key] = value
+    return merged
+
+
 def vllm_args(recipe: dict[str, Any], config: dict[str, Any],
               role: str = ROLE_DECODE) -> list[str]:
     """`vllm serve` arguments for one role, as the TPU overlays order them.
@@ -614,16 +732,17 @@ def vllm_args(recipe: dict[str, Any], config: dict[str, Any],
         "--disable-access-log-for-endpoints=/health,/metrics,/v1/models",
         f"--tensor-parallel-size={int(tp)}",
     ]
+    engine = role_engine(config, role)
     overrides: dict[str, Any] = {}
     for key, flag in ENGINE_FLAGS.items():
-        if config["engine"].get(key) is not None:
-            overrides[flag] = config["engine"][key]
+        if engine.get(key) is not None:
+            overrides[flag] = engine[key]
     if config["kv"].get("block_size"):
         overrides["--block-size"] = int(config["kv"]["block_size"])
     switches = {
-        flag: bool(config["engine"].get(key))
+        flag: bool(engine.get(key))
         for key, flag in ENGINE_SWITCHES.items()
-        if key in config["engine"]
+        if key in engine
     }
     transfer = kv_transfer_config(recipe, config, role)
     if transfer:
@@ -643,6 +762,45 @@ def vllm_args(recipe: dict[str, Any], config: dict[str, Any],
     return base + merge_args(recipe_args, overrides, switches)
 
 
+# Fleet knobs the simulator understands, and its flag for each. The rest
+# of the whitelist (batched tokens, memory utilisation, KV dtype) has no
+# simulated counterpart and is dropped from a sim render.
+SIM_ENGINE_FLAGS: dict[str, str] = {
+    "max_num_seqs": "--max-num-seqs",
+    "max_model_len": "--max-model-len",
+}
+SIM_PASSTHROUGH_DROP = ("--port", "--model", "--tensor-parallel-size",
+                        "--kv-transfer-config", "--kv-events-config",
+                        "--enable-scale-out", "--render-url")
+
+
+def sim_args(recipe: dict[str, Any], config: dict[str, Any],
+             role: str = ROLE_DECODE) -> list[str]:
+    """llm-d-inference-sim arguments for one pool.
+
+    The simulator aborts on any flag it does not register, so nothing of
+    vLLM's is passed through except what the recipe's `args` carry (the
+    recipe author chose the sim's latency model there). `--render-url=`
+    empty selects the simulator's own tokenizer, so no render service is
+    needed; the model name is whatever the recipe says.
+    """
+    pd = config["topology"].get("mode") == "disaggregated"
+    port = pins.PD_DECODE_PORT if (pd and role == ROLE_DECODE) else \
+        pins.MODEL_SERVER_PORT
+    base = [f"--model={recipe['model']}", f"--port={port}",
+            "--render-url="]
+    engine = role_engine(config, role)
+    overrides: dict[str, Any] = {}
+    for key, flag in SIM_ENGINE_FLAGS.items():
+        if engine.get(key) is not None:
+            overrides[flag] = engine[key]
+    if config["kv"].get("block_size"):
+        overrides["--block-size"] = int(config["kv"]["block_size"])
+    recipe_args = [a for a in list(recipe.get("args") or [])
+                   if _flag_name(a) not in SIM_PASSTHROUGH_DROP]
+    return base + merge_args(recipe_args, overrides, {})
+
+
 # -- model server manifests ----------------------------------------------------
 
 
@@ -657,10 +815,31 @@ def release_labels(name: str, production: bool) -> dict[str, str]:
 
 
 def pool_names(name: str, config: dict[str, Any]) -> list[str]:
-    """Deployment names a managed release owns: decode, plus prefill under P/D."""
+    """Workload names a managed release owns: decode, plus prefill under P/D."""
     out = [f"{name}-{ROLE_DECODE}"]
     if config["topology"].get("mode") == "disaggregated":
         out.append(f"{name}-{ROLE_PREFILL}")
+    return out
+
+
+def pool_records(name: str, config: dict[str, Any]) -> list[dict[str, Any]]:
+    """What each pool is on the cluster, so `wait`/`status`/`drill` read
+    the right kind: a Deployment for single-host replicas, a
+    LeaderWorkerSet for multi-host ones."""
+    roles = [ROLE_DECODE]
+    if config["topology"].get("mode") == "disaggregated":
+        roles.append(ROLE_PREFILL)
+    out = []
+    for role in roles:
+        hosts = pool_hosts(config, role)
+        out.append({
+            "name": f"{name}-{role}",
+            "role": role,
+            "kind": "LeaderWorkerSet" if hosts > 1 else "Deployment",
+            "replicas": int((config["topology"].get(role) or {}).get(
+                "replicas") or 1),
+            "hosts": hosts,
+        })
     return out
 
 
@@ -686,14 +865,22 @@ def _server_deployment(name: str, role: str, recipe: dict[str, Any],
     pd = config["topology"].get("mode") == "disaggregated"
     pool = config["topology"].get(role) or config["topology"]["decode"]
     replicas = int(pool.get("replicas") or 1)
+    sim = is_sim(recipe)
+    hosts = pool_hosts(config, role)
     chips = chips_per_replica(recipe, config, role)
-    slice_shape = pool.get("slice") or accel["tpu_topology"]
+    # Every pod of a multi-host group requests all of its node's chips.
+    chips_per_pod = chips // hosts if hosts > 1 else chips
+    slice_shape = pool.get("slice") or accel.get("tpu_topology") or ""
     resources = dict(recipe.get("resources") or {})
-    limits = {
-        "memory": resources.get("memory", DEFAULT_MEMORY),
-        "cpu": str(resources.get("cpu", DEFAULT_CPU)),
-        pins.TPU_RESOURCE: chips,
-    }
+    if sim:
+        limits = {"memory": resources.get("memory", SIM_MEMORY),
+                  "cpu": str(resources.get("cpu", SIM_CPU))}
+    else:
+        limits = {
+            "memory": resources.get("memory", DEFAULT_MEMORY),
+            "cpu": str(resources.get("cpu", DEFAULT_CPU)),
+            pins.TPU_RESOURCE: chips_per_pod,
+        }
     pod_labels = {
         **release_labels(name, production),
         pins.LLMD_ROLE_LABEL: role,
@@ -702,6 +889,8 @@ def _server_deployment(name: str, role: str, recipe: dict[str, Any],
         pins.LLMD_GUIDE_LABEL: "tpu-coworker",
         "llm-d.ai/model": label_value(recipe["model"]),
     }
+    if hosts > 1:
+        pod_labels[pins.MEMBER_LABEL] = "leader"
     selector = {pins.RELEASE_LABEL: name, pins.LLMD_ROLE_LABEL: role}
 
     env_list: list[dict[str, Any]] = [{
@@ -717,7 +906,7 @@ def _server_deployment(name: str, role: str, recipe: dict[str, Any],
     if needs_pod_ip:
         env_list.append({"name": "POD_IP", "valueFrom": {
             "fieldRef": {"fieldPath": "status.podIP"}}})
-    if pd:
+    if pd and not sim:
         env_list += [
             {"name": "TPU_SIDE_CHANNEL_PORT",
              "value": str(pins.TPU_SIDE_CHANNEL_PORT)},
@@ -727,15 +916,21 @@ def _server_deployment(name: str, role: str, recipe: dict[str, Any],
         if role == ROLE_PREFILL:
             env_list.append({"name": "VLLM_HTTP_TIMEOUT_KEEP_ALIVE",
                              "value": "120"})
-    env_list += offload_env(config)
+    if not sim:
+        env_list += offload_env(config)
     for key in sorted(recipe.get("env") or {}):
         env_list.append({"name": key, "value": str(recipe["env"][key])})
+    multihost = dict(recipe.get("multihost") or {})
+    if hosts > 1:
+        for key in sorted(multihost.get("env") or {}):
+            env_list.append({"name": key,
+                             "value": str(multihost["env"][key])})
 
     engine_port = pins.PD_DECODE_PORT if (pd and role == ROLE_DECODE) else \
         pins.MODEL_SERVER_PORT
     ports = [{"name": MODELSERVER_CONTAINER, "containerPort": engine_port,
               "protocol": "TCP"}]
-    if pd:
+    if pd and not sim:
         ports += [
             {"name": "tpu-kv-transfer",
              "containerPort": pins.TPU_KV_TRANSFER_PORT, "protocol": "TCP"},
@@ -753,8 +948,9 @@ def _server_deployment(name: str, role: str, recipe: dict[str, Any],
     container = {
         "name": MODELSERVER_CONTAINER,
         "image": recipe["image"],
-        "command": ["vllm", "serve"],
-        "args": vllm_args(recipe, config, role),
+        **({} if sim else {"command": ["vllm", "serve"]}),
+        "args": sim_args(recipe, config, role) if sim else
+                vllm_args(recipe, config, role),
         "env": env_list,
         "ports": ports,
         "resources": {"limits": limits, "requests": dict(limits)},
@@ -784,12 +980,20 @@ def _server_deployment(name: str, role: str, recipe: dict[str, Any],
             "failureThreshold": 3,
         },
     }
-    pod_spec: dict[str, Any] = {
-        "serviceAccountName": f"{name}-modelserver",
-        "nodeSelector": {
+    node_selector: dict[str, str] = {}
+    if sim:
+        node_selector = dict(env.get("cpu_node_selector") or {})
+    else:
+        node_selector = {
             pins.TOPOLOGY_LABEL: slice_shape,
             pins.ACCELERATOR_LABEL: accel["tpu_accelerator"],
-        },
+        }
+        if hosts > 1 and accel.get("placement_policy"):
+            node_selector[pins.PLACEMENT_POLICY_LABEL] = str(
+                accel["placement_policy"])
+    pod_spec: dict[str, Any] = {
+        "serviceAccountName": f"{name}-modelserver",
+        **({"nodeSelector": node_selector} if node_selector else {}),
         "containers": [container],
         "volumes": [
             {"name": "torch-compile-cache", "emptyDir": {}},
@@ -799,7 +1003,8 @@ def _server_deployment(name: str, role: str, recipe: dict[str, Any],
                 "name": "dshm",
                 "emptyDir": {
                     "medium": "Memory",
-                    "sizeLimit": resources.get("shm", DEFAULT_SHM)
+                    "sizeLimit": resources.get(
+                        "shm", SIM_SHM if sim else DEFAULT_SHM)
                 }
             },
         ],
@@ -827,22 +1032,73 @@ def _server_deployment(name: str, role: str, recipe: dict[str, Any],
             "resources": {"requests": {"cpu": "1", "memory": "1Gi"},
                           "limits": {"memory": "4Gi"}},
         }]
-    return {
-        "apiVersion": "apps/v1",
-        "kind": "Deployment",
-        "metadata": {
-            "name": f"{name}-{role}",
-            "labels": pod_labels,
-            "annotations": {
-                "tpu-coworker.llmd/config-digest": config_digest(config)
-            },
+    metadata = {
+        "name": f"{name}-{role}",
+        "labels": pod_labels,
+        "annotations": {
+            "tpu-coworker.llmd/config-digest": config_digest(config)
         },
+    }
+    if hosts == 1:
+        return {
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "metadata": metadata,
+            "spec": {
+                "replicas": replicas,
+                "selector": {"matchLabels": selector},
+                "template": {
+                    "metadata": {"labels": pod_labels},
+                    "spec": pod_spec,
+                },
+            },
+        }
+    # A multi-host replica is a LeaderWorkerSet group: the leader runs the
+    # engine and is the only member the Service, the InferencePool and the
+    # PodMonitoring select (workers carry no role/serving label). Workers
+    # run the recipe's `multihost.worker_command`; how an image joins its
+    # hosts is the recipe's knowledge, not the renderer's.
+    worker_command = list(multihost.get("worker_command") or [])
+    if not worker_command:
+        raise DeployError(
+            f"topology.{role}.hosts={hosts} needs recipe.multihost."
+            "worker_command (what the non-leader hosts run)",
+            error_code="INVALID_FIELD")
+    worker_labels = {**release_labels(name, production),
+                     pins.MEMBER_LABEL: "worker",
+                     "llm-d.ai/model": label_value(recipe["model"])}
+    worker_container = {
+        "name": "worker",
+        "image": recipe["image"],
+        "command": worker_command,
+        "env": [e for e in env_list if e["name"] != "POD_IP"] + [
+            {"name": "POD_IP", "valueFrom": {
+                "fieldRef": {"fieldPath": "status.podIP"}}}],
+        "resources": {"limits": limits, "requests": dict(limits)},
+        "volumeMounts": list(container["volumeMounts"]),
+    }
+    worker_spec = {
+        key: value for key, value in pod_spec.items()
+        if key not in ("containers", "initContainers")}
+    worker_spec["containers"] = [worker_container]
+    return {
+        "apiVersion": pins.LWS_API_VERSION,
+        "kind": "LeaderWorkerSet",
+        "metadata": metadata,
         "spec": {
             "replicas": replicas,
-            "selector": {"matchLabels": selector},
-            "template": {
-                "metadata": {"labels": pod_labels},
-                "spec": pod_spec,
+            "startupPolicy": "LeaderCreated",
+            "leaderWorkerTemplate": {
+                "size": hosts,
+                "restartPolicy": "RecreateGroupOnPodRestart",
+                "leaderTemplate": {
+                    "metadata": {"labels": pod_labels},
+                    "spec": pod_spec,
+                },
+                "workerTemplate": {
+                    "metadata": {"labels": worker_labels},
+                    "spec": worker_spec,
+                },
             },
         },
     }
@@ -1338,6 +1594,11 @@ def bench_base_url(name: str, namespace: str, config: dict[str, Any],
 # -- monitoring ----------------------------------------------------------------
 
 
+# The target label the model-server PodMonitoring copies the pod's
+# `llm-d.ai/role` into; the collector selects on it per pool.
+ROLE_TARGET_LABEL = "llmd_role"
+
+
 def modelserver_monitoring_name(name: str) -> str:
     """Name of the release's model-server PodMonitoring.
 
@@ -1377,6 +1638,15 @@ def monitoring_manifests(name: str, production: bool,
                         "path": "/metrics",
                         "interval": "15s"
                     }],
+                    # Carry the pod's role label into every sample so the
+                    # collector can attribute prefill and decode pools
+                    # separately (the xPyD search moves the axis that is
+                    # bound). Adopted pods without the label simply get
+                    # an empty `role`.
+                    "targetLabels": {
+                        "fromPod": [{"from": pins.LLMD_ROLE_LABEL,
+                                     "to": ROLE_TARGET_LABEL}],
+                    },
                 },
             },
             {
@@ -1453,6 +1723,8 @@ def bench_job(name: str, tenant: str, stage: str, env: dict[str, Any],
                 "metadata": {"labels": labels},
                 "spec": {
                     "restartPolicy": "Never",
+                    **({"nodeSelector": dict(env["cpu_node_selector"])}
+                       if env.get("cpu_node_selector") else {}),
                     "containers": [{
                         "name": BENCH_CONTAINER,
                         "image": env["inference_perf_image"],
@@ -1534,6 +1806,7 @@ def render_release(*,
     validate_recipe(recipe)
     fleet = fleet_spec(recipe)
     validate_config(config, fleet)
+    validate_recipe_config(recipe, config)
     namespace = env["namespace"]
     chips = chips_per_replica(recipe, config)
     replicas = int(config["topology"]["decode"]["replicas"])
@@ -1665,6 +1938,7 @@ def render_release(*,
             "bench": bench_files,
         },
         "deployments": [] if adopted else pool_names(name, config),
+        "pools": [] if adopted else pool_records(name, config),
         "history": [],
     }
     _write(out_dir / RELEASE_FILE, release)

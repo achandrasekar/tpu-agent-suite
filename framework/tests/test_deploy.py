@@ -348,6 +348,46 @@ class AdvancedArmRenderTest(unittest.TestCase):
         return {i["metadata"]["name"]: i for i in doc["items"]
                 if i["kind"] == "Deployment"}
 
+    def test_per_role_engine_overlays_merge_over_the_fleet_default(self):
+        def edit(cfg):
+            cfg["topology"]["mode"] = "disaggregated"
+            cfg["topology"]["prefill"] = {
+                "replicas": 1, "tp": 4, "slice": "2x2x1",
+                "engine": {"max_num_batched_tokens": 16384,
+                           "max_num_seqs": None}}
+            cfg["topology"]["decode"]["engine"] = {"max_num_seqs": 512}
+            cfg["engine"] = {"max_num_seqs": 128,
+                             "max_num_batched_tokens": 4096}
+        out, _, cfg = self._rendered(edit)
+        pools = self._modelserver(out)
+        d_args = pools["adv-decode"]["spec"]["template"]["spec"][
+            "containers"][0]["args"]
+        p_args = pools["adv-prefill"]["spec"]["template"]["spec"][
+            "containers"][0]["args"]
+        # Decode: overlay wins for max_num_seqs, fleet default for the rest.
+        self.assertIn("--max-num-seqs=512", d_args)
+        self.assertIn("--max-num-batched-tokens=4096", d_args)
+        # Prefill: overlay wins for batched tokens; null removes the fleet
+        # default so the recipe's own `--max-num-seqs=128` applies again.
+        self.assertIn("--max-num-batched-tokens=16384", p_args)
+        self.assertIn("--max-num-seqs=128", p_args)
+        self.assertNotIn("--max-num-seqs=512", p_args)
+        self.assertEqual(render.role_engine(cfg, "decode"),
+                         {"max_num_seqs": 512, "max_num_batched_tokens": 4096})
+        self.assertEqual(render.role_engine(cfg, "prefill"),
+                         {"max_num_batched_tokens": 16384})
+
+    def test_per_role_overlay_is_whitelisted_and_needs_its_pool(self):
+        with self.assertRaises(DeployError) as ctx:
+            self._rendered(lambda cfg: cfg["topology"]["decode"].update(
+                {"engine": {"speculative_config": {}}}))
+        self.assertEqual(ctx.exception.error_code, "INVALID_FIELD")
+        self.assertIn("topology.decode.engine", str(ctx.exception))
+        with self.assertRaises(DeployError) as ctx:
+            self._rendered(lambda cfg: cfg["topology"].update(
+                {"prefill": {"replicas": 1, "engine": {"max_num_seqs": 8}}}))
+        self.assertEqual(ctx.exception.error_code, "INVALID_FIELD")
+
     def test_pd_renders_two_pools_sidecar_and_disagg_profiles(self):
         def edit(cfg):
             cfg["topology"]["mode"] = "disaggregated"
@@ -662,6 +702,16 @@ class ReleaseLifecycleTest(unittest.TestCase):
         self.assertEqual(release.classify_path("topology.decode.replicas"),
                          "cold")
         self.assertEqual(release.classify_path("router.flow_control"), "cold")
+        # The disaggregation decider is EPP config; a pool's engine overlay
+        # rolls that pool only.
+        self.assertEqual(release.classify_path(
+            "topology.pd_decider.parameters.nonCachedTokens"), "hot")
+        self.assertEqual(release.classify_path(
+            "topology.decode.engine.max_num_seqs"), "warm")
+        self.assertEqual(release.classify_path(
+            "topology.prefill.engine.max_num_batched_tokens"), "warm")
+        self.assertEqual(release.classify_path("topology.prefill.replicas"),
+                         "cold")
 
     def test_apply_files_a_release_record_and_installs_router_last(self):
         runner = FakeRunner()
@@ -819,6 +869,173 @@ class PreflightTest(unittest.TestCase):
     def test_router_crd_pin_follows_the_router_release(self):
         self.assertIn(pins.ROUTER_RELEASE_VERSION, pins.ROUTER_CRD_URL)
         self.assertTrue(pins.ROUTER_CRD_URL.endswith("/manifests.yaml"))
+
+
+SIM_RECIPE = {
+    "model": "sim/qwen3.5-397b",
+    "image": f"{pins.SIM_IMAGE}:{pins.SIM_VERSION}",
+    "engine_flavor": "sim",
+    "args": ["--mode=random", "--latency-calculator=per-token",
+             "--prefill-overhead=20ms", "--prefill-time-per-token=50us",
+             "--inter-token-latency=20ms", "--max-num-seqs=64",
+             "--enable-kvcache", "--kv-cache-size=4096",
+             "--kv-transfer-config={}"],
+    "accelerator": {"tpu_accelerator": "tpu7x", "tpu_topology": "2x2x1"},
+    "tensor_parallel": 4,
+    "multihost": {"worker_command": ["sleep", "infinity"]},
+}
+
+
+class MultiHostAndSimRenderTest(unittest.TestCase):
+    """M5a: a replica may span hosts; a fleet may be simulated."""
+
+    def _render(self, recipe, edit, name="mh"):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        out = pathlib.Path(tmp.name)
+        profile = workload.resolve_workload(copy.deepcopy(SPEC))
+        cfg = render.default_config(recipe, replicas=2)
+        edit(cfg)
+        rel = render.render_release(name=name, config=cfg, recipe=recipe,
+                                    profile=profile, env=dict(ENV_SUBSET),
+                                    out_dir=out,
+                                    now="2026-10-01T00:00:00+00:00")
+        doc = json.loads((out / render.MODELSERVER_FILE).read_text())
+        return out, rel, cfg, {(i["kind"], i["metadata"]["name"]): i
+                               for i in doc["items"]}
+
+    def test_multi_host_pool_renders_a_leader_worker_set(self):
+        recipe = dict(RECIPE, multihost={
+            "worker_command": ["ray", "start", "--block",
+                               "--address=$(LWS_LEADER_ADDRESS):6379"],
+            "env": {"TPU_MULTIHOST_BACKEND": "ray"}})
+        recipe["accelerator"] = {"tpu_accelerator": "tpu7x",
+                                 "tpu_topology": "2x2x2",
+                                 "placement_policy": "pp-tpu7x-8"}
+
+        def edit(cfg):
+            cfg["topology"]["decode"]["hosts"] = 2
+            cfg["topology"]["decode"]["slice"] = "2x2x2"
+        out, rel, cfg, items = self._render(recipe, edit)
+        lws = items[("LeaderWorkerSet", "mh-decode")]
+        self.assertEqual(lws["apiVersion"], pins.LWS_API_VERSION)
+        spec = lws["spec"]
+        self.assertEqual(spec["replicas"], 2)
+        self.assertEqual(spec["leaderWorkerTemplate"]["size"], 2)
+        self.assertEqual(spec["leaderWorkerTemplate"]["restartPolicy"],
+                         "RecreateGroupOnPodRestart")
+        leader = spec["leaderWorkerTemplate"]["leaderTemplate"]
+        worker = spec["leaderWorkerTemplate"]["workerTemplate"]
+        # The leader serves and is the only member the selectors see.
+        self.assertEqual(leader["metadata"]["labels"][pins.LLMD_ROLE_LABEL],
+                         "decode")
+        self.assertEqual(leader["metadata"]["labels"][pins.MEMBER_LABEL],
+                         "leader")
+        self.assertNotIn(pins.LLMD_ROLE_LABEL, worker["metadata"]["labels"])
+        self.assertNotIn(pins.LLMD_SERVING_LABEL,
+                         worker["metadata"]["labels"])
+        self.assertEqual(worker["metadata"]["labels"][pins.MEMBER_LABEL],
+                         "worker")
+        # Every member requests all of its node's chips; the replica is
+        # hosts x chips per host (tpu7x: 4).
+        for tpl in (leader, worker):
+            limits = tpl["spec"]["containers"][0]["resources"]["limits"]
+            self.assertEqual(limits[pins.TPU_RESOURCE], 4)
+            sel = tpl["spec"]["nodeSelector"]
+            self.assertEqual(sel[pins.TOPOLOGY_LABEL], "2x2x2")
+            self.assertEqual(sel[pins.PLACEMENT_POLICY_LABEL], "pp-tpu7x-8")
+        self.assertEqual(rel["chips"]["total"], 16)
+        self.assertEqual(worker["spec"]["containers"][0]["command"][0], "ray")
+        env = {e["name"]: e.get("value") for e in
+               worker["spec"]["containers"][0]["env"]}
+        self.assertEqual(env["TPU_MULTIHOST_BACKEND"], "ray")
+        self.assertEqual(rel["pools"], [{
+            "name": "mh-decode", "role": "decode", "kind": "LeaderWorkerSet",
+            "replicas": 2, "hosts": 2}])
+        # The Service still selects by release + role, i.e. leaders only.
+        svc = items[("Service", "mh-modelserver")]
+        self.assertEqual(svc["spec"]["selector"],
+                         {pins.RELEASE_LABEL: "mh",
+                          pins.LLMD_ROLE_LABEL: "decode"})
+
+    def test_multi_host_refuses_without_worker_command_or_host_size(self):
+        with self.assertRaises(DeployError) as ctx:
+            self._render(RECIPE, lambda c: c["topology"]["decode"].update(
+                {"hosts": 2}))
+        self.assertEqual(ctx.exception.error_code, "INVALID_FIELD")
+        self.assertIn("worker_command", str(ctx.exception))
+        unknown = dict(RECIPE, multihost={"worker_command": ["sleep"]})
+        unknown["accelerator"] = {"tpu_accelerator": "tpu9z",
+                                  "tpu_topology": "2x2x2"}
+        with self.assertRaises(DeployError) as ctx:
+            self._render(unknown, lambda c: c["topology"]["decode"].update(
+                {"hosts": 2}))
+        self.assertIn("chips_per_host", str(ctx.exception))
+
+    def test_sim_fleet_renders_the_simulator_without_accelerators(self):
+        def edit(cfg):
+            cfg["topology"]["mode"] = "disaggregated"
+            cfg["topology"]["prefill"] = {"replicas": 1, "hosts": 2}
+            cfg["topology"]["decode"]["engine"] = {"max_num_seqs": 128,
+                                                   "max_model_len": 8192}
+            cfg["engine"] = {"max_num_batched_tokens": 8192}
+        out, rel, cfg, items = self._render(SIM_RECIPE, edit, name="simf")
+        decode = items[("Deployment", "simf-decode")]
+        prefill = items[("LeaderWorkerSet", "simf-prefill")]
+        dc = decode["spec"]["template"]["spec"]["containers"][0]
+        self.assertNotIn("command", dc)
+        self.assertNotIn(pins.TPU_RESOURCE, dc["resources"]["limits"])
+        self.assertNotIn("nodeSelector", decode["spec"]["template"]["spec"])
+        args = dc["args"]
+        self.assertIn(f"--model={SIM_RECIPE['model']}", args)
+        self.assertIn(f"--port={pins.PD_DECODE_PORT}", args)
+        self.assertIn("--render-url=", args)
+        self.assertIn("--max-num-seqs=128", args)
+        self.assertIn("--max-model-len=8192", args)
+        self.assertIn("--enable-kvcache", args)
+        # vLLM-only flags never reach the simulator (it aborts on them).
+        for forbidden in ("--kv-transfer-config", "--tensor-parallel-size",
+                          "--max-num-batched-tokens", "--kv-events-config"):
+            self.assertFalse(any(a.startswith(forbidden) for a in args),
+                             forbidden)
+        # P/D still goes through the routing sidecar on decode.
+        (sidecar,) = decode["spec"]["template"]["spec"]["initContainers"]
+        self.assertIn("--kv-connector=nixlv2", sidecar["args"])
+        # No TPU side-channel env or ports on a simulated pod.
+        names = {e["name"] for e in dc["env"]}
+        self.assertNotIn("TPU_SIDE_CHANNEL_PORT", names)
+        self.assertEqual([p["name"] for p in dc["ports"]],
+                         [render.MODELSERVER_CONTAINER])
+        # The prefill group is an LWS of sim leader + sleeping worker.
+        worker = prefill["spec"]["leaderWorkerTemplate"]["workerTemplate"]
+        self.assertEqual(worker["spec"]["containers"][0]["command"],
+                         ["sleep", "infinity"])
+        # Chip accounting stays virtual: 2 decode x 4 + 1 prefill x (2 x 4).
+        self.assertEqual(rel["chips"]["total"], 16)
+
+    def test_sim_refuses_precise_routing_and_host_tiering(self):
+        for edit in (lambda c: c["kv"].update({"precise_routing": True}),
+                     lambda c: c["kv"].update(
+                         {"tiered_host": {"cpu_chunks": 10}})):
+            with self.assertRaises(DeployError) as ctx:
+                self._render(SIM_RECIPE, edit)
+            self.assertEqual(ctx.exception.error_code, "NOT_IMPLEMENTED")
+
+    def test_probe_short_circuits_for_the_simulator(self):
+        from framework.deploy import probe
+        env = config.DeployEnv(namespace="llmd-study")
+        with tempfile.TemporaryDirectory() as tmp:
+            doc = probe.run_probe(env, image=SIM_RECIPE["image"],
+                                  out_dir=pathlib.Path(tmp),
+                                  runner=FakeRunner(fail={"": "no cluster"}))
+            schema = json.loads(
+                (_NEXUS / "package" / "schemas" /
+                 "engine-capabilities.json").read_text(encoding="utf-8"))
+        self.assertEqual(utils.validate_instance(doc, schema), [])
+        self.assertEqual(doc["mode"], "sim")
+        self.assertTrue(doc["capabilities"]["sim"])
+        self.assertTrue(doc["capabilities"]["pd_connector"])
+        self.assertFalse(doc["capabilities"]["kv_events"])
 
 
 class ProductionTest(unittest.TestCase):
@@ -1405,6 +1622,39 @@ class CollectTest(unittest.TestCase):
             self.assertIn(expected, promql)
             self.assertNotIn("pod=~", promql)
         self.assertEqual(doc["metrics"]["kv_util_mean"]["value"], 0.42)
+
+    def test_pd_release_collects_each_role_through_the_pod_label(self):
+        from framework.deploy import collect
+        seen: list[str] = []
+
+        def query(promql):
+            seen.append(promql)
+            value = "1" if 'llmd_role="prefill"' in promql else "2"
+            return {"status": "success", "data": {"resultType": "vector",
+                    "result": [{"value": [0, value]}]}}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = pathlib.Path(tmp) / "rel"
+
+            def pd(cfg):
+                cfg["topology"]["mode"] = "disaggregated"
+                cfg["topology"]["prefill"] = {"replicas": 1}
+            _render(out, config_edit=pd)
+            mon = json.loads((out / render.MONITORING_FILE).read_text())
+            env = config.DeployEnv(namespace="llmd-study",
+                                   prometheus_url="http://prom.local")
+            doc = collect.collect(env, out, window="10m",
+                                  out_dir=pathlib.Path(tmp) / "profile",
+                                  query_fn=query)
+        server = [i for i in mon["items"] if i["metadata"]["name"]
+                  == render.modelserver_monitoring_name("acme-r1")][0]
+        self.assertEqual(server["spec"]["targetLabels"]["fromPod"],
+                         [{"from": pins.LLMD_ROLE_LABEL,
+                           "to": render.ROLE_TARGET_LABEL}])
+        self.assertEqual(len(seen), 3 * len(collect.QUERIES))
+        self.assertEqual(doc["roles"]["prefill"]["kv_util_mean"]["value"], 1)
+        self.assertEqual(doc["roles"]["decode"]["kv_util_mean"]["value"], 2)
+        self.assertEqual(doc["metrics"]["kv_util_mean"]["value"], 2)
 
     def test_rendered_podmonitoring_name_matches_the_collector(self):
         with tempfile.TemporaryDirectory() as tmp:

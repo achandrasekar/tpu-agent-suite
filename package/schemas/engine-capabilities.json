@@ -22,7 +22,8 @@
       "type": "string",
       "enum": [
         "job",
-        "exec"
+        "exec",
+        "sim"
       ],
       "description": "`job` ran a probe Job on a TPU node (managed fleet); `exec` ran inside a serving pod (adopted fleet)."
     },
@@ -41,8 +42,10 @@
       "enum": [
         "succeeded",
         "failed",
-        "timeout"
-      ]
+        "timeout",
+        "sim"
+      ],
+      "description": "`sim`: the image is the simulator; capabilities are declared, not probed."
     },
     "capabilities": {
       "type": "object",
@@ -64,6 +67,10 @@
         },
         "vllm_torchtpu": {
           "type": "boolean"
+        },
+        "sim": {
+          "type": "boolean",
+          "description": "The image is llm-d-inference-sim: a simulated fleet. P/D works through the routing sidecar's generic path; precise routing and host tiering do not exist."
         }
       }
     },

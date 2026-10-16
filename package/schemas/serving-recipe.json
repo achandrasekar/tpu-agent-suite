@@ -89,6 +89,15 @@
         "chips_per_replica": {
           "type": "integer",
           "minimum": 1
+        },
+        "chips_per_host": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Chips one node exposes as google.com/tpu. Required for multi-host replicas (topology.<role>.hosts > 1) unless the generation is pinned (tpu7x: 4)."
+        },
+        "placement_policy": {
+          "type": "string",
+          "description": "GKE workload (placement) policy name for a multi-host TPU7x node pool; rendered as the cloud.google.com/placement-policy-name node selector."
         }
       }
     },
@@ -147,6 +156,11 @@
         "peak_prefill_throughput": {
           "type": "number",
           "description": "Tokens/s of prefill one replica sustains; the affinity filter's peakPrefillThroughput."
+        },
+        "peak_decode_throughput": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Generation tokens/s one replica sustains at its decode knee (TPOT within SLO); with peak_prefill_throughput it sizes the opening xP:yD shape."
         }
       }
     },
@@ -179,10 +193,36 @@
       "type": "string",
       "enum": [
         "tpu_inference",
-        "torchtpu"
+        "torchtpu",
+        "sim"
       ],
       "default": "tpu_inference",
-      "description": "Which connector modules the image carries, as `deploy probe` reports them: tpu-inference's (TPUConnectorHMA / TPUOffloadConnector) or the torchtpu image's own (vllm_torchtpu.*). Picks the kv_connector names the renderer writes for P/D and host-offload arms."
+      "description": "Which connector modules the image carries, as `deploy probe` reports them: tpu-inference's (TPUConnectorHMA / TPUOffloadConnector) or the torchtpu image's own (vllm_torchtpu.*). Picks the kv_connector names the renderer writes for P/D and host-offload arms. `sim` is llm-d-inference-sim: a simulated fleet on CPU nodes that exercises the orchestration (router, pools, LWS groups, P/D via the sidecar, benchmarks) without an accelerator; its `args` are the simulator's own flags."
+    },
+    "multihost": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "How a multi-host replica's hosts join up. The renderer places these; it does not know how a given image starts a distributed engine.",
+      "properties": {
+        "worker_command": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Command the non-leader hosts run (e.g. a ray worker joining LWS_LEADER_ADDRESS, or `sleep infinity` for a simulated group)."
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": {
+            "type": [
+              "string",
+              "number",
+              "boolean"
+            ]
+          },
+          "description": "Extra env on every member of a multi-host group (leader and workers)."
+        }
+      }
     }
   },
   "examples": [

@@ -43,6 +43,59 @@
             },
             "slice": {
               "type": "string"
+            },
+            "hosts": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Hosts per replica. 1 renders a Deployment; more renders a LeaderWorkerSet group of this size, which needs accelerator.chips_per_host and a worker_command in the recipe."
+            },
+            "engine": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "Per-pool overlay on `engine`, same whitelist. Prefill wants large batched-token budgets, decode wants many sequences; a key set to null removes the fleet default for this pool.",
+              "properties": {
+                "max_num_seqs": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 1
+                },
+                "max_num_batched_tokens": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 1
+                },
+                "gpu_memory_utilization": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "kv_cache_dtype": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "max_model_len": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 1
+                },
+                "async_scheduling": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                }
+              }
             }
           }
         },
@@ -62,6 +115,59 @@
             },
             "slice": {
               "type": "string"
+            },
+            "hosts": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Hosts per replica. 1 renders a Deployment; more renders a LeaderWorkerSet group of this size, which needs accelerator.chips_per_host and a worker_command in the recipe."
+            },
+            "engine": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "Per-pool overlay on `engine`, same whitelist. Prefill wants large batched-token budgets, decode wants many sequences; a key set to null removes the fleet default for this pool.",
+              "properties": {
+                "max_num_seqs": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 1
+                },
+                "max_num_batched_tokens": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 1
+                },
+                "gpu_memory_utilization": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "kv_cache_dtype": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "max_model_len": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 1
+                },
+                "async_scheduling": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                }
+              }
             }
           },
           "additionalProperties": false

@@ -94,6 +94,36 @@ LLMD_ENGINE_LABEL = "llm-d.ai/engine-type"
 ACCELERATOR_LABEL = "cloud.google.com/gke-tpu-accelerator"
 TOPOLOGY_LABEL = "cloud.google.com/gke-tpu-topology"
 TPU_RESOURCE = "google.com/tpu"
+# TPU7x multi-host node pools are placed by a workload policy rather than
+# a topology flag; the pod names it with this selector
+# (https://docs.cloud.google.com/kubernetes-engine/docs/concepts/plan-tpus).
+PLACEMENT_POLICY_LABEL = "cloud.google.com/placement-policy-name"
+# Chips one host (one node) exposes as `google.com/tpu`, per generation.
+# A multi-host replica is `hosts x chips_per_host`; every pod of the group
+# must request all of its node's chips. tpu7x: 4 chips per host, machine
+# type tpu7x-standard-4t for every topology
+# (https://docs.cloud.google.com/tpu/docs/tpu7x). Other generations are
+# not pinned here: the recipe's `accelerator.chips_per_host` says.
+CHIPS_PER_HOST: dict[str, int] = {"tpu7x": 4}
+
+# Multi-host pools render a LeaderWorkerSet (one pod per host, the leader
+# serving). The CRD is installed cluster-wide from the pinned release
+# (https://github.com/kubernetes-sigs/lws/releases).
+LWS_API_VERSION = "leaderworkerset.x-k8s.io/v1"
+LWS_CRD = "leaderworkersets.leaderworkerset.x-k8s.io"
+LWS_VERSION = "v0.11.1"
+LWS_MANIFEST_URL = ("https://github.com/kubernetes-sigs/lws/releases/download/"
+                    f"{LWS_VERSION}/manifests.yaml")
+# Which member of a group a pod is; workers carry no serving/role label so
+# every selector (Service, InferencePool, PodMonitoring) sees leaders only.
+MEMBER_LABEL = "tpu-coworker.llmd/member"
+
+# llm-d-inference-sim: the engine stand-in for a simulated fleet. Real
+# router, real pools, no accelerator; unknown vLLM flags abort it, so the
+# renderer emits only its own flags
+# (https://github.com/llm-d/llm-d-inference-sim/blob/main/docs/configuration.md).
+SIM_IMAGE = "ghcr.io/llm-d/llm-d-inference-sim"
+SIM_VERSION = "v1.0.0"
 
 # Ports. The standalone chart's Envoy sidecar listens on 8081 and the chart's
 # `extraServicePorts` maps Service port 80 to it; the EPP serves metrics on

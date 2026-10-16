@@ -251,6 +251,15 @@ def _probe_by_exec(kube: Kube, pod: str, container: str | None,
     return ("succeeded" if proc.returncode == 0 else "failed"), text
 
 
+def _write_capabilities(out_dir: pathlib.Path,
+                        doc: dict[str, Any]) -> dict[str, Any]:
+    out_dir = pathlib.Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "engine-capabilities.json").write_text(
+        json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    return doc
+
+
 def run_probe(env: DeployEnv,
               *,
               image: str | None = None,
@@ -267,6 +276,23 @@ def run_probe(env: DeployEnv,
     Exec mode records the image the chosen pod actually runs, so the
     capabilities document always names the image it describes.
     """
+    if image and image.split(":")[0].split("@")[0] == pins.SIM_IMAGE:
+        # A simulated engine is a Go binary with no Python to import; its
+        # capabilities are what the simulator is, not what a probe finds.
+        return _write_capabilities(out_dir, {
+            "schema": "engine-capabilities",
+            "probed_at": datetime.datetime.now(
+                datetime.timezone.utc).isoformat(timespec="seconds"),
+            "image": image, "mode": "sim", "pod": None,
+            "accelerator": {"tpu_accelerator": env.tpu_accelerator,
+                            "tpu_topology": env.tpu_topology},
+            "outcome": "sim",
+            "capabilities": {"sim": True, "pd_connector": True,
+                             "offload_connector": False, "kv_events": False,
+                             "tpu_inference": False, "vllm": False,
+                             "vllm_torchtpu": False},
+            "versions": {}, "modules": {}, "log_tail": "",
+        })
     kube: Kube = env.kube(runner=runner)
     mode = "exec" if (pod or selector) else "job"
     if mode == "exec":
@@ -305,10 +331,7 @@ def run_probe(env: DeployEnv,
         "modules": (parsed or {}).get("modules", {}),
         "log_tail": text[-2000:] if parsed is None else "",
     }
-    out_dir = pathlib.Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "engine-capabilities.json").write_text(
-        json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    _write_capabilities(out_dir, doc)
     if parsed is None:
         raise DeployError(f"probe {outcome}: no capabilities printed",
                           error_code="PROBE_FAILED",

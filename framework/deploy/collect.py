@@ -106,6 +106,12 @@ def _scalar(answer: Any) -> float | None:
     return number
 
 
+def _read_release_file(release_dir: pathlib.Path, release: dict[str, Any],
+                       key: str) -> str:
+    return (pathlib.Path(release_dir) / release["files"][key]).read_text(
+        encoding="utf-8")
+
+
 def collect(env: DeployEnv,
             release_dir: pathlib.Path,
             *,
@@ -134,15 +140,29 @@ def collect(env: DeployEnv,
     # names, which a `<name>-decode-.*` regex would never match).
     sel = (f'namespace="{namespace}",'
            f'job="{render.modelserver_monitoring_name(release["name"])}"')
-    metrics: dict[str, Any] = {}
-    for name, template in QUERIES.items():
-        promql = template.format(w=window, ns=namespace, sel=sel)
-        entry: dict[str, Any] = {"promql": promql, "value": None}
-        try:
-            entry["value"] = _scalar(query(promql))
-        except (urllib.error.URLError, ValueError, OSError) as exc:
-            entry["error"] = str(exc)[:300]
-        metrics[name] = entry
+    def run_queries(selector: str) -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        for name, template in QUERIES.items():
+            promql = template.format(w=window, ns=namespace, sel=selector)
+            entry: dict[str, Any] = {"promql": promql, "value": None}
+            try:
+                entry["value"] = _scalar(query(promql))
+            except (urllib.error.URLError, ValueError, OSError) as exc:
+                entry["error"] = str(exc)[:300]
+            out[name] = entry
+        return out
+
+    metrics = run_queries(sel)
+    # Per-role breakdown under P/D: the PodMonitoring copies the pod's role
+    # label into `llmd_role`, so each pool is one more selector. The xPyD
+    # planner reads these to decide which axis of the shape to move; an
+    # aggregated fleet has one pool and the breakdown is skipped.
+    roles: dict[str, Any] = {}
+    config = json.loads(_read_release_file(release_dir, release, "config"))
+    if (config.get("topology") or {}).get("mode") == "disaggregated":
+        for role in (render.ROLE_PREFILL, render.ROLE_DECODE):
+            roles[role] = run_queries(
+                f'{sel},{render.ROLE_TARGET_LABEL}="{role}"')
     doc = {
         "schema": "llmd-fleet-metrics",
         "collected_at": datetime.datetime.now(
@@ -157,6 +177,7 @@ def collect(env: DeployEnv,
             "chips_total": release["chips"]["total"],
         },
         "metrics": metrics,
+        "roles": roles,
         "missing": sorted(k for k, v in metrics.items() if v["value"] is None),
     }
     out_dir = pathlib.Path(out_dir)

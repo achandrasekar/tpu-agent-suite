@@ -54,8 +54,14 @@ PULL_FAILURE_GRACE_S = 180
 # Hot paths change the EPP only; warm paths roll the model-server pods on
 # the nodes they already hold. Anything else needs new capacity and belongs
 # to the outer loop as a fresh release.
-HOT_PREFIXES = ("router.",)
-WARM_PREFIXES = ("engine.", "kv.block_size")
+# `topology.pd_decider` is EPP config (the disaggregation decider and its
+# nonCachedTokens threshold), so it is hot although it lives under
+# topology; a pool's `engine` overlay is the same warm path as the fleet
+# default, scoped to one pool, which is what makes per-role tuning an
+# in-place step rather than a new release.
+HOT_PREFIXES = ("router.", "topology.pd_decider")
+WARM_PREFIXES = ("engine.", "kv.block_size", "topology.prefill.engine.",
+                 "topology.decode.engine.")
 # Hot-looking paths that are nonetheless cold: changing them changes which
 # components exist, not how the existing ones are configured. `router.profile`
 # swaps the plugin set and its data producers, so scorer weights swept under
@@ -66,8 +72,11 @@ COLD_EXCEPTIONS = ("router.profile", "router.flow_control",
 
 # Kinds the release label selects, deleted at teardown in this order so the
 # Jobs stop sending before the servers go.
-RELEASE_KINDS = ("job", "configmap", "deployment", "service",
-                 "serviceaccount", "podmonitoring")
+RELEASE_KINDS = ("job", "configmap", "deployment", "leaderworkerset",
+                 "service", "serviceaccount", "podmonitoring")
+# Kinds whose CRD a cluster may simply not have; a delete that fails
+# because the resource type is unknown is not a failed teardown.
+OPTIONAL_KINDS = ("podmonitoring", "leaderworkerset")
 
 
 def _now() -> str:
@@ -139,6 +148,12 @@ def apply(env: DeployEnv,
     kube = _kube_for(env, release, runner)
 
     adopted = _adopted(release)
+    if any(p.get("kind") == "LeaderWorkerSet" for p in _pools(release)) \
+            and not kube.exists("crd", pins.LWS_CRD, namespaced=False):
+        raise DeployError(
+            f"this release renders a multi-host pool but {pins.LWS_CRD} is"
+            " not installed; run `deploy preflight --fix` (it applies"
+            f" {pins.LWS_MANIFEST_URL})", error_code="LWS_MISSING")
     if release["files"].get("modelserver"):
         kube.apply(_read(release_dir, release["files"]["modelserver"]))
     warnings: list[str] = []
@@ -202,6 +217,22 @@ def apply(env: DeployEnv,
 
 
 # -- wait ------------------------------------------------------------------------
+
+
+def _pools(release: dict[str, Any]) -> list[dict[str, Any]]:
+    """The release's model-server workloads with their kinds; releases
+    rendered before `pools` existed carry Deployments only."""
+    pools = release.get("pools")
+    if pools is None:
+        pools = [{"name": d, "kind": "Deployment"}
+                 for d in release.get("deployments") or []]
+    return list(pools)
+
+
+def _pool_kind(pool: dict[str, Any]) -> str:
+    """kubectl resource name for a pool's kind."""
+    return "leaderworkerset" if pool.get("kind") == "LeaderWorkerSet" \
+        else "deployment"
 
 
 def _deployment_ready(doc: dict[str, Any]) -> tuple[bool, int, int]:
@@ -313,11 +344,16 @@ def wait(env: DeployEnv,
     while True:
         last = {"deployments": {}, "epp": {}}
         all_ready = True
-        for dep in release["deployments"]:
-            doc = kube.kubectl_json(["get", "deployment", dep], check=False)
+        for pool in _pools(release):
+            # A LeaderWorkerSet reports spec.replicas / status.readyReplicas
+            # per group, the same shape as a Deployment: a group is ready
+            # when its leader (the serving member) is.
+            doc = kube.kubectl_json(["get", _pool_kind(pool), pool["name"]],
+                                    check=False)
             ready, have, want = _deployment_ready(doc) if doc else (False, 0,
                                                                      0)
-            last["deployments"][dep] = {"ready": have, "want": want}
+            last["deployments"][pool["name"]] = {
+                "ready": have, "want": want, "kind": _pool_kind(pool)}
             all_ready = all_ready and ready
         if adopted:
             ready, have, want = _adopted_ready(kube, release)
@@ -487,11 +523,13 @@ def status(env: DeployEnv, release_dir: pathlib.Path,
         "router": {},
         "bench_jobs": [],
     }
-    for dep in release["deployments"]:
-        doc = kube.kubectl_json(["get", "deployment", dep], check=False)
+    for pool in _pools(release):
+        doc = kube.kubectl_json(["get", _pool_kind(pool), pool["name"]],
+                                check=False)
         ready, have, want = _deployment_ready(doc) if doc else (False, 0, 0)
-        out["deployments"][dep] = {
+        out["deployments"][pool["name"]] = {
             "exists": bool(doc),
+            "kind": _pool_kind(pool),
             "ready": ready,
             "ready_replicas": have,
             "replicas": want
@@ -772,8 +810,9 @@ def teardown(env: DeployEnv,
             removed.append(f"{kind}: {(proc.stdout or '').strip() or 'none'}")
         except DeployError as exc:
             # PodMonitoring is absent on clusters without Managed
-            # Prometheus; that is not a failed teardown.
-            if kind == "podmonitoring":
+            # Prometheus and LeaderWorkerSet on clusters without LWS;
+            # neither is a failed teardown.
+            if kind in OPTIONAL_KINDS:
                 continue
             problems.append(f"{kind}: {exc.message} {exc.detail[:200]}")
     if router_installed:
