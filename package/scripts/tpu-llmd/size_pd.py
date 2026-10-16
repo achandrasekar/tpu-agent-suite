@@ -226,14 +226,16 @@ def attribute(profile_doc: dict[str, Any] | None,
     evidence: list[str] = []
     role = "none"
     gates = _failed_gates(report)
-    if any(g.endswith("ttft_p99_ms") or g.endswith("ttft_p90_ms")
-           for g in gates):
-        role = "prefill"
-        evidence.append(f"TTFT gate failed ({', '.join(gates)})")
-    elif any(g.endswith("tpot_p99_ms") or g.endswith("tpot_p90_ms")
-             for g in gates):
+    # TPOT first: a saturated decode pool inflates TTFT too (requests
+    # queue before their first token), so a failed TPOT gate names decode
+    # whatever TTFT did; a failed TTFT gate with TPOT intact is prefill.
+    # Seen on the simulated 1P:1D arm: TTFT 88 s and TPOT 188 ms, decode.
+    if any(".tpot_" in g for g in gates):
         role = "decode"
         evidence.append(f"TPOT gate failed ({', '.join(gates)})")
+    elif any(".ttft_" in g for g in gates):
+        role = "prefill"
+        evidence.append(f"TTFT gate failed ({', '.join(gates)})")
     for cand in ("prefill", "decode"):
         waiting = _metric(profile_doc, "requests_waiting_mean", cand)
         kv_max = _metric(profile_doc, "kv_util_max", cand)
