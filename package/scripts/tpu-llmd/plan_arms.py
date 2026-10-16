@@ -64,6 +64,7 @@ except ImportError:  # shipped runtime: `deploy` is top-level
 if str(_HERE.parent) not in sys.path:
     sys.path.insert(0, str(_HERE.parent))
 import seed_arms  # noqa: E402  (same directory)
+import agentx_search  # noqa: E402  (same directory)
 import size_pd  # noqa: E402  (same directory)
 
 BLOCKED_CAPABILITY = seed_arms.BLOCKED_CAPABILITY
@@ -224,6 +225,32 @@ def propose(req: dict[str, Any]) -> dict[str, Any]:
             "ceiling_provenance": "modeled",
             "prerequisites": prerequisites or {},
             "evidence": EVIDENCE.get(arm_kind, []),
+        }
+
+    if workload.is_agentx(profile):
+        model = agentx_search.propose(
+            profile, recipe, incumbent, decided=decided,
+            incumbent_report=_read(req.get("incumbent_report_path")),
+            max_chips=max_chips, chips_per=chips_per, add=add)
+        arms.sort(key=lambda a: (0 if a["status"] == "open" else 1,
+                                 -(a["headroom"] * max(a["share"], 0.05))))
+        kept = arms[:max_new] + [a for a in arms[max_new:]
+                                 if a["status"] == "blocked"]
+        kept_ids = {a["arm"] for a in kept}
+        plans = {k: v for k, v in plans.items() if k in kept_ids}
+        return {
+            "status": "planned" if kept else "nothing_to_propose",
+            "arms": kept,
+            "plans": plans,
+            "model": {"incumbent_profile": incumbent["router"]["profile"],
+                      "incumbent_replicas": replicas, "chips_used": used,
+                      "chips_per_replica": chips_per, "max_chips": max_chips,
+                      "fleet_mode": fleet_mode, "signals": signals,
+                      "agentx": model, "attribution": model["attribution"],
+                      "capabilities": caps, "closed": closed},
+            "summary": f"AgentX: {sum(a['status'] == 'open' for a in kept)}"
+                       f" open arm(s) at {model['concurrency']} sessions;"
+                       f" bound={model['attribution']['role']}",
         }
 
     # -- 1. KV reuse ---------------------------------------------------------

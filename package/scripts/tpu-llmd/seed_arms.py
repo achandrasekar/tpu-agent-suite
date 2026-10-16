@@ -60,6 +60,7 @@ except ImportError:  # shipped runtime: `deploy` is top-level
 
 if str(_HERE.parent) not in sys.path:
     sys.path.insert(0, str(_HERE.parent))
+import agentx_search  # noqa: E402  (same directory)
 import size_pd  # noqa: E402  (same directory)
 
 BLOCKED_CAPABILITY = "blocked_on_engine_capability"
@@ -97,6 +98,16 @@ SWEEP_KNOBS: dict[str, list[str]] = {
     "kv.tiered_host": [
         "kv.tiered_host.cpu_chunks", "kv.tiered_host.staging_blocks",
         "router.plugins.prefix-cache-scorer.weight",
+    ],
+    # AgentX: the operating point is the arm; the router's active-request
+    # weight and the per-role knobs the recipe maps are its sweep.
+    "operating_point.concurrency": [
+        "router.plugins.active-requests.weight",
+    ],
+    "engine.role_knob": [
+        "topology.decode.engine.max_num_seqs",
+        "topology.prefill.engine.kv_cpu_offload_bytes",
+        "topology.decode.engine.hma_max_inflight_pulls",
     ],
     "topology.pd": [
         "topology.pd_decider.parameters.nonCachedTokens",
@@ -146,6 +157,8 @@ COARSE_KIND = {
     "router.predicted_latency": "routing-policy",
     "router.epp_replicas": "routing-policy",
     "engine.fleet_knob": "engine-fleet-knob",
+    "engine.role_knob": "engine-fleet-knob",
+    "operating_point.concurrency": "fleet-topology",
     "platform.capacity": "platform-capacity",
 }
 
@@ -204,6 +217,9 @@ def capacity_floor(profile: dict[str, Any], recipe: dict[str, Any]) -> tuple[int
     if fleet["mode"] == render.FLEET_ADOPTED:
         return fleet["replicas"], "adopted"
     knee = (recipe.get("measured") or {}).get("knee_rps")
+    if profile["rate"].get("target_qps") is None:
+        # Closed-loop workloads size by sessions, not rate (agentx_search).
+        return 1, "closed-loop"
     target = float(profile["rate"]["target_qps"])
     if knee and float(knee) > 0:
         return max(1, math.ceil(target / float(knee))), "modeled"
@@ -271,6 +287,23 @@ def seed(profile: dict[str, Any], recipe: dict[str, Any], *,
             "rationale": rationale,
             "ceiling_provenance": "modeled",
             "prerequisites": prerequisites or {},
+        }
+
+    if workload.is_agentx(profile):
+        # A closed-loop leaderboard workload: its own seed (operating point,
+        # sessions-per-engine shape, the InferenceX router A/B, mapped
+        # engine knobs); the rate-based stages below do not apply.
+        model = agentx_search.seed(profile, recipe, max_chips=cap,
+                                   capabilities=caps, add=add)
+        return {"arms": arms}, {
+            "capacity_floor": {"replicas": model["opening"]["decode_replicas"],
+                               "provenance": model["opening"]["provenance"],
+                               "chips_per_replica": chips, "max_chips": cap,
+                               "fleet_mode": render.FLEET_MANAGED},
+            "signals": signals,
+            "capabilities": caps,
+            "agentx": model,
+            "plans": plans,
         }
 
     # Stage 1: capacity. The baseline is what round one measures: for a

@@ -62,9 +62,11 @@
         "router.predicted_latency",
         "router.epp_replicas",
         "engine.fleet_knob",
-        "platform.capacity"
+        "platform.capacity",
+        "operating_point.concurrency",
+        "engine.role_knob"
       ],
-      "description": "The llm-d arm taxonomy entry; decides what the cold change is and which inner-sweep knobs open. `topology.pd_shape` moves an existing split to a neighbouring xP:yD point (prefill and decode replica counts) and sweeps the P/D knobs there."
+      "description": "The llm-d arm taxonomy entry; decides what the cold change is and which inner-sweep knobs open. `topology.pd_shape` moves an existing split to a neighbouring xP:yD point (prefill and decode replica counts) and sweeps the P/D knobs there. `operating_point.concurrency` moves a closed-loop (AgentX) workload's sessions-in-flight -- a bench-only change. `engine.role_knob` sets one whitelisted knob on one pool through the recipe's knob map."
     },
     "claim": {
       "type": "string"

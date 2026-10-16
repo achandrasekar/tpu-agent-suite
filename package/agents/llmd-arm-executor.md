@@ -91,7 +91,13 @@ python3 {{script:tpu-llmd/seed_arms.py}} apply-sets \
 For the `baseline` arm `sets` holds the capacity-floor replica count
 (`topology.decode.replicas`) on a managed fleet and nothing on an adopted
 one, and the incumbent is the seeded baseline config; the commands are the
-same. `render` validates the config, and a refusal is a verdict, not a
+same. An AgentX study's arms carry `workload.concurrency` (the operating
+point) and `operating_point.concurrency` arms change *only* that: render,
+skip `apply`/`wait` when the release is already up with the same
+`config_digest` minus the concurrency (the orchestrator passes the live
+release), and go straight to **Phase 2**. `bench --stage slo` measures the
+config's concurrency; `--stage sweep` measures the spec's whole ladder and
+is what a submission needs, never an arm. `render` validates the config, and a refusal is a verdict, not a
 retry:
 
 - `ADOPTED_FLEET_IMMUTABLE` -- the arm would change model servers this
@@ -162,8 +168,11 @@ python3 {{script:tpu-llmd/evaluate_llmd_arm.py}} ledger --ledger <work>/ledger.j
 
 `reconfigure` classifies each path: **hot** (`router.*` weights and plugin
 parameters) is an EPP ConfigMap change and returns within seconds; **warm**
-(`engine.*`, `kv.block_size`) rolls the model-server Deployment and needs
-`wait`; **cold** paths are refused with `COLD_PATH` -- those belong to a
+(`engine.*`, `kv.block_size`, `topology.<role>.engine.*`) rolls the
+model-server Deployment and needs `wait`; **bench** (`workload.concurrency`,
+the closed-loop operating point of an AgentX workload) re-renders the
+benchmark only -- nothing on the cluster changes, the next `bench` runs the
+new point; **cold** paths are refused with `COLD_PATH` -- those belong to a
 different arm, never force them here. `{{reference:tpu-llmd/SEARCH.md}}` gives
 the ladder to walk for each knob and when to stop early. Rules that hold
 regardless:

@@ -20,6 +20,7 @@ scripts:
   - scripts/tpu-llmd/plan_arms.py
   - scripts/tpu-llmd/seed_arms.py
   - scripts/tpu-llmd/size_pd.py
+  - scripts/tpu-llmd/agentx_search.py
 references:
   - references/tpu-llmd/SEARCH.md
   - references/tpu-llmd/ROUTER.md
@@ -97,6 +98,22 @@ rules, and you do not override them:
       --incumbent <incumbent llmd-config.json> --profile <metrics.json> \
       --report <llmd-bench-report.json> --out <work>/sizing
   ```
+
+- **An AgentX study climbs an operating point.** When the workload is
+  `workload.agentx` (closed-loop sessions, ranked on total tok/s per chip,
+  qualifying at TTFT p50 <= 5 s) the script hands the round to
+  `agentx_search.propose` instead: the shape is sized in **sessions per
+  engine** (`recipe.measured.sessions_per_{prefill,decode}_engine`, with
+  default priors 96/112), and the arms are
+  `operating_point.concurrency` (the next rung of the spec's ladder while
+  the gate holds and total/chip still rises), `router.profile`
+  (`agentx-turn-priority` against `agentx-session-affinity`),
+  `engine.role_knob` (only the knobs the recipe's `launch.knobs` maps),
+  and the `topology.pd_shape` neighbour the cliff attribution names from
+  the last point's role samples and prefix-hit rates (prefill cache
+  thrash -> +1P; decode KV saturation -> +1D or `max_num_seqs`). The same
+  bounds apply: reorder on named evidence, never add a shape or a knob the
+  script did not derive. `{{reference:tpu-llmd/SEARCH.md}}` has the order.
 
 ## 2. Apply judgement, within bounds
 

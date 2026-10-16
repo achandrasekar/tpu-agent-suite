@@ -43,6 +43,7 @@ seed_arms = _load("seed_arms")
 evaluate_llmd_arm = _load("evaluate_llmd_arm")
 plan_arms = _load("plan_arms")
 size_pd = _load("size_pd")
+agentx_search = _load("agentx_search")
 engine_escalation = _load("engine_escalation")
 recipe_bump = _load("recipe_bump")
 promote_release = _load("promote_release")
@@ -1285,6 +1286,216 @@ class RecipeBumpTest(_Quiet):
             doc = self._run(tmp, self._engine_state(), {"arms": {}})
             self.assertEqual(doc["status"], "no_delta")
             self.assertFalse((tmp / "serving-recipe.v2.json").exists())
+
+
+AGENTX_RECIPE = {
+    "model": "Qwen/Qwen3.5-397B-A17B-FP8",
+    "image": "example/torchtpu-vllm:infx",
+    "accelerator": {"tpu_accelerator": "tpu7x", "tpu_topology": "2x2x1",
+                    "chips_per_host": 4},
+    "tensor_parallel": 8,
+    "router_images": {"epp": "ghcr.io/llm-d/llm-d-router-endpoint-picker@sha256:abc",
+                      "sidecar": "ghcr.io/llm-d/llm-d-router-disagg-sidecar@sha256:def"},
+    "launch": {"command": ["bash", "server.sh"],
+               "ports": {"prefill": 8000, "decode": 7200},
+               "knobs": {"max_num_seqs": {"env": "MAX_NUM_SEQS_DECODE",
+                                          "roles": ["decode"]},
+                         "kv_cpu_offload_bytes": {
+                             "env": "PREFILL_KV_CPU_OFFLOAD_BYTES",
+                             "roles": ["prefill"], "unit": "GiB"}}},
+    "measured": {"sessions_per_prefill_engine": 96,
+                 "sessions_per_decode_engine": 112},
+}
+AGENTX_SPEC = {
+    "name": "qwen35-agentx",
+    "workload": {"agentx": {"concurrency": [96, 192, 240, 288],
+                            "fast": True}},
+    "budget": {"max_chips": 24, "accelerator": "tpu7x"},
+}
+
+
+def _agentx_report(*, admissible: bool, ttft_p50_ms: float,
+                   prefill_hit: float | None, dec_running: float,
+                   dec_kv: float, pf_waiting: float = 0.0,
+                   total_per_chip: float = 30000.0) -> dict:
+    return {
+        "admissible": admissible,
+        "metrics": {"total_tokens_per_s_per_chip": {"value": total_per_chip}},
+        "tenants": {"agentx": {
+            "slo": {"ttft_p50_ms": {"bound_ms": 5000,
+                                    "measured_ms": ttft_p50_ms,
+                                    "pass": ttft_p50_ms <= 5000}},
+            "replicates": [{
+                "agentx": {"gpu_prefix_hit_rate": prefill_hit},
+                "roles": {
+                    "prefill": {"pods": 1, "requests_waiting_max": pf_waiting,
+                                "prefix_hit_rate": prefill_hit},
+                    "decode": {"pods": 1, "requests_running_max": dec_running,
+                               "kv_util_max": dec_kv}}}]}}}
+
+
+class AgentXSearchTest(_Quiet):
+    """The closed-loop hill-climb: seed, climb, attribute, move the shape."""
+
+    def _profile(self):
+        from framework.deploy import workload  # noqa: PLC0415
+        return workload.resolve_workload(json.loads(json.dumps(AGENTX_SPEC)))
+
+    def test_seed_opens_on_sessions_per_engine_and_the_router_ab(self):
+        arms, plans = seed_arms.seed(self._profile(), AGENTX_RECIPE,
+                                     max_chips=24)
+        by_id = {a["arm"]: a for a in arms["arms"]}
+        base = plans["plans"]["baseline"]["sets"]
+        # 96 sessions / 96 per prefill = 1P; / 112 per decode = 1D.
+        self.assertEqual(base["topology.prefill"]["replicas"], 1)
+        self.assertEqual(base["topology.decode.replicas"], 1)
+        self.assertEqual(base["workload.concurrency"], 96)
+        self.assertEqual(base["router.profile"], "agentx-turn-priority")
+        self.assertEqual(plans["plans"]["c1"]["arm_kind"],
+                         "operating_point.concurrency")
+        self.assertEqual(plans["plans"]["c1"]["sets"],
+                         {"workload.concurrency": 192})
+        self.assertEqual(plans["plans"]["r1"]["sets"],
+                         {"router.profile": "agentx-session-affinity"})
+        # Only the knobs the recipe maps become arms.
+        kinds = {k: v["arm_kind"] for k, v in plans["plans"].items()}
+        role_knobs = [plans["plans"][k]["sets"] for k, v in kinds.items()
+                      if v == "engine.role_knob"]
+        self.assertEqual(role_knobs, [
+            {"topology.decode.engine.max_num_seqs": 48},
+            {"topology.prefill.engine.kv_cpu_offload_bytes": 256}])
+        self.assertEqual(by_id["baseline"]["kind"], "fleet-topology")
+        self.assertEqual(by_id["c1"]["status"], "open")
+        self.assertEqual(plans["agentx"]["opening"]["provenance"], "measured")
+        # Without router images the v0.11.0 P/D profile is the baseline and
+        # there is no A/B; 240 sessions open 3P:3D.
+        plain = {k: v for k, v in AGENTX_RECIPE.items() if k != "router_images"}
+        spec = json.loads(json.dumps(AGENTX_SPEC))
+        spec["workload"]["agentx"]["concurrency"] = [240]
+        from framework.deploy import workload  # noqa: PLC0415
+        _, plans2 = seed_arms.seed(workload.resolve_workload(spec), plain,
+                                   max_chips=24)
+        b2 = plans2["plans"]["baseline"]["sets"]
+        self.assertEqual((b2["topology.prefill"]["replicas"],
+                          b2["topology.decode.replicas"]), (3, 3))
+        self.assertEqual(b2["router.profile"], "sticky-until-saturated")
+        self.assertNotIn("r1", plans2["plans"])
+
+    def test_attribution_reads_cliff_signatures(self):
+        from framework.deploy import render  # noqa: PLC0415
+        inc = render.default_config(AGENTX_RECIPE)
+        inc["topology"]["mode"] = "disaggregated"
+        inc["topology"]["prefill"] = {"replicas": 1, "tp": 8}
+        inc["topology"]["decode"]["engine"] = {"max_num_seqs": 32}
+        decode_cliff = _agentx_report(admissible=False, ttft_p50_ms=52000,
+                                      prefill_hit=0.35, dec_running=32,
+                                      dec_kv=0.91)
+        att = agentx_search.attribute(decode_cliff, inc)
+        self.assertEqual((att["role"], att["kind"]),
+                         ("decode", "memory-capacity"))
+        prefill_cliff = _agentx_report(admissible=False, ttft_p50_ms=127000,
+                                       prefill_hit=0.40, dec_running=17,
+                                       dec_kv=0.34, pf_waiting=200)
+        att = agentx_search.attribute(prefill_cliff, inc)
+        self.assertEqual(att["role"], "prefill")
+        healthy = _agentx_report(admissible=True, ttft_p50_ms=2650,
+                                 prefill_hit=0.83, dec_running=20, dec_kv=0.5)
+        self.assertEqual(agentx_search.attribute(healthy, inc)["role"],
+                         "none")
+        queued = _agentx_report(admissible=False, ttft_p50_ms=6000,
+                                prefill_hit=0.82, dec_running=10, dec_kv=0.3)
+        att = agentx_search.attribute(queued, inc)
+        self.assertEqual((att["role"], att["kind"]),
+                         ("prefill", "scheduler-batching"))
+
+    def test_propose_climbs_then_moves_the_bound_axis(self):
+        from framework.deploy import render  # noqa: PLC0415
+        inc = render.default_config(AGENTX_RECIPE)
+        inc["topology"]["mode"] = "disaggregated"
+        inc["topology"]["prefill"] = {"replicas": 2, "tp": 8}
+        inc["topology"]["decode"]["replicas"] = 2
+        inc["router"]["profile"] = "agentx-session-affinity"
+        inc["workload"]["concurrency"] = 192
+        collected: list[tuple[str, dict]] = []
+
+        def add(arm_kind, claim, *, share, headroom, sets, rationale,
+                prerequisites=None):
+            collected.append((arm_kind, sets))
+
+        # Qualifying at 192 on 2P:2D with nothing saturated: climb to 240
+        # first; no router A/B again once both profiles were measured.
+        healthy = _agentx_report(admissible=True, ttft_p50_ms=2800,
+                                 prefill_hit=0.83, dec_running=15, dec_kv=0.36)
+        decided = [{"arm": "r1", "arm_kind": "router.profile",
+                    "sets": {"router.profile": "agentx-turn-priority"},
+                    "verdict": "loss"}]
+        agentx_search.propose(self._profile(), AGENTX_RECIPE, inc,
+                              decided=decided, incumbent_report=healthy,
+                              max_chips=24, chips_per=4, add=add)
+        self.assertEqual(collected[0],
+                         ("operating_point.concurrency",
+                          {"workload.concurrency": 240}))
+        self.assertFalse(any(k == "router.profile" for k, _ in collected))
+        shapes = [s for k, s in collected if k == "topology.pd_shape"]
+        # Both pools idle and qualifying: leaner shapes are proposed.
+        self.assertIn({"topology.prefill.replicas": 1,
+                       "topology.decode.replicas": 2}, shapes)
+        # Decode-saturated and failing: move a slice to decode, no climb.
+        collected.clear()
+        cliff = _agentx_report(admissible=False, ttft_p50_ms=52000,
+                               prefill_hit=0.35, dec_running=32, dec_kv=0.91)
+        inc["topology"]["decode"]["engine"] = {"max_num_seqs": 32}
+        agentx_search.propose(self._profile(), AGENTX_RECIPE, inc,
+                              decided=decided, incumbent_report=cliff,
+                              max_chips=24, chips_per=4, add=add)
+        kinds = [k for k, _ in collected]
+        self.assertNotIn("operating_point.concurrency", kinds)
+        shapes = [s for k, s in collected if k == "topology.pd_shape"]
+        self.assertEqual(shapes[0], {"topology.prefill.replicas": 1,
+                                     "topology.decode.replicas": 3})
+        # Failing with no saturation: back off the ladder.
+        collected.clear()
+        knee = _agentx_report(admissible=False, ttft_p50_ms=6000,
+                              prefill_hit=0.82, dec_running=10, dec_kv=0.3)
+        knee["tenants"]["agentx"]["replicates"][0]["roles"]["prefill"][
+            "requests_waiting_max"] = 0
+        agentx_search.propose(self._profile(), AGENTX_RECIPE, inc,
+                              decided=decided, incumbent_report=knee,
+                              max_chips=24, chips_per=4, add=add)
+        att = agentx_search.attribute(knee, inc)
+        self.assertEqual(att["role"], "prefill")  # TTFT failed -> prefill
+        # (a TTFT failure without saturation names prefill queueing, so the
+        # shape moves toward prefill rather than backing off)
+        shapes = [s for k, s in collected if k == "topology.pd_shape"]
+        self.assertEqual(shapes[0]["topology.prefill.replicas"], 3)
+
+    def test_plan_arms_routes_agentx_specs(self):
+        from framework.deploy import render  # noqa: PLC0415
+        inc = render.default_config(AGENTX_RECIPE)
+        inc["topology"]["mode"] = "disaggregated"
+        inc["topology"]["prefill"] = {"replicas": 1, "tp": 8}
+        inc["router"]["profile"] = "agentx-turn-priority"
+        inc["workload"]["concurrency"] = 96
+        rep = _agentx_report(admissible=True, ttft_p50_ms=2540,
+                             prefill_hit=0.82, dec_running=18, dec_kv=0.45)
+        with tempfile.TemporaryDirectory() as d:
+            tmp = pathlib.Path(d)
+            (tmp / "spec.json").write_text(json.dumps(AGENTX_SPEC))
+            (tmp / "recipe.json").write_text(json.dumps(AGENTX_RECIPE))
+            (tmp / "inc.json").write_text(json.dumps(inc))
+            (tmp / "report.json").write_text(json.dumps(rep))
+            result = plan_arms.propose({
+                "run_id": "r", "study_id": "s",
+                "workload_spec_path": str(tmp / "spec.json"),
+                "recipe_path": str(tmp / "recipe.json"),
+                "incumbent_config_path": str(tmp / "inc.json"),
+                "incumbent_report_path": str(tmp / "report.json"),
+                "decided_arms": [], "open_arms": [], "max_new_arms": 4})
+        self.assertEqual(result["status"], "planned")
+        kinds = [result["plans"][a["arm"]]["arm_kind"] for a in result["arms"]]
+        self.assertEqual(kinds[0], "operating_point.concurrency")
+        self.assertIn("router.profile", kinds)
+        self.assertEqual(result["model"]["attribution"]["role"], "none")
 
 
 class ProductionGuardTest(unittest.TestCase):
