@@ -255,3 +255,19 @@ real P/D transfer cost, real multi-host startup — is listed in the result's
 - The sim's P/D and KV-event fidelity bounds what the sim run proves;
   the report names each gap.
 
+## 11. Validation on kind
+
+Validated on a local kind cluster with `llm-d-inference-sim` v1.0.0 as the
+engine:
+
+- **Platform:** `preflight --fix --sim` installs GAIE CRDs v1.5.0, the
+  `llm-d-router` CRDs v0.11.0, and LeaderWorkerSet v0.11.1; the probe
+  short-circuits to `mode: sim`.
+- **Multi-host (M5a):** A `hosts: 2` decode pool renders as an LWS, `wait`
+  verifies LWS readiness, the Service and the EPP select leaders only, and the
+  `decode-pod-kill` drill verifies group recreation by pod UID.
+- **End-to-end loop (M5c–M5f):** The sizer and escalation rule name the load
+  generator on a `client_limited` report rather than attributing it to a pool;
+  every bench report carries a `harness_digest` checked against the baseline;
+  and `recipe_bump.py` opens a successor study (`<study_id>-v<N+1>`) when
+  re-entering after an engine study win.
