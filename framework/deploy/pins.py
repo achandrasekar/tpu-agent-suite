@@ -79,6 +79,9 @@ PROBE_CURL_IMAGE = "curlimages/curl:8.11.1"
 # Labels this runtime puts on everything it creates, so status, teardown and
 # the reaper find a release by one selector and never by name pattern.
 RELEASE_LABEL = "tpu-coworker.llmd/release"
+# On the weights PVC / snapshot / download Job `deploy stage-weights`
+# creates; they outlive releases and the reaper leaves them alone.
+WEIGHTS_LABEL = "tpu-coworker.llmd/weights"
 PRODUCTION_LABEL = "tpu-coworker.llmd/production"
 MANAGED_BY_LABEL = "app.kubernetes.io/managed-by"
 MANAGED_BY_VALUE = "tpu-coworker"

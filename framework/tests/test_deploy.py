@@ -2512,6 +2512,174 @@ class AgentXWorkloadTest(unittest.TestCase):
         self.assertGreater(script.rfind(render.AGENTX_POINT_FILE),
                            script.rfind(render.AGENTX_SERVER_METRICS_SUMMARY_FILE))
 
+    def test_source_patches_ride_in_a_configmap_and_git_apply_after_clone(self):
+        """A change the pinned ref lacks (such as an offload env hook)
+        travels as a unified diff in the recipe: the CLI inlines the
+        file, the release holds it with its sha256, the clone init
+        container applies it, and the Deployment mounts it."""
+        recipe = copy.deepcopy(AGENTX_RECIPE)
+        diff = ("--- a/server.sh\n+++ b/server.sh\n@@ -1 +1,2 @@\n echo hi\n"
+                "+echo offload\n")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "patches").mkdir()
+            (root / "patches" / "offload.patch").write_text(diff)
+            recipe["source"]["patches"] = [{
+                "name": "kv offload", "path": "patches/offload.patch",
+                "why": "not in pinned ref"}]
+            (root / "recipe.json").write_text(json.dumps(recipe))
+            loaded = cli._load_recipe(str(root / "recipe.json"))
+            patch = loaded["source"]["patches"][0]
+            self.assertEqual(patch["content"], diff)
+            self.assertEqual(len(patch["sha256"]), 64)
+            profile = workload.resolve_workload(copy.deepcopy(AGENTX_SPEC))
+            cfg = render.default_config(loaded, replicas=1)
+            out = root / "release"
+            render.render_release(name="agx", config=cfg, recipe=loaded,
+                                  profile=profile, env=dict(ENV_SUBSET),
+                                  out_dir=out, now="2026-10-17T00:00:00+00:00")
+            manifests = json.loads((out / "manifests" /
+                                    "10-modelserver.json").read_text())
+        items = manifests["items"]
+        cm = next(i for i in items if i["kind"] == "ConfigMap"
+                  and i["metadata"]["name"] == "agx-source-patches")
+        self.assertEqual(cm["data"], {"00-kv-offload.patch": diff})
+        dep = next(i for i in items if i["kind"] == "Deployment")
+        pod = dep["spec"]["template"]["spec"]
+        clone = next(c for c in pod["initContainers"] if c["name"] == "clone")
+        self.assertIn("git apply --verbose", clone["args"][0])
+        self.assertIn(render.SOURCE_PATCH_MOUNT, clone["args"][0])
+        self.assertIn({"name": "source-patches",
+                       "mountPath": render.SOURCE_PATCH_MOUNT,
+                       "readOnly": True}, clone["volumeMounts"])
+        self.assertIn({"name": "source-patches",
+                       "configMap": {"name": "agx-source-patches"}},
+                      pod["volumes"])
+        # A patch given by path the CLI cannot find is refused up front.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            recipe["source"]["patches"] = [{"name": "x", "path": "missing.patch"}]
+            (root / "recipe.json").write_text(json.dumps(recipe))
+            with self.assertRaises(DeployError):
+                cli._load_recipe(str(root / "recipe.json"))
+
+    def test_stage_weights_creates_the_claim_and_the_download_job(self):
+        """The recipe mounts `qwen-cache-ro` read-only at /mnt/models-ro
+        and reads `MODEL_HUB_CACHE=/mnt/models-ro/hub`; staging a plain
+        RWO claim creates it and runs `hf download` into `hub/` on a CPU
+        node with the HF token Secret; the read-only path snapshots a
+        populated `<pvc>-rw` and clones it ReadOnlyMany."""
+        from framework.deploy import weights  # noqa: PLC0415
+        recipe = copy.deepcopy(AGENTX_RECIPE)
+        claims = weights.recipe_claims(recipe)
+        self.assertEqual(claims[0]["claim"], "qwen-cache-ro")
+        self.assertTrue(claims[0]["read_only"])
+        self.assertEqual(claims[0]["hub_subdir"], "hub")
+        env = config.DeployEnv(namespace="llmd-study",
+                               cpu_node_selector={"pool": "cpu"})
+        # The Job succeeds on the second poll.
+        polls = {"n": 0}
+
+        class Runner(FakeRunner):
+            def __call__(self, cmd, *, stdin=None, timeout=None):
+                joined = " ".join(cmd)
+                if "get pvc" in joined and "-o json" in joined:
+                    return subprocess.CompletedProcess(cmd, 1, "", "NotFound")
+                if "get job" in joined and "-o json" in joined:
+                    polls["n"] += 1
+                    if polls["n"] == 1:
+                        return subprocess.CompletedProcess(cmd, 1, "", "NotFound")
+                    return subprocess.CompletedProcess(cmd, 0, json.dumps(
+                        {"status": {"succeeded": 1}}), "")
+                return super().__call__(cmd, stdin=stdin, timeout=timeout)
+        runner = Runner(logs="===STAGED===\nmodels--Qwen--Qwen3.5-397B-A17B-FP8")
+        result = weights.stage_weights(
+            env, recipe=recipe, runner=runner, sleep=lambda s: None,
+            clock=iter(range(0, 10 ** 6, 20)).__next__)
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["claim"], "qwen-cache-ro")
+        applied = [json.loads(s) for s in runner.stdins if s]
+        kinds = [(d["kind"], d["metadata"]["name"]) for d in applied]
+        self.assertIn(("PersistentVolumeClaim", "qwen-cache-ro"), kinds)
+        self.assertIn(("Job", "stage-weights-qwen-cache-ro"), kinds)
+        pvc = next(d for d in applied if d["kind"] == "PersistentVolumeClaim")
+        self.assertEqual(pvc["spec"]["accessModes"], ["ReadWriteOnce"])
+        self.assertEqual(pvc["spec"]["resources"]["requests"]["storage"],
+                         weights.DEFAULT_SIZE)
+        job = next(d for d in applied if d["kind"] == "Job")
+        pod = job["spec"]["template"]["spec"]
+        self.assertEqual(pod["nodeSelector"], {"pool": "cpu"})
+        self.assertNotIn("tolerations", pod)
+        script = pod["containers"][0]["args"][0]
+        self.assertIn('hf download "Qwen/Qwen3.5-397B-A17B-FP8"', script)
+        self.assertIn("HF_HUB_CACHE=\"/mnt/weights/hub\"", script)
+        self.assertEqual(pod["containers"][0]["env"][-1]["valueFrom"]
+                         ["secretKeyRef"]["name"], env.hf_token_secret)
+        self.assertIn("models--Qwen", result["job_log_tail"])
+        # A ReadOnlyMany claim cannot be filled by a Job.
+        with self.assertRaises(DeployError):
+            weights.stage_weights(env, recipe=recipe, runner=Runner(),
+                                  access_mode="ReadOnlyMany", wait=False)
+        # The read-only path: <pvc>-rw + Job, VolumeSnapshot, ROX clone.
+        polls["n"] = 0
+
+        class SnapRunner(Runner):
+            seen_snapshot = False
+
+            def __call__(self, cmd, *, stdin=None, timeout=None):
+                joined = " ".join(cmd)
+                if "get volumesnapshot" in joined and "-o json" in joined:
+                    return subprocess.CompletedProcess(cmd, 0, json.dumps(
+                        {"status": {"readyToUse": True}}), "")
+                if "get volumesnapshot" in joined and not self.seen_snapshot:
+                    self.seen_snapshot = True   # absent until created
+                    return subprocess.CompletedProcess(cmd, 1, "", "NotFound")
+                return super().__call__(cmd, stdin=stdin, timeout=timeout)
+        runner = SnapRunner()
+        result = weights.stage_weights(
+            env, recipe=recipe, runner=runner, ro_via_snapshot="pd-snapshot-class",
+            storage_class="hyperdisk-ml-sc", sleep=lambda s: None,
+            clock=iter(range(0, 10 ** 6, 20)).__next__)
+        self.assertEqual(result["status"], "completed")
+        applied = [json.loads(s) for s in runner.stdins if s]
+        kinds = [(d["kind"], d["metadata"]["name"]) for d in applied]
+        self.assertEqual(kinds, [
+            ("PersistentVolumeClaim", "qwen-cache-ro-rw"),
+            ("Job", "stage-weights-qwen-cache-ro-rw"),
+            ("VolumeSnapshot", "qwen-cache-ro-snap"),
+            ("PersistentVolumeClaim", "qwen-cache-ro")])
+        ro = applied[-1]["spec"]
+        self.assertEqual(ro["accessModes"], ["ReadOnlyMany"])
+        self.assertEqual(ro["dataSource"]["name"], "qwen-cache-ro-snap")
+        self.assertEqual(ro["storageClassName"], "hyperdisk-ml-sc")
+        # --from-snapshot: no Job at all.
+        runner = Runner()
+        result = weights.stage_weights(env, recipe=recipe, runner=runner,
+                                       access_mode="ReadOnlyMany",
+                                       from_snapshot="qwen-cache-ro-snap")
+        self.assertEqual(result["populated"], "from_snapshot")
+        self.assertFalse(runner.matching("apply") and any(
+            '"Job"' in (s or "") for s in runner.stdins))
+
+    def test_preflight_reports_the_recipes_claims_and_source_secret(self):
+        from framework.deploy import preflight  # noqa: PLC0415
+        env = config.DeployEnv(namespace="llmd-study", tpu_accelerator="tpu7x",
+                               tpu_topology="2x2x1")
+        recipe = copy.deepcopy(AGENTX_RECIPE)
+        runner = FakeRunner(fail={"get pvc qwen-cache-ro": "NotFound",
+                                  "get secret infx-token": "NotFound"})
+        with mock.patch.object(preflight, "tools_present", return_value={
+                "kubectl": "/usr/bin/kubectl", "helm": "/usr/bin/helm",
+                "gcloud": None}):
+            report = preflight.run_preflight(env, runner=runner, recipe=recipe)
+        checks = {c["name"]: c for c in report["checks"]}
+        self.assertEqual(checks["weights.pvc.qwen-cache-ro"]["status"], "fail")
+        self.assertIn("stage-weights", checks["weights.pvc.qwen-cache-ro"]["fix"])
+        self.assertIn("--ro-via-snapshot",
+                      checks["weights.pvc.qwen-cache-ro"]["fix"])
+        self.assertEqual(checks["secret.source_token"]["status"], "fail")
+        self.assertIn("weights.pvc.qwen-cache-ro", report["failed"])
+
     def test_concurrency_is_a_bench_path(self):
         self.assertEqual(release.classify_path("workload.concurrency"),
                          "bench")

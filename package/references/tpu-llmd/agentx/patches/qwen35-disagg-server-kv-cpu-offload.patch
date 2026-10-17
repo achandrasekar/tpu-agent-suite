@@ -1,0 +1,17 @@
+diff --git a/benchmarks/multi_node/agentic/qwen3.5_fp8_tpuv7_vllm-disagg_server.sh b/benchmarks/multi_node/agentic/qwen3.5_fp8_tpuv7_vllm-disagg_server.sh
+index b9d1d5d2..33a78648 100755
+--- a/benchmarks/multi_node/agentic/qwen3.5_fp8_tpuv7_vllm-disagg_server.sh
++++ b/benchmarks/multi_node/agentic/qwen3.5_fp8_tpuv7_vllm-disagg_server.sh
+@@ -275,6 +275,12 @@ fi
+ 
+ COMPILATION_CONFIG="{\"backend\":\"vllm_torchtpu.compilation.tpu_compiler.TpuCompilerAdaptor\",\"compile_sizes\":[${COMPILE_SIZES}],\"inductor_compile_config\":{\"enable_auto_functionalized_v2\":false,\"size_asserts\":false,\"alignment_asserts\":false,\"scalar_asserts\":false}}"
+ KV_TRANSFER_CONFIG="{\"kv_connector\":\"TPURaidenConnector\",\"kv_connector_module_path\":\"vllm_torchtpu.distributed.kv_transfer.tpu_connector\",\"kv_role\":\"${KV_ROLE}\",\"kv_port\":14579}"
++# Optional host-DRAM prefix cache for this leg: the Raiden offloading connector next to the
++# P/D connector behind TPUMultiConnector. Off unless PREFILL_/DECODE_KV_CPU_OFFLOAD_BYTES is set.
++if [ "$ROLE" = "prefill" ]; then CPU_OFFLOAD_BYTES="${PREFILL_KV_CPU_OFFLOAD_BYTES:-}"; else CPU_OFFLOAD_BYTES="${DECODE_KV_CPU_OFFLOAD_BYTES:-}"; fi
++if [ -n "$CPU_OFFLOAD_BYTES" ] && [ "$CPU_OFFLOAD_BYTES" != "0" ]; then
++    KV_TRANSFER_CONFIG="{\"kv_connector\":\"TPUMultiConnector\",\"kv_connector_module_path\":\"vllm_torchtpu.distributed.kv_transfer.tpu_multi_connector\",\"kv_role\":\"${KV_ROLE}\",\"kv_connector_extra_config\":{\"connectors\":[${KV_TRANSFER_CONFIG},{\"kv_connector\":\"TPURaidenOffloadingConnector\",\"kv_connector_module_path\":\"vllm_torchtpu.offload.raiden_connector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"cpu_bytes_to_use\":${CPU_OFFLOAD_BYTES}}}]}}"
++fi
+ 
+ rm -f /tmp/libtpu_lockfile* /dev/shm/libtpu_lockfile* 2>/dev/null || true
+ SERVER_LOG="${SERVER_LOG:-/logs/server.log}"

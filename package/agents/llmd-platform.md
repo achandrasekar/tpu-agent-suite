@@ -36,19 +36,52 @@ is missing return `invalid_input`.
 ## 1. Preflight
 
 ```bash
-{{runtime}} deploy preflight [--fix]
+{{runtime}} deploy preflight [--fix] [--sim] [--recipe <recipe_path>]
 ```
 
 Pass `--fix` only when the request says `fix: true`, and `--sim` when the
 request says `sim: true` (a simulated fleet needs no TPU node; the check
-becomes a warning and the report still names it). The verb reads the
-cluster named by the package environment's `llmd` section and checks, in
-order: the CLI tools it needs, cluster reach, the study namespace (created by
-`--fix`), the Gateway API Inference Extension CRDs at the pinned version
-(installed by `--fix`), the Hugging Face token secret, TPU nodes and free
-chips, the Managed Prometheus `PodMonitoring` CRD, and that the standalone
-router chart is reachable. `{{reference:tpu-llmd/PLATFORM.md}}` lists each
-check, what `--fix` is allowed to touch and what it deliberately is not.
+becomes a warning and the report still names it). Pass `--recipe` whenever
+the request carries `recipe_path`: the verb then also checks what *that*
+recipe needs on the cluster -- every PersistentVolumeClaim its pod mounts
+(`weights.pvc.<claim>`, the weights volume a script-driven engine reads
+with `local_files_only`) and the Secret its source clone reads
+(`secret.source_token`). The verb reads the cluster named by the package
+environment's `llmd` section and checks, in order: the CLI tools it needs,
+cluster reach, the study namespace (created by `--fix`), the Gateway API
+Inference Extension CRDs at the pinned version (installed by `--fix`), the
+Hugging Face token secret, the recipe's claims and secret, TPU nodes and
+free chips, the Managed Prometheus `PodMonitoring` CRD, and that the
+standalone router chart is reachable. `{{reference:tpu-llmd/PLATFORM.md}}`
+lists each check, what `--fix` is allowed to touch and what it
+deliberately is not.
+
+### 1.1 Staging weights
+
+A failed `weights.pvc.<claim>` is the one gap you may close yourself, and
+only when the request carries `stage_weights.enabled: true` (it costs disk
+and hours of download, so the orchestrator asks the user first):
+
+```bash
+{{runtime}} deploy stage-weights --recipe <recipe_path> --pvc <claim> \
+    [--size 500Gi] [--storage-class <sc>] \
+    [--ro-via-snapshot <VolumeSnapshotClass> | --from-snapshot <snapshot>] \
+    [--tolerate-tpu] [--no-wait]
+```
+
+It creates the claim when missing and runs a Job that `hf download`s the
+recipe's model (and tokenizer) into the hub layout the engine reads
+(`<mount>/hub/models--<org>--<name>`), with the HF token Secret. A claim
+the recipe mounts **read-only** cannot be filled directly: pass
+`--ro-via-snapshot` so the verb populates `<claim>-rw`, snapshots it and
+creates `<claim>` ReadOnlyMany from the snapshot (the InferenceX
+launcher's Hyperdisk ML layout), or `--from-snapshot` when a populated
+snapshot already exists. Map the request's `stage_weights.*` onto these
+flags one to one; invent none. Save the output as `<work>/weights.json`
+and copy `claim`, `status`, `populated`, `job` into the result's
+`weights` object with `report` pointing at the file. `--no-wait` returns
+once the Job exists; a later preflight reports the claim `Bound` or not.
+Never delete a claim, a snapshot or a staging Job: they outlive studies.
 
 Save the output as `<work>/preflight.json`. Its `ok`, `failed[]`,
 `fixed[]` and `chips_free` go into your result's `preflight` object

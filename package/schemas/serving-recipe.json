@@ -217,6 +217,22 @@
         },
         "mount_path": {
           "type": "string"
+        },
+        "patches": {
+          "type": "array",
+          "description": "Unified diffs applied with `git apply` after the checkout, in order -- for changes the launch script needs that the pinned ref does not carry. Each entry names the patch and gives either `content` (the diff text) or `path` (a file, relative to the recipe file; the CLI inlines it before rendering, so the release holds the diff and its sha256).",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name"],
+            "properties": {
+              "name": {"type": "string"},
+              "path": {"type": "string"},
+              "content": {"type": "string"},
+              "sha256": {"type": "string"},
+              "why": {"type": "string"}
+            }
+          }
         }
       }
     },

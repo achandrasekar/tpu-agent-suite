@@ -26,7 +26,7 @@ from __future__ import annotations
 import dataclasses
 from typing import Any
 
-from . import pins
+from . import pins, weights
 from .config import DeployEnv
 from .kube import DeployError, Kube, tools_present
 
@@ -86,6 +86,7 @@ def run_preflight(env: DeployEnv,
                   *,
                   fix: bool = False,
                   sim: bool = False,
+                  recipe: dict[str, Any] | None = None,
                   runner: Any = None) -> dict[str, Any]:
     """Check the cluster for a study; `sim` relaxes the accelerator check
     for a simulated fleet (no TPU node is needed, and a kind cluster has
@@ -185,6 +186,9 @@ def run_preflight(env: DeployEnv,
               f"create secret {env.hf_token_secret} with key HF_TOKEN in"
               f" namespace {env.namespace}"))
 
+    if recipe:
+        checks += _recipe_checks(kube, env, recipe)
+
     nodes, capacity, free = _tpu_capacity(kube, env.tpu_accelerator)
     checks.append(
         Check("tpu.nodes",
@@ -217,6 +221,34 @@ def run_preflight(env: DeployEnv,
         "chips_allocatable": capacity,
         "chips_free": free
     })
+
+
+def _recipe_checks(kube: Kube, env: DeployEnv, recipe: dict[str, Any]
+                   ) -> list[Check]:
+    """What a particular recipe needs on the cluster before `apply`: the
+    weights claims its pod mounts (filled by `deploy stage-weights`), and
+    the Secret its source clone reads."""
+    checks: list[Check] = []
+    for claim in weights.check_claims(kube, recipe):
+        name = claim["claim"]
+        checks.append(Check(
+            f"weights.pvc.{name}", "ok" if claim["ok"] else "fail",
+            f"{name} {claim['phase'] or 'absent'}"
+            + (f" (mounted read-only at {claim['mount_path']})"
+               if claim["read_only"] else ""),
+            f"stage it: deploy stage-weights --recipe <recipe>"
+            f" --pvc {name}" + (" --ro-via-snapshot <VolumeSnapshotClass>"
+                                if claim["read_only"] else "")))
+    source = recipe.get("source") or {}
+    if source.get("repo") and source.get("token_secret"):
+        ok = kube.exists("secret", str(source["token_secret"]))
+        checks.append(Check(
+            "secret.source_token", "ok" if ok else "fail",
+            f"{source['token_secret']} in {env.namespace}",
+            f"create secret {source['token_secret']} with key"
+            f" {source.get('token_key') or 'token'} (a read token for"
+            f" {source['repo']})"))
+    return checks
 
 
 def _result(env: DeployEnv, checks: list[Check], *, fixed: list[str],

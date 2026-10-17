@@ -1107,9 +1107,57 @@ def _source_init_container(recipe: dict[str, Any]) -> dict[str, Any] | None:
               " git checkout -q FETCH_HEAD;"
               " if [ -f .gitmodules ]; then git submodule update --init"
               " --recursive --depth 1 || true; fi")
+    mounts = [{"name": "workdir", "mountPath": mount}]
+    if source_patches(recipe):
+        # Applied in order after the checkout; a patch that does not apply
+        # fails the init container, which `wait` reports as RELEASE_FAILED
+        # rather than letting the engine run without the change.
+        script += (f"; for p in $(ls {SOURCE_PATCH_MOUNT}/*.patch | sort);"
+                   " do echo \"applying $p\"; git apply --verbose"
+                   " --whitespace=nowarn \"$p\"; done")
+        mounts.append({"name": "source-patches",
+                       "mountPath": SOURCE_PATCH_MOUNT, "readOnly": True})
     return {"name": "clone", "image": "alpine/git:latest",
             "env": token_env, "command": ["sh", "-c"], "args": [script],
-            "volumeMounts": [{"name": "workdir", "mountPath": mount}]}
+            "volumeMounts": mounts}
+
+
+SOURCE_PATCH_MOUNT = "/source-patches"
+
+
+def source_patches(recipe: dict[str, Any]) -> list[dict[str, Any]]:
+    """`source.patches` with content inlined (the CLI resolves `path`
+    against the recipe file before rendering)."""
+    out = []
+    for i, entry in enumerate((recipe.get("source") or {}).get("patches")
+                              or []):
+        if not entry.get("content"):
+            raise DeployError(
+                f"source.patches[{i}] ({entry.get('name')}) has no content;"
+                " give `content` or a `path` the CLI can read",
+                error_code="INVALID_FIELD")
+        name = re.sub(r"[^A-Za-z0-9._-]", "-", str(entry["name"]))
+        out.append({"name": name, "content": str(entry["content"]),
+                    "sha256": hashlib.sha256(
+                        str(entry["content"]).encode("utf-8")).hexdigest(),
+                    "why": entry.get("why")})
+    return out
+
+
+def source_patches_configmap(name: str, recipe: dict[str, Any],
+                             env: dict[str, Any], production: bool
+                             ) -> dict[str, Any] | None:
+    patches = source_patches(recipe)
+    if not patches:
+        return None
+    return {
+        "apiVersion": "v1", "kind": "ConfigMap",
+        "metadata": {"name": f"{name}-source-patches",
+                     "namespace": env["namespace"],
+                     "labels": release_labels(name, production)},
+        "data": {f"{i:02d}-{p['name']}.patch": p["content"]
+                 for i, p in enumerate(patches)},
+    }
 
 
 def _server_deployment(name: str, role: str, recipe: dict[str, Any],
@@ -1330,6 +1378,9 @@ def _server_deployment(name: str, role: str, recipe: dict[str, Any],
         volumes = [v for v in volumes if v["name"] == "dshm"]
     if source_init:
         volumes.append({"name": "workdir", "emptyDir": {}})
+        if source_patches(recipe):
+            volumes.append({"name": "source-patches", "configMap": {
+                "name": f"{name}-source-patches"}})
     volumes += copy.deepcopy(pod_extra.get("volumes") or [])
     pod_spec: dict[str, Any] = {
         "serviceAccountName": f"{name}-modelserver",
@@ -1463,6 +1514,9 @@ def modelserver_manifests(name: str, recipe: dict[str, Any],
             "labels": release_labels(name, production)
         },
     }]
+    patches_cm = source_patches_configmap(name, recipe, env, production)
+    if patches_cm:
+        items.append(patches_cm)
     items.append(_server_deployment(name, ROLE_DECODE, recipe, config, env,
                                     production))
     if pd:

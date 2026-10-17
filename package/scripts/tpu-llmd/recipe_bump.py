@@ -104,11 +104,87 @@ def serving_delta(arm_id: str, bank: dict[str, Any] | None
             "image": serving.get("image") or ""}
 
 
-def apply_delta(recipe: dict[str, Any], delta: dict[str, Any]
-                ) -> tuple[dict[str, Any], list[str]]:
-    """The recipe with the delta applied, and a line per change."""
+def _launch_roles(recipe: dict[str, Any], role: str) -> list[str]:
+    """The `launch.role_env` roles an env delta for `role` lands on: that
+    role under P/D, both roles (every leg the script serves) when the
+    escalation was aggregated or the role has no env block yet."""
+    role_env = (recipe.get("launch") or {}).get("role_env") or {}
+    if role in ("prefill", "decode"):
+        return [role]
+    return sorted(role_env) or ["prefill", "decode"]
+
+
+def _apply_env(env: dict[str, Any], delta_env: dict[str, Any],
+               label: str, changes: list[str]) -> dict[str, Any]:
+    env = dict(env or {})
+    for key, value in delta_env.items():
+        if value is None:
+            if key in env:
+                env.pop(key)
+                changes.append(f"{label}: removed {key}")
+        else:
+            changes.append(f"{label}: {key}={env.get(key, '(absent)')} ->"
+                           f" {value}")
+            env[key] = value
+    return env
+
+
+def _knob_for_flag(recipe: dict[str, Any], flag: str) -> tuple[str, dict] | None:
+    """A `launch.knobs` entry whose `arg` is this vLLM flag, if any."""
+    for name, spec in ((recipe.get("launch") or {}).get("knobs") or {}).items():
+        if isinstance(spec, dict) and spec.get("arg") == flag:
+            return name, spec
+    return None
+
+
+def apply_delta(recipe: dict[str, Any], delta: dict[str, Any],
+                role: str = "aggregated") -> tuple[dict[str, Any], list[str]]:
+    """The recipe with the delta applied, and a line per change.
+
+    A plain recipe takes `args` on its vLLM command line and `env` on the
+    container. A `launch` recipe (a role script builds the command) takes
+    env per role under `launch.role_env.<role>` -- the escalated role, or
+    every role when the escalation was aggregated -- and cannot take a
+    bare vLLM flag: a flag that a `launch.knobs` entry maps (`arg`) is
+    written through that knob's env/arg on its roles; any other flag is
+    reported as `unapplied` for a person to carry into the script.
+    """
     out = copy.deepcopy(recipe)
     changes: list[str] = []
+    launch = out.get("launch") or {}
+    if launch:
+        roles = _launch_roles(out, role)
+        role_env = dict(launch.get("role_env") or {})
+        for flag, value in (delta.get("args") or {}).items():
+            hit = _knob_for_flag(out, flag)
+            if hit is None:
+                changes.append(f"unapplied: {flag}={value} -- the launch"
+                               " script builds the vLLM command and no"
+                               " launch.knobs entry maps this flag; carry it"
+                               " into the script (or map it) by hand")
+                continue
+            name, spec = hit
+            targets = [r for r in roles if r in (spec.get("roles") or roles)]
+            env_key = spec.get("env")
+            for r in targets:
+                if env_key:
+                    role_env[r] = _apply_env(role_env.get(r), {env_key: value},
+                                             f"launch.role_env.{r}", changes)
+                else:
+                    changes.append(f"unapplied: {flag}={value} -- knob {name}"
+                                   " maps an arg but the script's argv is"
+                                   " not editable from the recipe")
+        if delta.get("env"):
+            for r in roles:
+                role_env[r] = _apply_env(role_env.get(r), delta["env"],
+                                         f"launch.role_env.{r}", changes)
+        if roles:
+            launch["role_env"] = role_env
+            out["launch"] = launch
+        if delta.get("image") and delta["image"] != out.get("image"):
+            changes.append(f"image: {out.get('image')} -> {delta['image']}")
+            out["image"] = delta["image"]
+        return out, changes
     args = list(out.get("args") or [])
     for flag, value in (delta.get("args") or {}).items():
         before = [a for a in args if _flag_name(a) == flag]
@@ -225,22 +301,31 @@ def bump(args: argparse.Namespace) -> dict[str, Any]:
                                      encoding="utf-8")
         return doc
     delta = serving_delta(win["arm"], bank)
-    new_recipe, changes = apply_delta(recipe, delta)
-    if changes:
+    new_recipe, changes = apply_delta(recipe, delta, role)
+    unapplied = [c for c in changes if c.startswith("unapplied:")]
+    applied = [c for c in changes if not c.startswith("unapplied:")]
+    doc["unapplied"] = unapplied
+    if applied:
         # Only a reproducible win refreshes the measured block: a number
         # without the change that produced it would mis-size the next
         # fleet.
-        changes += refresh_measured(new_recipe, role,
+        applied += refresh_measured(new_recipe, role,
                                     (win.get("result") or {}).get("metric"))
-    if not changes:
-        doc.update({"status": "no_delta", "winning_arm": win["arm"],
+    if not applied:
+        status = "unapplied" if unapplied else "no_delta"
+        doc.update({"status": status, "winning_arm": win["arm"],
                     "changes": [],
-                    "summary": f"arm {win['arm']} won but recorded no"
-                               " serving delta (target_parameters.serving);"
-                               " the win is reported, not bumped"})
+                    "summary": (f"arm {win['arm']} won but its serving delta"
+                                " cannot be written into a launch recipe"
+                                " (the role script owns the vLLM command):"
+                                f" {'; '.join(unapplied)}" if unapplied else
+                                f"arm {win['arm']} won but recorded no"
+                                " serving delta (target_parameters.serving);"
+                                " the win is reported, not bumped")})
         (out / BUMP_FILE).write_text(json.dumps(doc, indent=2) + "\n",
                                      encoding="utf-8")
         return doc
+    changes = applied
     source = dict(new_recipe.get("source") or {})
     source.update({
         "engine_study_id": state.get("study_id"),

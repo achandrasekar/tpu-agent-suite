@@ -43,6 +43,7 @@ references:
   - references/tpu-llmd/AGENTX.md
   - references/tpu-llmd/agentx/leaderboard.json
   - references/tpu-llmd/agentx/qwen35-397b-tpu7x-llmd.serving-recipe.json
+  - references/tpu-llmd/agentx/patches/qwen35-disagg-server-kv-cpu-offload.patch
 ---
 
 # tpu-llmd Round
@@ -159,11 +160,22 @@ rebuild it from events.
     `study_id`, `image` = the recipe's image, `fix: true`; for an adopted
     fleet also `selector` = the recipe's `fleet.selector`, so the probe
     runs inside a serving pod instead of pulling the image onto a CPU
-    node; for a recipe whose `engine_flavor` is `sim`, `sim: true`). It runs the cluster preflight and probes the image for the
-    KV-events, P/D and offload connectors. If its result is not `checked`
-    or `preflight.ok` is false, record a blocked row (step 6) naming
-    `blockers[]` and stop: no release can be applied to a cluster that is
-    not ready, and every arm would fail the same way. Its
+    node; for a recipe whose `engine_flavor` is `sim`, `sim: true`;
+    always `recipe_path`, so preflight also checks the weights claims and
+    source Secret *this* recipe mounts). It runs the cluster preflight and
+    probes the image for the KV-events, P/D and offload connectors. If
+    the only failed checks are `weights.pvc.<claim>`, the fix is a
+    download of the checkpoint onto a new disk (`deploy stage-weights`;
+    hours and hundreds of GB): in `approve` mode return `needs_input`
+    naming the claim, size and the read-only path it needs, and on the
+    user's yes re-dispatch the platform specialist with
+    `stage_weights: {enabled: true, ...}`; in `auto` mode re-dispatch
+    with `stage_weights.enabled: true` and the recipe's defaults, and
+    record what was staged in the round's summary. For any other failure,
+    or if its result is not `checked` or `preflight.ok` stays false,
+    record a blocked row (step 6) naming `blockers[]` and stop: no
+    release can be applied to a cluster that is not ready, and every arm
+    would fail the same way. Its
     `engine-capabilities.json` path is what the seeder's gate reads next;
     a missing connector blocks the arms that need it, with the reason, and
     never removes them (`{{reference:tpu-llmd/PLATFORM.md}}`).

@@ -38,6 +38,8 @@ needs beyond job submission.
 | `crd.inferencepool` | `inferencepools.inference.networking.k8s.io` absent | **applies the pinned GAIE CRD manifest** | the router's EPP registers an InferencePool even in standalone mode |
 | `crd.inferenceobjective` | `inferenceobjectives.llm-d.ai` absent | **applies the pinned llm-d-router CRD manifest** (the release's `manifests.yaml`) | the chart renders one `InferenceObjective` (`llm-d.ai/v1alpha2`) per tenant; GAIE's bundle does not carry that group, so a GKE cluster with the Inference Gateway CRDs still fails the install without it |
 | `secret.hf_token` | the token secret is not in the namespace | no | create it; a model-server pod without it fails on weight download, after the chips were scheduled |
+| `weights.pvc.<claim>` (with `--recipe`) | a PersistentVolumeClaim the recipe's pod mounts is absent | no -- `deploy stage-weights` does it, on the user's word | a script-driven engine reads its weights with `local_files_only` from that claim; without it every engine pod fails after the chips were scheduled. `Pending` passes (a `WaitForFirstConsumer` class binds on the first pod) |
+| `secret.source_token` (with `--recipe`) | `source.repo` is private and `source.token_secret` is not in the namespace | no | the clone init container cannot fetch the launch script |
 | `tpu.nodes` | no nodes carry the recipe's accelerator label, or fewer free chips than one replica needs | no | add or resize the TPU node pool; `chips_free` is reported for the orchestrator's budget |
 | `crd.leaderworkerset` | `leaderworkersets.leaderworkerset.x-k8s.io` absent (warn) | **applies the pinned LWS release manifest** (server-side) | only a release with a multi-host pool (`topology.<role>.hosts > 1`) needs it; `apply` refuses such a release with `LWS_MISSING` until it is there |
 | `crd.podmonitoring` | Managed Prometheus CRD absent (warn) | no | enable managed collection on the cluster; without it `collect` has nothing to read |
@@ -57,6 +59,36 @@ That removes a cluster prerequisite from the critical path of a study; the
 `gke_gateway` mode exists for a production cluster that already standardises
 on the GKE Inference Gateway
 (https://cloud.google.com/kubernetes-engine/docs/concepts/about-gke-inference-gateway).
+
+## Staging weights (`deploy stage-weights`)
+
+The InferenceX launcher's `populate-qwen-cache` step as a verb. From the
+recipe it takes the claim (`pod.volumes[].persistentVolumeClaim`), the hub
+sub-directory (`launch.role_env.*.MODEL_HUB_CACHE` relative to the
+mount, default `hub`), the model and the tokenizer; it creates the claim
+when missing (`--size`, `--storage-class`, `--access-mode`) and runs a
+Job (`uvx --from 'huggingface_hub>=1.0' hf download`, Xet transfer, the
+`hf_token_secret`) that writes the hub layout the engine's
+`snapshot_download(local_files_only=True)` reads. Placement: the
+environment's `cpu_node_selector`, or `--tolerate-tpu` for a TPU node
+(Hyperdisk ML and some disk classes attach only to certain machine
+types; the launcher populated on a tpu7x node). Idempotent: an existing
+claim and a running or finished Job are reported, not recreated; a failed
+Job is recreated (`restartPolicy: OnFailure` resumes a partial download).
+
+Read-only claims (`ReadOnlyMany`, what a fleet of engine pods on many
+nodes needs) cannot be written by a Job. Two ways:
+
+| flag | what happens |
+| :--- | :--- |
+| `--ro-via-snapshot <VolumeSnapshotClass>` | populate `<claim>-rw` (RWO), create `VolumeSnapshot <claim>-snap`, wait `readyToUse`, create `<claim>` ReadOnlyMany with that `dataSource` and `--storage-class` (GKE: `hyperdisk-ml-sc`). Needs the CSI snapshotter CRDs (`volumesnapshots.snapshot.storage.k8s.io`). |
+| `--from-snapshot <snapshot>` | the clone only, from a snapshot somebody already populated |
+
+Everything it creates carries `tpu-coworker.llmd/weights=true` and is
+**never** removed by `teardown` or the reaper: weights outlive studies.
+Validated on kind (local-path RWO, a tiny public model, `preflight
+--recipe` fail → `Bound`); the Hyperdisk snapshot path is rendered and
+unit-tested, not yet run on GKE.
 
 ## The probe
 

@@ -1313,6 +1313,54 @@ class RecipeBumpTest(_Quiet):
             self.assertEqual(doc["status"], "no_delta")
             self.assertFalse((tmp / "serving-recipe.v2.json").exists())
 
+    def test_launch_recipe_takes_env_per_role_and_flags_through_knobs(self):
+        """A role-script engine has no vLLM argv in the recipe: env lands on
+        `launch.role_env.<escalated role>`, a flag a `launch.knobs` entry
+        maps goes through that knob's env on its roles, any other flag is
+        reported `unapplied` for a person to carry into the script."""
+        recipe = json.loads(json.dumps(AGENTX_RECIPE))
+        recipe["launch"]["role_env"] = {"prefill": {"PREFILL_TP": 8},
+                                        "decode": {"DECODE_TP": 8,
+                                                   "MAX_NUM_SEQS_DECODE": 32}}
+        recipe["launch"]["knobs"]["max_num_seqs"]["arg"] = "--max-num-seqs"
+        delta = {"args": {"--max-num-seqs": 48, "--max-num-batched-tokens": 8192},
+                 "env": {"TPU_HMA_MAX_INFLIGHT_PULLS": "8"}, "image": ""}
+        out, changes = recipe_bump.apply_delta(recipe, delta, "decode")
+        dec, pf = out["launch"]["role_env"]["decode"], out["launch"]["role_env"]["prefill"]
+        self.assertEqual(dec["MAX_NUM_SEQS_DECODE"], 48)
+        self.assertEqual(dec["TPU_HMA_MAX_INFLIGHT_PULLS"], "8")
+        self.assertNotIn("TPU_HMA_MAX_INFLIGHT_PULLS", pf)   # decode only
+        self.assertNotIn("args", out)                        # never argv
+        self.assertEqual(out["env"] if "env" in out else {}, {})
+        unapplied = [c for c in changes if c.startswith("unapplied:")]
+        self.assertEqual(len(unapplied), 1)
+        self.assertIn("--max-num-batched-tokens", unapplied[0])
+        # An aggregated escalation writes env on every role.
+        out2, _ = recipe_bump.apply_delta(recipe, {"env": {"X": "1"}},
+                                          "aggregated")
+        self.assertEqual(out2["launch"]["role_env"]["prefill"]["X"], "1")
+        self.assertEqual(out2["launch"]["role_env"]["decode"]["X"], "1")
+        # Through bump(): a delta of only unmapped flags leaves the recipe
+        # alone and says why.
+        with tempfile.TemporaryDirectory() as d:
+            tmp = pathlib.Path(d)
+            (tmp / "serving-recipe.json").write_text(json.dumps(recipe))
+            (tmp / "estate.json").write_text(json.dumps(self._engine_state()))
+            (tmp / "bank.json").write_text(json.dumps({"arms": {
+                "e-decode-max-seqs": {"target_parameters": {"serving": {
+                    "args": {"--max-num-batched-tokens": 8192}}}}}}))
+            (tmp / "esc.json").write_text(json.dumps(
+                {"study_id": "ax", "role": "decode", "escalation": 1}))
+            import argparse  # noqa: PLC0415
+            doc = recipe_bump.bump(argparse.Namespace(
+                recipe=str(tmp / "serving-recipe.json"),
+                engine_study_state=str(tmp / "estate.json"),
+                hypothesis_bank=str(tmp / "bank.json"),
+                escalation=str(tmp / "esc.json"), out=str(tmp / "bump")))
+            self.assertEqual(doc["status"], "unapplied")
+            self.assertEqual(len(doc["unapplied"]), 1)
+            self.assertFalse((tmp / "serving-recipe.v2.json").exists())
+
 
 AGENTX_RECIPE = {
     "model": "Qwen/Qwen3.5-397B-A17B-FP8",

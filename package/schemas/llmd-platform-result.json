@@ -75,6 +75,35 @@
         "probe_unschedulable"
       ],
       "description": "Why the check did not reach an answer. Nexus-owned, so closed: no `llmd` environment to read, an API server that did not answer, the preflight verb itself erroring, a probe Job that failed, or one that never got a chip."
+    },
+    "weights": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "What `deploy stage-weights` did when the request enabled it: the claim, whether it is populated, the Job, and the report path.",
+      "properties": {
+        "claim": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "completed",
+            "staging",
+            "failed",
+            "timeout",
+            "skipped"
+          ]
+        },
+        "populated": {
+          "type": "string"
+        },
+        "job": {
+          "type": "string"
+        },
+        "report": {
+          "type": "string"
+        }
+      }
     }
   },
   "status_requires": {

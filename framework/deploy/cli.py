@@ -21,6 +21,7 @@ a caller can tell "not yet" from "broken" without parsing text.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import pathlib
 import sys
@@ -40,11 +41,35 @@ from . import preflight as preflight_mod
 from . import probe as probe_mod
 from . import release as release_mod
 from . import render, workload
+from . import weights as weights_mod
 from .config import load_env, release_dir_for
 from .kube import DeployError
 
 EXIT_ERROR = 2
 EXIT_TIMEOUT = 3
+
+
+def _load_recipe(path: str) -> dict[str, Any]:
+    """The recipe with `source.patches[].path` inlined as `content` (read
+    relative to the recipe file) and fingerprinted, so the rendered
+    release carries the diff itself and not a path on someone's disk."""
+    recipe = _load(path)
+    base = pathlib.Path(path).resolve().parent
+    for i, entry in enumerate((recipe.get("source") or {}).get("patches")
+                              or []):
+        if entry.get("content") or not entry.get("path"):
+            continue
+        patch_path = pathlib.Path(entry["path"])
+        if not patch_path.is_absolute():
+            patch_path = base / patch_path
+        if not patch_path.is_file():
+            raise DeployError(
+                f"source.patches[{i}] ({entry.get('name')}): {patch_path}"
+                " does not exist", error_code="INVALID_FIELD")
+        entry["content"] = patch_path.read_text(encoding="utf-8")
+        entry["sha256"] = hashlib.sha256(
+            entry["content"].encode("utf-8")).hexdigest()
+    return recipe
 
 
 def _load(path: str) -> dict[str, Any]:
@@ -96,6 +121,40 @@ def register_deploy_parser(sub: Any) -> None:
                    help="Create the namespace and install GAIE CRDs if missing")
     v.add_argument("--sim", action="store_true",
                    help="A simulated fleet: no TPU node is required")
+    v.add_argument("--recipe", default=None,
+                   help="Also check what this recipe needs on the cluster:"
+                        " its weights PVCs, source token Secret")
+
+    v = verbs.add_parser("stage-weights", parents=[common],
+                         help="Create and populate the weights PVC a recipe"
+                              " mounts (hf download into the hub layout)")
+    v.add_argument("--recipe", required=True)
+    v.add_argument("--pvc", default=None,
+                   help="Claim to stage (default: the first PVC the recipe"
+                        " mounts)")
+    v.add_argument("--size", default=weights_mod.DEFAULT_SIZE)
+    v.add_argument("--storage-class", default=None)
+    v.add_argument("--access-mode", default="ReadWriteOnce",
+                   choices=["ReadWriteOnce", "ReadOnlyMany", "ReadWriteMany"])
+    v.add_argument("--from-snapshot", default=None,
+                   help="Clone the claim from this populated VolumeSnapshot"
+                        " instead of downloading")
+    v.add_argument("--ro-via-snapshot", default=None, metavar="SNAPSHOT_CLASS",
+                   help="Populate <pvc>-rw, snapshot it, and create <pvc>"
+                        " ReadOnlyMany from the snapshot (the InferenceX"
+                        " launcher's layout for Hyperdisk ML)")
+    v.add_argument("--node-selector", action="append", default=[],
+                   metavar="KEY=VALUE",
+                   help="Where the download Job runs (default: the"
+                        " environment's cpu_node_selector)")
+    v.add_argument("--tolerate-tpu", action="store_true",
+                   help="Let the download Job run on a TPU node")
+    v.add_argument("--model", action="append", default=[],
+                   help="Extra repo to stage beside the recipe's model and"
+                        " tokenizer")
+    v.add_argument("--no-wait", action="store_true",
+                   help="Return once the Job is created")
+    v.add_argument("--timeout", type=int, default=weights_mod.DEFAULT_TIMEOUT_S)
 
     v = verbs.add_parser("probe", parents=[common],
                          help="Report what the serving image can do")
@@ -234,9 +293,25 @@ def dispatch(args: argparse.Namespace) -> dict[str, Any] | str:
     action = args.deploy_action
 
     if action == "preflight":
+        recipe = _load_recipe(args.recipe) if getattr(args, "recipe",
+                                                      None) else None
         return preflight_mod.run_preflight(env, fix=args.fix,
                                            sim=bool(getattr(args, "sim",
-                                                            False)))
+                                                            False)),
+                                           recipe=recipe)
+
+    if action == "stage-weights":
+        recipe = _load_recipe(args.recipe)
+        selector = None
+        if args.node_selector:
+            selector = dict(item.split("=", 1) for item in args.node_selector)
+        return weights_mod.stage_weights(
+            env, recipe=recipe, claim=args.pvc, size=args.size,
+            storage_class=args.storage_class, access_mode=args.access_mode,
+            from_snapshot=args.from_snapshot,
+            ro_via_snapshot=args.ro_via_snapshot, node_selector=selector,
+            tolerate_tpu=args.tolerate_tpu, extra_models=args.model,
+            wait=not args.no_wait, timeout_s=args.timeout)
 
     if action == "probe":
         return probe_mod.run_probe(env,
@@ -271,7 +346,7 @@ def dispatch(args: argparse.Namespace) -> dict[str, Any] | str:
         return shown
 
     if action == "render":
-        recipe = _load(args.recipe)
+        recipe = _load_recipe(args.recipe)
         spec_path = pathlib.Path(args.workload)
         profile = workload.resolve_workload(_load(str(spec_path)),
                                             spec_dir=spec_path.parent)

@@ -49,6 +49,43 @@
     "sim": {
       "type": "boolean",
       "description": "The recipe's engine_flavor is sim: preflight reports missing TPU nodes as a warning, and the probe declares the simulator's capabilities instead of running."
+    },
+    "recipe_path": {
+      "type": "string",
+      "description": "The serving recipe the study will deploy. Preflight then also checks what it needs on the cluster: the weights PVCs its pod mounts and the Secret its source clone reads."
+    },
+    "stage_weights": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "When preflight finds a weights claim missing and the request allows it, stage it with `deploy stage-weights` (hf download into the hub layout). Absent = report the gap, stage nothing.",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "size": {
+          "type": "string",
+          "description": "PVC size, e.g. 500Gi"
+        },
+        "storage_class": {
+          "type": "string"
+        },
+        "ro_via_snapshot": {
+          "type": "string",
+          "description": "VolumeSnapshotClass: populate <pvc>-rw, snapshot, clone the claim ReadOnlyMany (Hyperdisk ML layout)."
+        },
+        "from_snapshot": {
+          "type": "string",
+          "description": "An existing populated VolumeSnapshot to clone instead of downloading."
+        },
+        "tolerate_tpu": {
+          "type": "boolean",
+          "description": "Run the download Job on a TPU node (some disk classes attach only there)."
+        },
+        "wait": {
+          "type": "boolean",
+          "description": "Block until populated (default true; a 400 GB checkpoint takes hours)."
+        }
+      }
     }
   },
   "examples": [
