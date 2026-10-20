@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Skill Frontmatter Schema",
+  "description": "YAML frontmatter of a skill document (skills/<name>/SKILL.md). A skill is user-invocable, takes and returns plain text, and may delegate to agents or skills.",
+  "type": "object",
+  "required": [
+    "name",
+    "description"
+  ],
+  "properties": {
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+      "description": "Canonical lowercase skill name, matching the directory that holds SKILL.md."
+    },
+    "description": {
+      "type": "string",
+      "description": "One line the harness shows when listing skills."
+    },
+    "tools": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Canonical tools the skill and its twin agent may use. On harnesses that support skill tool limits (e.g. Claude Code), unlisted tools are removed while the skill is active. Omit to leave tools unrestricted."
+    },
+    "scripts": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^scripts/"
+      },
+      "description": "Package-relative paths to executable scripts this document uses, under scripts/."
+    },
+    "references": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^references/"
+      },
+      "description": "Package-relative paths to reference documents or directories this document reads, under references/. A directory brings every file under it."
+    },
+    "delegates": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Names of agents or skills this document delegates to."
+    },
+    "host_dependencies": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Python package names this document's scripts need on the host. Unioned by the compiler across the package."
+    },
+    "tpu_dependencies": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Python package names this document's scripts need in the TPU workload environment. Unioned by the compiler across the package."
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,1 @@
+Answer this question about `torch-tpu-env-vars`, grounded in the TPU documentation, passing it exactly as written: "Which environment variable enables TorchTPU's internal debug checks, such as catching out-of-bounds indices?" Answer clearly, citing any references you can for grounding. Drop a JSON at `/logs/artifacts/answer.json` with keys `answer` and `reference`, for scoring.

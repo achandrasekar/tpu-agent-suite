@@ -1,0 +1,79 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT028 from the "Hardware profiling and debugging" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat028
+    prompt: 'Trying to speed up the tail of our decode step on v6e. This kernel does
+      a masked mean over a (512, 2048) bf16 block with fp32 accumulation. It''s correct,
+      but the profiler says most of the step time is in the reduction and I want it
+      cheaper. import jax import jax.numpy as jnp from jax.experimental import pallas
+      as pl def kernel(x_ref, n_ref, o_ref): n = n_ref[0] x = x_ref[...].astype(jnp.float32)
+      rows = jnp.arange(x.shape[0])[:, None] mask = (rows < n).astype(jnp.float32)
+      o_ref[...] = (jnp.sum(x * mask, axis=0) / n).astype(x_ref.dtype) def run(x,
+      n): m, k = x.shape return pl.pallas_call( kernel, grid=(1,), in_specs=[ pl.BlockSpec((m,
+      k), lambda i: (0, 0)), pl.BlockSpec((1,), lambda i: (0,)), ], out_specs=pl.BlockSpec((k,),
+      lambda i: (0,)), out_shape=jax.ShapeDtypeStruct((k,), x.dtype), )(x, n) Two
+      things I''ve already ruled out so you don''t need to cover them. Passing the
+      mask in as a precomputed input is worse, that just moves 4MB into HBM per call.
+      And I''ve checked the shapes, the comparison is (512, 1) so nothing 2D is being
+      materialised there. So the mask isn''t the problem. What I want to know is how
+      to make the reduction itself cheaper. Restructure it as a vector-matrix product
+      to get it onto the MXU, or is there something better?'
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT028
+      category: Hardware profiling and debugging
+      sub_category: Cases where no kernel is needed
+      difficulty: Hard
+      has_code: 'Yes'
+      baseline_result: Stumped
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        The premise the user states, that most of the step time is in the reduction, is the misconception under test. The kernel loads 512 x 2048 x 2 = 2,097,152 bytes and writes 2048 x 2 = 4,096 bytes. Against v6e HBM bandwidth the transfer dominates by orders of magnitude, and the contraction itself is a single (1, 512) x (512, 2048) product, which is negligible work on either unit. The op is memory bandwidth bound, so whether the contraction runs on the VPU or the MXU does not change the bytes moved and no restructuring of the reduction makes this meaningfully faster.
+
+        Solved: declines to endorse the MXU rewrite as a speedup and explains why. Should do the byte arithmetic, note that the op runs at HBM bandwidth, and conclude that the only real levers are moving fewer bytes or fusing this into the producer of x so the block never round trips through HBM. May note that the MXU version is fine code and slightly cheaper on VPU cycles, as long as it is clear that this is not where the time is going. Should also push back on the profiler reading, since attributing the time to the reduction is what led the user here.
+
+        Partial: suggests the MXU rewrite but flags that the op is likely bandwidth bound, or hedges on the size of the win without doing the arithmetic, or questions the profiler attribution without following through to the bandwidth bound.
+
+        Stumped: endorses the MXU rewrite as a significant speedup with no bandwidth reasoning, especially with invented supporting mechanisms such as a materialised (512, 2048) fp32 intermediate, which the prompt explicitly rules out.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        Opened with "yes, this is the right move" and "dramatically faster" and never questioned whether the reduction is the bottleneck at all. It isn't. The kernel loads 512 x 2048 x 2 = 2,097,152 bytes of bf16 and writes 2048 x 2 = 4,096 bytes back, so it runs at HBM bandwidth. Moving the contraction from the VPU to the MXU changes which unit does the arithmetic but not the bytes moved, so it cannot make this meaningfully faster. The premise it was asked to evaluate, that most of the step time is in the reduction, is the thing that needed challenging and it went unexamined.
+
+        It also contradicted a fact stated in the prompt. I told it explicitly that the comparison is (512, 1) and nothing 2D is materialised. It then wrote that the fp32 cast "forces the VPU to materialize a full (512, 2048) FP32 tensor in vector registers, creating heavy register pressure." That is the same fabrication it produced in an earlier run of a softer version of this prompt, repeated after being pre-empted, and it is load bearing for its argument that the current kernel is slow. This half is checkable against two lines of the prompt with no TPU access.
+
+        The vertical reduction explanation is plausible in isolation, cross lane shuffles and tree reduction on the VPU are real, but it is being used to explain a cost that the byte arithmetic says is not there.
+
+        Credit: the rewrite itself is correct code. bf16 inputs into the MXU with preferred_element_type fp32 gives exact 0/1 masking and fp32 accumulation, and the shapes work. It is a real micro optimisation applied to something that is not the bottleneck, presented as a dramatic speedup.
+
+        Prompt history: an earlier softer version asked whether hoisting the mask out was the right fix. The model correctly rejected the hoist, which gave it a win without ever addressing the bandwidth question, so it graded Partial. This version states the hoist is already ruled out and offers the MXU rewrite as my own suggestion, which removes both escape routes and leaves questioning the premise as the only correct answer.
+      weight: 0.5

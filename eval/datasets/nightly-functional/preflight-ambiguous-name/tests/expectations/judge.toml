@@ -1,0 +1,31 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+[judge]
+judge = "vertex_ai/gemini-3.5-flash"
+atif-trajectory = "/logs/agent/trajectory.json"
+timeout = 600
+
+[[criterion]]
+description = "The final reply asks the user which repository they mean, suggesting a default as a link (https://huggingface.co/meta-llama/...), listing other candidates as links, and saying how they differ (Llama 3 vs 3.1, base vs instruct). The judge must cite the Step ID of the question."
+type = "binary"
+weight = 1.0
+
+[[criterion]]
+description = "The reply makes no compatibility claim about any repository: no preflight verdict is reported, because no check ran before the user chose."
+type = "binary"
+weight = 1.0
+
+[scoring]
+aggregation = "weighted_mean"

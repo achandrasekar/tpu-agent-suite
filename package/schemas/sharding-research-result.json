@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "sharding-research-result.json",
+  "title": "tpu-sharding Researcher Result",
+  "description": "Deliverable from tpu-sharding-researcher to optimizer.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "run_id",
+    "iteration",
+    "status"
+  ],
+  "properties": {
+    "run_id": {
+      "type": "string",
+      "pattern": "^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}$",
+      "description": "Session run identifier namespace."
+    },
+    "iteration": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Iteration index operated on."
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "completed",
+        "invalid_input",
+        "needs_input",
+        "failed"
+      ],
+      "description": "Outcome of broad research."
+    },
+    "proposed_direction": {
+      "type": "string",
+      "description": "High-level strategy and rationale for non-greedy exploration (owed when status is 'completed')."
+    },
+    "branched_from": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Iteration index recommended to branch from."
+    },
+    "recommended_knobs": {
+      "type": "object",
+      "description": "Key-value dictionary of recommended configuration flags and parameters.",
+      "additionalProperties": true
+    },
+    "findings": {
+      "type": "string",
+      "description": "Detailed telemetry findings from XProf and codebase/recipe analysis (owed when status is 'completed')."
+    },
+    "failure_reason": {
+      "type": "string",
+      "description": "Explanation if research failed."
+    },
+    "error_message": {
+      "type": "string",
+      "description": "Detailed diagnostic error message if research failed."
+    }
+  },
+  "examples": [
+    {
+      "run_id": "20260921T120000Z-abcdef012345",
+      "iteration": 3,
+      "status": "completed",
+      "proposed_direction": "Branch from Run 1 (ep=4, tp=2) rather than Run 2. Enable Latency-Hiding Layer Scheduler bundle with Splash attention to overlap AllToAll with dense FFN computation.",
+      "branched_from": 1,
+      "recommended_knobs": {
+        "xla_tpu_enable_latency_hiding_scheduler": "true",
+        "use_splash_attention": "true"
+      },
+      "findings": "XProf analysis of Run 2 showed 42% AllToAll stall time. Run 1 had lower memory pressure (62% HBM) leaving enough headroom for double-buffering communication with the latency-hiding scheduler."
+    }
+  ]
+}

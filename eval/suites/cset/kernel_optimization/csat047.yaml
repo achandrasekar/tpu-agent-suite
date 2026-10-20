@@ -1,0 +1,102 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT047 from the "Kernel optimization" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat047
+    prompt: |-
+      We're serving a Gemma 2 decoder on TPU v7 and hitting an HBM bandwidth bottleneck in the transition between self-attention and the MLP, where XLA is emitting multiple passes over the activations and doing redundant HBM round trips. Can you rewrite the computation block below as a single fused Pallas kernel for v7? Our shapes are B=4, S=4096, D=2304 in bf16, and we need to match the exact mixed-precision semantics of the reference implementation. Because the (B, S, D) layout is fixed by the surrounding projections, don't transpose or pad the input/output tensors outside the kernel, don't write the intermediate residual sum out to HBM, and keep everything in a single pallas_call. Please verify it against the reference with rtol=0.01 and atol=0.05.
+
+      # Imports
+      import jax
+      import jax.numpy as jnp
+
+      # Initialization
+      def get_inputs():
+          dtype = jnp.bfloat16
+          key = jax.random.key(0)
+          k1, k2, k3, k4 = jax.random.split(key, 4)
+
+          B, S, D = 4, 4096, 2304
+
+          residual = jax.random.normal(k1, (B, S, D), dtype=dtype)
+          attn_out = jax.random.normal(k2, (B, S, D), dtype=dtype)
+          post_attn_weight = jax.random.normal(k3, (D,), dtype=dtype) * 0.02
+          pre_ffn_weight = jax.random.normal(k4, (D,), dtype=dtype) * 0.02
+
+          dynamic_args = [residual, attn_out, post_attn_weight, pre_ffn_weight]
+          static_args = []
+          return dynamic_args, static_args
+
+      # Computation
+      def computation(residual, attn_out, post_attn_weight, pre_ffn_weight):
+          eps = 1e-6
+
+          x_f32 = attn_out.astype(jnp.float32)
+          var1 = jnp.mean(x_f32 * x_f32, axis=-1, keepdims=True)
+          normed_attn = (
+              x_f32 * jax.lax.rsqrt(var1 + eps) * (1.0 + post_attn_weight.astype(jnp.float32))
+          ).astype(attn_out.dtype)
+
+          hidden_states = residual + normed_attn
+
+          h_f32 = hidden_states.astype(jnp.float32)
+          var2 = jnp.mean(h_f32 * h_f32, axis=-1, keepdims=True)
+          normed_ffn_in = (
+              h_f32 * jax.lax.rsqrt(var2 + eps) * (1.0 + pre_ffn_weight.astype(jnp.float32))
+          ).astype(hidden_states.dtype)
+
+          return normed_ffn_in
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT047
+      category: Kernel optimization
+      sub_category: Normalization variants
+      difficulty: Moderate
+      has_code: 'Yes'
+      baseline_result: Partially Solved
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        Stumped:
+        The model code overflows VMEM capacity, drifts past numerical tolerances, or cheats the layout constraints. Specifically, it is an automatic fail if the model transposes the fixed [B, S, D] layout or moves the D=2304 hidden dimension off the last axis to dodge cross-lane axis=-1 reductions. It also fails if it tries to load full bfloat16 buffers into a single BlockSpec without tiling, which blows past TPU7x's 64 MB VMEM limit, or if it reshapes the inner dimension inside the kernel, which Pallas TPU lowering forbids because it splits the lane axis. Finally, if it accumulates the RMSNorm variance directly in bfloat16 that would cause mantissa swamping after the sum exceeds 128, resulting in a failure of the numerical accuracy checks.
+
+        Partially Solved: The model produces a compilable Pallas kernel that respects the [B, S, D] layout and passes the correctness checks, but leaves significant hardware performance on the table or misses secondary structural contracts. That is the overall verdict for this run: the kernel reaches 0.150 ms against the 0.187 ms XLA baseline, but stays far off the 0.061 ms HBM roofline floor. It also leaves performance on the table by recomputing the f32 weight casts, 1.0 + weight offsets, and 1D-to-3D sublane broadcasts inside the kernel on every grid step.
+
+        Solved:
+        The model delivers a clean, hardware-optimized, single pass TPU Pallas kernel that clears the numerical tolerance gates, maintains the upstream [B, S, D] layout without HBM round trips, and achieves a strong speedup over the 0.187 ms baseline. To fully solve the task, the kernel fuses all five stages, post_attention_layernorm, Gemma's scaling, the bf16 residual add, pre_feedforward_layernorm, and ffn scaling, into a single pallas_call. Keeping the intermediate hidden_states buffer in VMEM eliminates an entire HBM round trip and cuts off-chip traffic. Its
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        In-Kernel Weight Offset: Inside the kernel, the model upcast both normalization weight vectors from bfloat16 to float32 and applied the unit scaling offset on every grid step instead of hoisting that invariant math outside the kernel. While the Pallas TPU DMA engine automatically deduplicates repeated block indices so the weights aren't re-fetched from HBM on each step, the VPU still wastes cycles re-executing the precision conversion and vector addition on every single grid iteration.
+
+        VMEM Under-utilization: The model tiled the sequence dimension at 128 using 3D (1, 128, 2304) activation blocks over a 128-step (4, 32) grid while keeping the normalization weights as 1D (2304,) blocks, which both underutilizes on-chip memory and forces a broadcast across the unit axis and 128-element sublane dimension on every single step. On the roofline side of things, baseline XLA splits the block into two separate passes where reading both inputs and writing the intermediate hidden states out to HBM in the first pass, then reading them right back to produce the final output in the second. The model optimized kernel passes both into a single kernel and eliminates that intermediate HBM round trip and reduces memory traffic. However, the implementation still falls well short of the hardware's HBM bandwidth ceiling. It leaves most of the achievable speedup behind because of the fine-grained grid schedule and, cross-lane XLU reduction latency along the hidden dimension.
+
+        Missing Parallel Annotation (Model output not graded on this): The model called the Pallas kernel without declaring parallel dimension semantics in the compiler parameters, even though all 128 tiles across the batch and sequence grid are completely independent with no loop-carried state. While TPU7x exposes its two TensorCores per chip as separate devices rather than a Megacore pair, omitting parallel axis annotations prevents the Mosaic compiler from reordering or parallelizing grid iterations and forfeits automatic two core Megacore partitioning on architectures like TPU v4 and v5p. The model output is not graded on this, but I thought this would be good insight to have.
+      weight: 0.5

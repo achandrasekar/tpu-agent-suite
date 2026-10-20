@@ -1,0 +1,61 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Hand-written. The verifier is a shell script rather than a rewardkit
+# criteria file because the whole check is one number: did a TPU do the
+# arithmetic.
+schema_version = "1.4"
+
+[task]
+name = "torchtpu/tpu-hello-world-cited"
+version = "1.0.0"
+description = "Smallest end-to-end TPU check: dispatch one PyTorch op onto a TPU node of a GKE cluster and verify it against the CPU. The instruction points at the tpu-hello-world subagent conditionally -- use it if the package is installed, otherwise do the work directly -- so one prompt stays valid for both arms of the A/B while still telling an equipped agent that the agent is there."
+authors = [{ name = "TorchTPU Team" }]
+keywords = ["hello_world", "torchtpu", "gke", "provenance", "citation"]
+
+[environment]
+os = "linux"
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240
+# Harbor defaults to /app regardless of the image's WORKDIR, and the evaluation
+# package is installed at /workspace.
+workdir = "/workspace"
+# Pinned toolchain base image; TPU agent suite package is dynamically staged and mounted by evaluation agent wrappers.
+docker_image = "us-docker.pkg.dev/tpu-nexus-767207/nexus-dev/nexus-host@sha256:7ff58a98ae2655dbcf25fa0aeb3e8081281bfb3061f97581a98951e98371fff4"
+
+[agent]
+# Three clocks govern a run and they are not the same one:
+#
+#   this budget              the agent's whole session, in the sandbox
+#   declared-duration-minutes  the dispatched TPU pod (see the kueue config)
+#   the queue's hard limit     180 min on `default`, per the shared-capacity guide
+#
+# Only the first is set here, and it is generous because the session is the
+# slow part: a node that has not pulled the multi-GB TPU image before spends
+# minutes doing that, and the control arm works out the manifest -- node
+# selectors, the TPU toleration, the chip request -- by trial and error, each
+# attempt costing another scheduling round. Sessions have been observed to run
+# past an hour. Too tight a budget scores the timeout rather than the task.
+#
+# The pod itself finishes in about a minute; do not raise declared-duration to
+# match this, since that holds shared capacity for longer than the work needs.
+timeout_sec = 7200.0
+network_mode = "public"
+
+[verifier]
+timeout_sec = 60.0
+
+[metadata]
+category = "evaluation"

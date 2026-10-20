@@ -1,0 +1,38 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Knowledge lookup request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["query"],
+  "properties": {
+    "query": {
+      "type": "string",
+      "description": "What the caller needs to know, in its own words."
+    },
+    "entry_id": {
+      "type": "string",
+      "description": "Index entry to use: an id or keyword tpu-knowledge-base returned earlier. Omit it otherwise, and the agent searches with `query`; a guessed one lands on the nearest match."
+    },
+    "vars": {
+      "type": "object",
+      "description": "Overrides for values normally read from the environment.",
+      "additionalProperties": {"type": "string"}
+    },
+    "allow_crawl": {
+      "type": "boolean",
+      "default": true,
+      "description": "True (the default): a url with no current kept page is read now -- by the harness CLI, or downloaded for the subagent to summarise and keep. False: nothing is read; only pages on disk and current kept pages are served, a url with neither comes back as a citation without content (not_read), and a key nothing serves gets no answer."
+    },
+    "run_id": {
+      "type": "string",
+      "description": "Optional. The session run, when the caller has one. Given, this run's lookup jobs are kept in its artifacts; omitted, they go to the shared jobs directory and the lookup is unaffected. Callers need not obtain one to ask a question."
+    }
+  },
+  "examples": [
+    {
+      "query": "example query",
+      "allow_crawl": true,
+      "run_id": "20260914T120000Z-000000000000"
+    }
+  ]
+}

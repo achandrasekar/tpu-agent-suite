@@ -1,0 +1,42 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+schema_version = "1.4"
+
+[task]
+name = "torchtpu/onboarding-gemma-3-27b-it"
+
+[environment]
+# No docker_image: environment/Dockerfile is the image. Harbor's GKE path
+# never reads this key (run.py:286) -- it builds from environment/ and
+# resolves the pod image by content hash -- so a pin here would name
+# something nothing pulls.
+storage_mb = 10240
+env = { HF_MODEL_URL = "https://huggingface.co/google/gemma-3-27b-it" }
+
+[agent]
+# Long, and deliberately so: the deliverable is a vLLM server actually serving
+# a 32B model on a v7 slice, reached through a queue, plus benchmarks and a
+# commit history. The hf-onboarding tasks allow two hours for analysis alone.
+timeout_sec = 28800.0
+
+[verifier]
+timeout_sec = 300.0
+env = { HF_MODEL_URL = "https://huggingface.co/google/gemma-3-27b-it" }
+
+[metadata]
+# The model is gated: with no token the run ends at the first 401, after the
+# image build and the TPU wait. run.py skips this task from a dataset run when
+# any of these is unset or empty on the host, and refuses it when named alone.
+required_env = ["HF_TOKEN"]

@@ -1,0 +1,81 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT050 from the "GPU Kernel to PyTorch API conversion" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat050
+    prompt: |-
+      I have this Triton kernel that crashes because tl.atomic_add doesn't support bf16. I am migrating this code to a TPU v6e anyway, so I want to completely rip out the Triton implementation and use standard PyTorch APIs that OpenXLA can compile efficiently.
+
+      Shapes and dtypes: in_ptr0 is (80,) int64 indices, in_ptr1 is (80, 768) bf16, and accumulator out_ptr0 is (num_rows, 768) bf16 on TPU v6e.
+      How do I rewrite this exact logic in pure PyTorch without losing performance?
+
+      import torch
+      import triton
+      import triton.language as tl
+
+      def triton_(in_ptr0, in_ptr1, out_ptr0, xnumel, XBLOCK : tl.constexpr):
+          xnumel = 61440
+          xoffset = tl.program_id(0) * XBLOCK
+          xindex = xoffset + tl.arange(0, XBLOCK)[:]
+          xmask = xindex < xnumel
+          x1 = (xindex // 768)
+          x2 = xindex
+          x0 = xindex % 768
+          tmp0 = tl.load(in_ptr0 + (x1), None)
+          tmp1 = tl.load(in_ptr1 + (x2), None).to(tl.float32)
+          tl.atomic_add(out_ptr0 + (x0 + (768*tmp0) + tl.zeros([XBLOCK], tl.int32)), tmp1, None)
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT050
+      category: GPU Kernel to PyTorch API conversion
+      sub_category: Cross-block atomics mapping
+      difficulty: Moderate
+      has_code: 'Yes'
+      baseline_result: Partially Solved
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        1. Stumped: Model fails to recognize the linear math as row-wise scatter-add and tries to write scalar Python for loops, suggests scatter_add_ without handling index dimensions, or it claims that pure PyTorch cannot express kernel without writing custom Pallas code.
+
+        2. Partially Solved: The model correctly maps kernel to torch.Tensor.index_add and recognizes that it gets lowered to xla Scatter on TPU v6e without the need of index expansion. However, the model recommends a raw bfloat16 accumulation as primary implementation, which demotes numerical stability using F32 as an optional note and misses the determinism warnings for duplicate indices under OpenXLA. This is where the model output landed and achieved the partially solved score.
+
+        3. Solved: Model selected function torch.Tensor.index_add, explains the directly to xla scatter and notes the memory advantage of using 1D index over scatter_add_. It should also default to float32 accumulation for stability and warn about the non-deterministic reduction order with colliding indices on OpenXLA and should provide functional code adhering to these requirements.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        The model correctly spotted the row-wise scatter-add pattern and mapped it to PyTorch's index_add_.
+
+        Failures:
+        1. The model recommended using bfloat16 addition directly as a solution and only provided float32 accumulation as an optional improvement. However, the original kernel explicitly loaded updates using .to(tl.float32) to avoid precision loss during accumulation. The bfloat16 contains only 7 bits of mantissa so when multiple rows collide for the same target index, it accumulates directly in BF16 which causes a rapid precision loss and diverges away from the reference Triton kernel. The model should have made FP32 accumulation the default code path, meaning upcast inputs to float32, run index_add, and cast back to bfloat16 instead of just adding it at the note.
+
+        2. The model also failed to mention that parallel scatter reductions with duplicate indices are non-deterministic and OpenXLA, this could lead to a variable run-to-run floating point jitter. Since, floating point addition is non-associative and non-deterministic, the scatter ordering under the OpenXLA can cause large numerical variance between identical runs which would complicate testing and validation. And, the model should have warned us then duplicate runs can lead to such distinct results.
+
+        3. The model recommended an inplace index_add_ for eager mode and then proceeded to silently swap to out-of-place index_add inside torch.compile without providing any explanation regarding the functional operations preventing compiler mutation tracking overhead. The in-place tensor mutation inside compiled code forces the compilers to track buffer mutations and generates copy which defeats the optimizations. The model should have explained the why the out-of-place operations are preferred using torch compile with openxla backend.
+      weight: 0.5

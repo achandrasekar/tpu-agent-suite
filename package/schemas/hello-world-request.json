@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Hello World Request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "prompt"
+  ],
+  "properties": {
+    "prompt": {
+      "type": "string",
+      "description": "Instruction or prompt for running the TPU sanity/smoke check."
+    },
+    "run_id": {
+      "type": "string",
+      "description": "Identifier of the active TPU agent suite run namespace."
+    },
+    "cluster_cell": {
+      "type": "string",
+      "description": "Optional cluster cell or location identifier where the smoke check should be dispatched."
+    },
+    "timeout_seconds": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Optional maximum execution timeout in seconds for dispatching and running the check."
+    }
+  },
+  "examples": [
+    {
+      "prompt": "Check that my TPU is reachable and run a small matmul on it.",
+      "run_id": "20260914T120000Z-000000000000",
+      "cluster_cell": "us-central1-a",
+      "timeout_seconds": 900
+    }
+  ]
+}

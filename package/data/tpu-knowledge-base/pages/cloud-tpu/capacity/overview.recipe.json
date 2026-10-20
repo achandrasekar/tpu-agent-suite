@@ -1,0 +1,9 @@
+{
+  "query": "Explain TPU capacity choices and queued resource lifecycle: on-demand, reservations, Spot and flex-start where documented. Explain interruption and request-state semantics. Distinguish GKE from Cloud TPU API mechanisms.",
+  "authoring_request": "Cloud TPU/GKE: simple queries based on GCP pages for content that will not change often",
+  "source_ids": [
+    "gke-tpu-concepts",
+    "cloud-tpu-queued-resources",
+    "cloud-tpu-spot"
+  ]
+}

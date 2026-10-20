@@ -1,0 +1,8 @@
+{
+  "top_op_name": "fusion.668",
+  "self_time_ms": 101.49895,
+  "occurrences": 144,
+  "source_file_basename": "axes_scan.py",
+  "source_line": 156,
+  "category": "convolution fusion"
+}

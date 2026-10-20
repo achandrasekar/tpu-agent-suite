@@ -1,0 +1,399 @@
+{
+ "_header": {
+  "generated_by": "cli.py onboard GLM-5.2-FP8 --job j-c964a8b6-004a-48f8-9d4f",
+  "generated_at": "2026-09-29T06:42Z",
+  "harness_commit": "30c7f25",
+  "snapshot": "GLM-5.2-FP8/config/agentx-2x2x2-tp16-dcp16-ep.source.json"
+ },
+ "_what": "workload-microbenchmark L1 config (generated; do not hand-edit)",
+ "job_id": "j-c964a8b6-004a-48f8-9d4f",
+ "model_dir": "GLM-5.2-FP8",
+ "overrides": {},
+ "workload": "glm-5.2-agentx-multihost-nondisagg-2x2x2",
+ "decidable_at": "L1",
+ "source": {
+  "image": "<registry>/inferencex/vllm:0925-pr1233",
+  "owner": "<owner>",
+  "checkpoint_config": "gs://<bucket>/ckpt/hf/zai-org/GLM-5.2-FP8/config.json"
+ },
+ "deploy": {
+  "tp": 16,
+  "dp": 1,
+  "pp": 1,
+  "dcp": 16,
+  "pcp": 1,
+  "ep": true,
+  "interleave": 4,
+  "block_size": 256,
+  "mnbt": 4096,
+  "mns": 8,
+  "max_model_len": 1048576,
+  "kv_cache_memory_bytes": 30000000000,
+  "kv_cache_dtype": "fp8",
+  "spec_method": "mtp",
+  "spec_tokens": 3,
+  "prefix_caching": true,
+  "dcp_q_replicate": false
+ },
+ "facts": {
+  "name": "GLM-5.2-FP8",
+  "layers": 78,
+  "dense_layers": 3,
+  "hidden": 6144,
+  "heads": 64,
+  "kv_heads": 64,
+  "mla": true,
+  "kv_lora_rank": 512,
+  "qk_rope_head_dim": 64,
+  "qk_nope_head_dim": 192,
+  "v_head_dim": 256,
+  "q_lora_rank": 2048,
+  "experts": 256,
+  "topk": 8,
+  "expert_ffn": 2048,
+  "shared_ffn": 2048,
+  "dense_ffn": 12288,
+  "indexer_heads": 32,
+  "indexer_head_dim": 128,
+  "indexer_topk": 2048,
+  "indexer_layer_ids": [
+   0,
+   1,
+   2,
+   6,
+   10,
+   14,
+   18,
+   22,
+   26,
+   30,
+   34,
+   38,
+   42,
+   46,
+   50,
+   54,
+   58,
+   62,
+   66,
+   70,
+   74
+  ],
+  "indexer_cache_bytes_per_token": 132,
+  "kv_cache_bytes_per_token_per_layer": 576,
+  "mtp_layers": 1,
+  "vocab": 154880,
+  "kinds": [
+   "dense_idx",
+   "dense_idx",
+   "dense_idx",
+   "moe",
+   "moe",
+   "moe",
+   "moe_idx",
+   "moe",
+   "moe",
+   "moe",
+   "moe_idx",
+   "moe",
+   "moe",
+   "moe",
+   "moe_idx",
+   "moe",
+   "moe",
+   "moe",
+   "moe_idx",
+   "moe",
+   "moe",
+   "moe",
+   "moe_idx",
+   "moe",
+   "moe",
+   "moe",
+   "moe_idx",
+   "moe",
+   "moe",
+   "moe",
+   "moe_idx",
+   "moe",
+   "moe",
+   "moe",
+   "moe_idx",
+   "moe",
+   "moe",
+   "moe",
+   "moe_idx",
+   "moe",
+   "moe",
+   "moe",
+   "moe_idx",
+   "moe",
+   "moe",
+   "moe",
+   "moe_idx",
+   "moe",
+   "moe",
+   "moe",
+   "moe_idx",
+   "moe",
+   "moe",
+   "moe",
+   "moe_idx",
+   "moe",
+   "moe",
+   "moe",
+   "moe_idx",
+   "moe",
+   "moe",
+   "moe",
+   "moe_idx",
+   "moe",
+   "moe",
+   "moe",
+   "moe_idx",
+   "moe",
+   "moe",
+   "moe",
+   "moe_idx",
+   "moe",
+   "moe",
+   "moe",
+   "moe_idx",
+   "moe",
+   "moe",
+   "moe"
+  ],
+  "kv_bytes_token": 47700,
+  "state_bytes_seq": 0,
+  "mtp_kv_bytes_token": 708,
+  "layer_kinds": {
+   "dense_idx": 3,
+   "moe": 57,
+   "moe_idx": 18
+  },
+  "kv_bytes_per_token": 47700
+ },
+ "kernels": {
+  "mla_writer": "dcp",
+  "indexer": "dcp",
+  "moe": "gmm_sparsecore",
+  "linear": "per_channel",
+  "env": {
+   "ONEHOT_MOE_PERMUTE_THRESHOLD": "2048",
+   "TPU_MOE_FUSED_EP_ASYNC_ROW_GATHER": "0",
+   "TPU_MOE_SKIP_PADDED_TOKENS": "1",
+   "TPU_ROPE_CACHE_TRUNCATE": "1",
+   "TPU_STREAMIDX_CHUNK_TOKENS": "256",
+   "USE_MOE_FUSED_EP_KERNEL": "0",
+   "USE_MOE_SPARSE_CORE": "1",
+   "VLLM_DCP_Q_REPLICATE": "0"
+  }
+ },
+ "server_env": {
+  "LIBTPU_INIT_ARGS": "--xla_tpu_enable_diagnostic_coordinator=false --xla_tpu_enable_diagnostic_coordinator=false",
+  "ONEHOT_MOE_PERMUTE_THRESHOLD": "2048",
+  "PJRT_DEVICE": "TPU",
+  "TF_CPP_MIN_LOG_LEVEL": "0",
+  "TORCHINDUCTOR_AUTOGRAD_CACHE": "0",
+  "TPU_MOE_FUSED_EP_ASYNC_ROW_GATHER": "0",
+  "TPU_MOE_SKIP_PADDED_TOKENS": "1",
+  "TPU_PARALLEL_PRECOMPILE": "1",
+  "TPU_PREMAPPED_BUFFER_SIZE": "4294967296",
+  "TPU_PREMAPPED_BUFFER_TRANSFER_THRESHOLD_BYTES": "4294967296",
+  "TPU_ROPE_CACHE_TRUNCATE": "1",
+  "TPU_STDERR_LOG_LEVEL": "0",
+  "TPU_STREAMIDX_CHUNK_TOKENS": "256",
+  "TPU_TP_HIERARCHICAL_ALL_REDUCE_MIN_TOKENS": "0",
+  "TPU_VMODULE": "tpu_pjrt_client=1,pjrt_stream_executor_client=1,tpu_pjrt_compiler_utils=1",
+  "USE_MOE_FUSED_EP_KERNEL": "0",
+  "USE_MOE_SPARSE_CORE": "1",
+  "VLLM_ALLOW_LONG_MAX_MODEL_LEN": "1",
+  "VLLM_DCP_Q_REPLICATE": "0",
+  "VLLM_DISABLE_COMPILE_CACHE": "0",
+  "VLLM_ENGINE_READY_TIMEOUT_S": "10800",
+  "VLLM_LOGGING_LEVEL": "INFO",
+  "VLLM_TARGET_DEVICE": "tpu",
+  "VLLM_TPU_FAST_TOKEN_SUBSTITUTION": "1",
+  "VLLM_WORKER_MULTIPROC_METHOD": "spawn"
+ },
+ "feasibility": {
+  "feasible": true,
+  "problems": [],
+  "notes": [],
+  "kv": {
+   "kv_bytes_per_token_per_rank": 2981.2,
+   "kv_budget_bytes_per_rank": 30000000000,
+   "state_bytes_per_seq_per_rank": 0.0,
+   "one_max_len_request_bytes": 3126067200,
+   "peak_tokens_in_flight": 1577716,
+   "peak_need_bytes": 4703567907,
+   "min_dcp_for_recorded_peak": 4,
+   "max_model_len_that_fits": 10062893
+  }
+ },
+ "per_rank": {
+  "tokens_per_step": "bucket (<= 4096), replicated",
+  "q_heads_projected": 4,
+  "kv_tokens_per_rank": "L / 16",
+  "kv_divisor": 16,
+  "cache_block_tokens": 4096,
+  "experts_per_rank": 16,
+  "routed_pairs_per_rank": "T x 8 / 16 (mean; use the busiest rank)",
+  "kv_bytes_per_token_per_rank": 2981.2,
+  "dense_ffn_per_rank": 768,
+  "shared_expert_ffn_per_rank": 128,
+  "kv_pool_tokens": 8540160,
+  "kv_pool_tokens_per_rank": 533760,
+  "pages_per_rank": 2085,
+  "heads_in_attention": 64,
+  "q_head_allgather": true,
+  "mla_kv_bytes_per_token_per_layer": 576,
+  "indexer_topk_local": 2048,
+  "indexer_merge_width": 32768,
+  "indexer_score_row_padded": 65536
+ },
+ "cells": {
+  "requests_measured": 116,
+  "conversations": 15,
+  "prefill_cells": [
+   {
+    "name": "P1",
+    "chunk_tokens": 4076,
+    "cached_context": 32748,
+    "weight": 0.306,
+    "decode_rows": {
+     "batch": 5,
+     "tokens_per_row": 4,
+     "contexts": [
+      39749,
+      63384,
+      97053,
+      285819,
+      466548
+     ]
+    }
+   },
+   {
+    "name": "P2",
+    "chunk_tokens": 4076,
+    "cached_context": 61420,
+    "weight": 0.348,
+    "decode_rows": {
+     "batch": 5,
+     "tokens_per_row": 4,
+     "contexts": [
+      39749,
+      63384,
+      97053,
+      285819,
+      466548
+     ]
+    }
+   },
+   {
+    "name": "P3",
+    "chunk_tokens": 4076,
+    "cached_context": 258028,
+    "weight": 0.345,
+    "decode_rows": {
+     "batch": 5,
+     "tokens_per_row": 4,
+     "contexts": [
+      39749,
+      63384,
+      97053,
+      285819,
+      466548
+     ]
+    }
+   }
+  ],
+  "decode_cells": [
+   {
+    "name": "D2",
+    "batch": 2,
+    "tokens_per_row": 4,
+    "contexts": [
+     61587,
+     295803
+    ],
+    "weight": 0.25
+   },
+   {
+    "name": "D5",
+    "batch": 5,
+    "tokens_per_row": 4,
+    "contexts": [
+     39749,
+     63384,
+     97053,
+     285819,
+     466548
+    ],
+    "weight": 0.5
+   },
+   {
+    "name": "D8",
+    "batch": 8,
+    "tokens_per_row": 4,
+    "contexts": [
+     37568,
+     48802,
+     64728,
+     84820,
+     98654,
+     284849,
+     334530,
+     468731
+    ],
+    "weight": 0.25
+   }
+  ],
+  "full_chunk_share": 0.626,
+  "counts": {
+   "N_A_prefill_chunks": 310,
+   "N_B_decode_steps": 4794,
+   "R_dec_request_decode_steps": 25247.0,
+   "B_mean_decode_rows": 4.95,
+   "accept_len": 2.975
+  },
+  "recompute": {
+   "cache_block_tokens": 4096,
+   "eagle_drop": true,
+   "computed_tokens_model": 1042868,
+   "computed_tokens_server": 1063443.0,
+   "model_over_server": 0.9807,
+   "computed_per_request_p05_p50_p90": [
+    5198,
+    7636,
+    12223
+   ],
+   "new_per_request_p50": 1143
+  },
+  "distributions": {
+   "isl_p50_p90_max": [
+    64989,
+    299841,
+    468731
+   ],
+   "osl_p50_mean_p90": [
+    167,
+    554,
+    1362
+   ]
+  }
+ },
+ "closure_G0": {
+  "t_A_s": 4.688,
+  "t_B_s": 0.0982,
+  "predicted_s": 1923.8,
+  "measured_s": 1840.0,
+  "ratio": 1.046,
+  "prefill_share": 0.755
+ },
+ "components": {
+  "sparse_mla": "sparse attention at the real per-rank heads x L/DCP (rank-local)",
+  "indexer_merge": "sparsecore_topk over [T, DCP x index_topk]",
+  "collective": "DCP collectives at 2/4/8 on the small slice, fit to the real degree"
+ }
+}

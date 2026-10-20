@@ -1,0 +1,119 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT121 from the "Kernel optimization" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat121
+    prompt: |-
+      We serve Liquid AI's LFM2 hybrid model on TPU v6e with sequence packing, and the double-gated short convolution (Lfm2ShortConv) that makes up most of its layers is taking more of the profile than it should. The block itself is pretty simple: project the input up to 3x width, split it into B, C and x gates, multiply B*x, run that through a tiny kernel-size-3 causal depthwise conv, gate the result with C, and project back down with out_proj. The problem is XLA can't fuse the grouped conv into either matmul, so the whole 3x-wide in_proj output gets written to HBM and read back, then the gated conv output makes the same round trip before out_proj even starts. And the conv can't let tokens from one packed document bleed into the next one .
+
+      Optimize the computation below into a Pallas kernel for TPU v6e. Shapes are B=2, S=4096, D=2560, conv kernel L=3. Activations and weights are stored in bf16, but keep both projections, the gating, and the conv accumulating in f32. The layout is fixed by the rest of the serving stack, so you have to work as available now, activations are [B, S, D], in_proj and out_proj weights are in PyTorch [out_features, in_features] order ([3D, D] with rows ordered B|C|x, and [D, D]), the conv weight is [D, L], and seq_idx is [B, S] int32. No transposing, splitting, padding, or re-laying out any of the inputs in HBM before the kernel, and the document-boundary handling has to stay exact, so no dropping it or approximating it. Check it against the reference with rtol=0.01 and atol=0.05.
+
+      # Imports
+      import jax
+      import jax.numpy as jnp
+      # Initialization
+      def get_inputs():
+          dtype = jnp.bfloat16
+          key = jax.random.key(0)
+          k1, k2, k3, k4 = jax.random.split(key, 4)
+          B, S, D, L = 2, 4096, 2560, 3  # LFM2 hidden_size=2560, conv_L_cache=3
+          hidden_states = jax.random.normal(k1, (B, S, D), dtype=jnp.float32).astype(dtype)
+          # PyTorch nn.Linear layout [out_features, in_features]; rows [0:D]=B gate, [D:2D]=C gate, [2D:3D]=x.
+          in_proj_weight = (jax.random.normal(k2, (3 * D, D), dtype=jnp.float32) * D ** -0.5).astype(dtype)
+          # Depthwise nn.Conv1d weight [D, 1, L] squeezed to [D, L]; tap L-1 multiplies the current token.
+          conv_weight = (jax.random.normal(k3, (D, L), dtype=jnp.float32) * L ** -0.5).astype(dtype)
+          out_proj_weight = (jax.random.normal(k4, (D, D), dtype=jnp.float32) * D ** -0.5).astype(dtype)
+          # Packed/varlen documents (transformers PR #46588): per-token segment id. Boundaries are
+          # deliberately NOT aligned to 8-row sublanes or 128/256/512-row sequence tiles.
+          starts = jnp.array([[0, 1001, 2538, 3097, 4096],
+                              [0, 777, 2049, 3333, 4001]], dtype=jnp.int32)
+          t = jnp.arange(S, dtype=jnp.int32)
+          seq_idx = (jnp.sum(t[None, :, None] >= starts[:, None, :], axis=-1) - 1).astype(jnp.int32)
+          dynamic_args = [hidden_states, in_proj_weight, conv_weight, out_proj_weight, seq_idx]
+          static_args = []
+          return dynamic_args, static_args
+      # Computation
+      def computation(hidden_states, in_proj_weight, conv_weight, out_proj_weight, seq_idx):
+          B, S, D = hidden_states.shape
+          L = conv_weight.shape[-1]
+          f32 = jnp.float32
+          # in_proj (x @ W^T), f32 accumulation, stored back to bf16 like the nn.Linear output.
+          BCx = jnp.einsum("bsd,ed->bse", hidden_states, in_proj_weight,
+                           preferred_element_type=f32).astype(hidden_states.dtype)
+          b_gate, c_gate, x = jnp.split(BCx, 3, axis=-1)
+          # First gate: B * x.
+          bx = b_gate.astype(f32) * x.astype(f32)
+          # Depthwise causal conv1d (PyTorch cross-correlation, left pad L-1) that never mixes
+          # taps across packed-document boundaries (seq_idx semantics of causal_conv1d_fn).
+          bx_pad = jnp.pad(bx, ((0, 0), (L - 1, 0), (0, 0)))
+          seg_pad = jnp.pad(seq_idx, ((0, 0), (L - 1, 0)), constant_values=-1)
+          w = conv_weight.astype(f32)
+          conv = jnp.zeros((B, S, D), dtype=f32)
+          for k in range(L):
+              tap = bx_pad[:, k:k + S, :]
+              same_doc = (seg_pad[:, k:k + S] == seq_idx)[..., None]
+              conv = conv + jnp.where(same_doc, tap, 0.0) * w[None, None, :, k]
+          # Second gate: C * conv(Bx), then out_proj (y @ W_out^T).
+          y = (c_gate.astype(f32) * conv).astype(hidden_states.dtype)
+          out = jnp.einsum("bsd,ed->bse", y, out_proj_weight, preferred_element_type=f32)
+          return out.astype(hidden_states.dtype)
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT121
+      category: Kernel optimization
+      sub_category: Sequential Logic
+      difficulty: Hard
+      has_code: 'Yes'
+      baseline_result: Stumped
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        Stumped: The model generated optimized kernel fails to compile/lower on TPU, overflows VMEM, fails rtol=0.01, atol=0.05 numerical verification, or violates the layout invariants including pre-transposing, pre-splitting, or padding inputs in HBM, or dropping seq_idx boundary masking.
+
+        Partially Solved:
+        The model provides code that compiles and executes cleanly on TPU without violating any HBM layout invariants and passes rtol=0.01, atol=0.05 across all packed document boundaries and tile seams, but leaves part of the pipeline unfused or leaves improvements on the table.
+
+        Solved:
+        The model delivers a single fused TPU Pallas kernel, or a pipeline that measurably beats the XLA reference on TPU, that passes rtol=0.01, atol=0.05 with zero HBM pre-processing of any inputs.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        Unaligned 2D BlockSpec: The model sliced the 2D sequence index tensor (2 * 4,096 tokens) one batch row at a time and read that row inside the kernel. That's likely what crashed this optimized kernel on Input 0. In a 2D array the leading axis maps to the TPU sublane dimension, and the compiler needs the block size there to be either a multiple of 8 or the full dimension. A single row is neither, since the full batch is 2, so lowering fails right away.
+
+        Element Offset instead of Block: The model failed because it worked out raw element offsets in its block index maps, it multiplied the channel grid index by the 128-wide tile and added fixed channel offsets of 2,560 and 5,120. It did this for all three input projection weight slices, the conv weights, and the output. The catch is that Pallas already treats those values as block indices and scales them by the block shape itself, so every offset got multiplied a second time, essentially getting squared.
+
+        Sublane Slicing errors: The model actually did manage to front pad the activations inside the kernel for its two convolution taps, so the causal shift itself is handled. The problem is where it did it. The sequence axis maps to the TPU sublane dimension, which requires 8 * 128 vector register alignment. The model shifted at sublane offsets of 1 and 2 instead of a multiple of 8. These odd shifts, hand the Mosaic's layout pass a set of unaligned shuffles it tends to choke on. This can't be called a confirmed crash since the compiler failed earlier on the sequence index block, but it's the next item that would have most likely caused a crash.
+
+        Unfused output out_proj: The model leaked performance by dumping the second gated activation. a massive 2 × 4,096 × 2,560 bf16 tensor, straight back to HBM, just to run the output projection as a separate XLA op outside the kernel. Forcing that cycle causes a HBM round trip that proper kernel fusion would have entirely avoided. This error leaves a big chunk of memory bandwidth optimization.
+
+        Untitled Full Seq activation: The model completely failed on memory management by leaving both the sequence and contraction dimensions untiled, bringing the entire activation block into VMEM at once. To make matters worse, transposing the gate weights directly inside the kernel forces a big expensive in register shuffle.
+
+        BF16 Rounding Error: In the reference code, the fused input projection is casted to bf16 before splitting it into the two gates and the x proj, then they are bumped back up to fp32 for the gated conv. The model optimized code skipped that step and kept all three projections in fp32 straight out of the matmul. It's a small thing, but it means the kernel is computing on slightly different numbers than the reference,
+      weight: 0.5

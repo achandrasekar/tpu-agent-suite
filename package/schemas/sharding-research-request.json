@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "sharding-research-request.json",
+  "title": "tpu-sharding Researcher Request",
+  "description": "Delegation payload from optimizer to tpu-sharding-researcher for broad search.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "run_id",
+    "iteration",
+    "target_metric",
+    "state_artifact"
+  ],
+  "properties": {
+    "run_id": {
+      "type": "string",
+      "pattern": "^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}$",
+      "description": "Session run identifier namespace."
+    },
+    "iteration": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Current iteration index triggering broad search."
+    },
+    "target_metric": {
+      "type": "string",
+      "description": "Primary optimization metric (e.g., 'maximize_mfu', 'minimize_ttft')."
+    },
+    "state_artifact": {
+      "type": "string",
+      "description": "Relative artifact path to state.json ledger (e.g., 'state.json')."
+    },
+    "profiling_report_artifacts": {
+      "type": "array",
+      "description": "List of relative artifact paths to XProf profiling reports to inspect (e.g., ['0/tpu_profiling_report.md', '1/tpu_profiling_report.md']).",
+      "items": {
+        "type": "string"
+      }
+    },
+    "optimization_constraints": {
+      "type": "string",
+      "description": "Hard bounds and constraints to respect during search (e.g., 'Sequence length must be fixed at 2048.')."
+    }
+  },
+  "examples": [
+    {
+      "run_id": "20260921T120000Z-abcdef012345",
+      "iteration": 3,
+      "target_metric": "maximize_mfu",
+      "state_artifact": "state.json",
+      "profiling_report_artifacts": [
+        "0/tpu_profiling_report.md",
+        "1/tpu_profiling_report.md",
+        "2/tpu_profiling_report.md"
+      ],
+      "optimization_constraints": "Sequence length must be fixed at 2048."
+    }
+  ]
+}

@@ -1,0 +1,1 @@
+Answer this question about `tpu-v6e-spec`, grounded in the TPU documentation, passing it exactly as written: "What is the clock frequency of a TPU v6e chip?" Answer clearly, citing any references you can for grounding. Drop a JSON at `/logs/artifacts/answer.json` with keys `answer` and `reference`, for scoring.

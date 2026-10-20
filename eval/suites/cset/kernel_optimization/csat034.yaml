@@ -1,0 +1,114 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT034 from the "Kernel optimization" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat034
+    prompt: |-
+      Optimize computation below into a Pallas kernel for TPU7x.
+
+      Don't change the signature of the method computation
+      No external layout transforms: Pass the dynamic input tensors directly into pallas_call in their original shapes and memory layouts—do not transpose, reshape, or pad tensors outside the Pallas kernel.
+      Verify correctness and performance: Preserve float32 accumulation/convolution semantics where needed, verify numerical correctness against the reference computation(*dynamic_args, *static_args) using jnp.allclose(..., rtol=0.01, atol=0.05), and benchmark end-to-end execution time (with block_until_ready()) to confirm a speedup over the XLA baseline.
+
+      cat > reference.py <<'EOF'
+
+      import jax
+      from jax import lax
+      import jax.numpy as jnp
+
+      def get_inputs():
+          dtype=jnp.bfloat16
+          k1, k2, k3 = jax.random.split(jax.random.key(42), 3)
+          hidden_states = jax.random.normal(k1, (4, 4096, 4096), dtype=dtype)
+          gate = jax.random.normal(k2, (4, 4096, 4096), dtype=dtype)
+          weight = jax.random.normal(k3, (4096,), dtype=dtype) * 0.1 + 1.0
+          return [hidden_states, gate, weight], [1e-6]
+
+      def computation(hidden_states, gate, weight, eps=1e-6):
+          in_dtype = hidden_states.dtype
+          x = hidden_states.astype(jnp.float32)
+          normed = x * lax.rsqrt(jnp.mean(lax.square(x), axis=-1, keepdims=True) + eps)
+          out = (weight * normed.astype(in_dtype)) * jax.nn.silu(gate.astype(jnp.float32))
+          return out.astype(in_dtype)
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT034
+      category: Kernel optimization
+      sub_category: Reductions and normalisation
+      difficulty: Hard
+      has_code: 'Yes'
+      baseline_result: Stumped
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        It is expected that the optimized code should be successfully compiled and there is no runtime error. It has the same logic as the original. The numerical correctness against the reference implementation using `jnp.allclose` with per-dtype tolerances based on the output dtype: rtol=0.01, atol=0.05
+
+        The optimized code should also run significsantly faster than the original code. It means "Wall time speedups" in the evaluation
+        report is significantly graster than 1.00
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        Wall time speedups in the evaluation repport is 0.69. It means that the model's code is slower than the original code.
+
+        It is because the model generated code has the following issues:
+        1. No Megacore (2-TensorCore) Parallelism:
+        Each TPU7x device has 2 TensorCores. XLA automatically partitions the (4, 4096, 4096) fusion across both TensorCores.
+        optimized.py launches a standard single-core pl.pallas_call without partitioning across the 2 TensorCores, leaving half the compute/VMEM pipeline idle.
+
+        2. Tiny Tile Size (BLOCK_M = 64):
+        I got an evaluation report after I manually changed BLOCK_M = 256:
+
+        ========================================
+        JAX KERNEL EVALUATION REPORT
+        ========================================
+        Correctness:           [True]
+        Max Absolute Diff:      ['6.250000e-02']
+        Max Relative Diff:      ['1.449275e-02']
+        ----------------------------------------
+        Reference times:        ['0.459'] ms
+        Optimized times:        ['0.203'] ms
+        Wall time speedups:     ['2.26x']
+        XProf speedups:         ['1.05x']
+        ========================================
+
+        3. Reloading weight on Every Grid Step
+
+        4. Redundant bf16 -> f32 -> bf16 Casts Inside _kernel
+
+        Besides, it has the following issues:
+
+        1. Silent Truncation / Crash When M is Not Divisible by 64
+        2. 1D weight (K,) vs 3D Tile (1, BLOCK_M, K) Layout Mismatch:
+        Mosaic TPU natively operates on 2D (sublanes, lanes) (8 x 128) tiles. Using 3D refs (1, BLOCK_M, K) alongside a 1D w_ref (K,) forces non-2D rank broadcasting in Mosaic (w * normed). Flattening the input to 2D (B * M, K) and reshaping weight to (1, K) aligns directly with TPU 2D vector registers.
+        3. No Tiling Along K:
+        The entire K dimension is loaded into VMEM at once ((1, block_m, k)). If K is very large, this will exceed VMEM capacity.
+        4. Unused Import:
+        import time is unused.
+      weight: 0.5

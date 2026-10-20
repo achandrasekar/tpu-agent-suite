@@ -1,0 +1,110 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT003 from the "Hardware profiling and debugging" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat003
+    prompt: |-
+      I am writing a custom Pallas kernel for an activation pass on TPU v6e using f32.
+      I am using grids and using a blocking method to keep my kernel from going OOM.
+      When testing small vector sizes everything runs, but when I test larger sequence
+      dimensions like 192, the kernel fails during compilation. I suspect the issue is
+      how the grid steps through memory. Do I need to explicitly scale my index_map by
+      the block size (e.g., changing lambda i: (i,) to lambda i: (i * 128,)) to
+      prevent memory out-of-bounds errors, or should I just dynamically pad x inside
+      the function before the pallas_call?Also, this is a snippet of the code reduced
+      from a larger file.
+
+      import jax import jax.numpy as np import jax.experimental.pallas as pl
+
+      @jax.jit def round_down_and_up(x: jax.Array) -> (jax.Array, jax.Array):
+
+      block_shape = (128,)
+      grid = (len(x) + block_size - 1) // block_shape[0]
+      block_spec = pl.BlockSpec(block_shape=block_shape, index_map=lambda i: (i,))
+      out_shape = jax.ShapeDtypeStruct(x.shape, x.dtype)
+
+      x_low, x_high = pl.pallas_call(
+          round_down_and_up_bfloat16_kernel,
+          out_shape=(out_shape, out_shape),
+          grid=(grid,),
+          in_specs=(block_spec,),  # Input tiling specification
+          out_specs=(block_spec, block_spec),  # Output tiling specification
+      )(x)
+
+      return x_low, x_high
+
+      This fails to compile with this error message: RuntimeError: Bad StatusOr
+      access: INVALID_ARGUMENT: Mosaic failed to compile TPU kernel: Failed to verify
+      layout for Mosaic kernel operand 1: XLA layout does not match MLIR layout for an
+      operand of shape f32[192]: expected {0:T(128)}, got {0:T(256)}
+
+      What is wrong with the shape and indexing layout?
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT003
+      category: Hardware profiling and debugging
+      sub_category: Shape and tiling violations
+      difficulty: Moderate
+      has_code: 'Yes'
+      baseline_result: Partially Solved
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        Stumped:
+        Falling for the Index-Map Trap: The model mistakenly scales the index_map by the block size. This confuses block iteration coordinates with scalar element strides which instantly triggers a massive OOB crash.
+
+        In-Kernel Dynamic Branching: The model tries handling uneven tails using standard if/else statements inside the VPU kernel, which violates the TPU's strict SIMD execution model.
+
+        GPU Architecture Hallucinations: It completely ignores the hardware context, recommending GPU-specific CUDA or Triton for a TPU v6e target.
+
+        Hallucinated XLA Flags: Rather than actually fixing the broken kernel geometry, it just invents fake XLA environment variables to blindly bypass the layout verification checks.
+
+        Partially Solved:
+
+        Bypass Index Map Trap: The model manages to recognize index map operates in units of blocks and not elements and instructs the user to use it accordingly and provides the correct indexing code.
+
+        Fails Hardware Verification: The model fails and treats the error as uneven tail issue that is fixable by naive 1D padding with multiples of 128 that misses the upstream 1D array lowering defect on TPU and hence fails to recommend 2D (1, 128) solution.
+
+        Solved:
+
+        Refutes the red Herrings:  The model successfully calls out the false premise about index_map scaling. It explains that index_map=lambda i: (i,) maps grid coordinates directly to block indices, so multiplying by 128 scales the block themselves, not the elements, which would instantly trigger out-of-bounds memory faults.
+
+        Diagnoses the layout mismatch: It accurately explains why the layouts clash. It points out that while Mosaic MLIR expects {0:T(128)} based on the (128,) block shape, XLA's target-specific vector rules for TPU v6e actually force a {0:T(256)} layout on 1D buffers.
+
+        Delivers the 2D fix: The model provides a similar verified fix seen in JAX Issue #25379. Because TPU VPUs natively execute over 2D (8, 128) layouts, it correctly bypasses the 1D Mosaic layout bug by promoting the tensor and block shapes to 2D using a leading unit dimension.
+
+        Outputs clean, standalone code: The model perfectly implements the 2D layout promotion in a self-contained, JIT-ready function. The code respects strict hardware divisibility rules and completely avoids redundant wrappers.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        Padding Solution Hallucination: The model falsely assumed the Mosaic layout error was just a simple divisibility issue because 192 is not a multiple of 128. It claimed that padding the 1D array to 256 while leaving block_size = 128 would fix it, and provided the implementation to fix this root cause. In the source issue, the reporter writes that only the tests with original input tensors larger than the block size fails. The model proposes a fix that pads 192 to 256 and keeps block_size at 128, so its fix lands at input 256 against block 128 with grid 2, which is the failure condition identified in the issue. On top of that, the reporter's own snippet code contains commented out padding logic (# if original_length != padded_length: # x = jnp.pad(...)), providing strong supporting inference that padding to the block size was already tied before and it failed. The maintainer comments in the source JAX issue hints that the crash is not a divisibility problem, but it is a known compiler lowering bug in how Pallas and Mosaic handle 1D arrays on TPUs that simple padding cannot resolve.
+
+        Layout Assignment: The model made a false claim that XLA inferred the {0:T(256)} layout simply because 192 was an uneven tail block that violated hardware divisibility. To make it worse, the false bait in the prompt that asked whether to scale the index_map or dynamically pad x inside the function, the model was right to shoot down the index_map idea but failed to see through the second one without any pushback. The {0:T(256)} layout was not assigned because of an uneven tail of 192 but because on TPU v6e, XLA enforces a wider, 256-element memory boundary for 1D buffers. The real issue is a compiler clash, Mosaic MLIR expected {0:T(128)} directly from the user's block_shape=(128,), while XLA's backend forced the {0:T(256)} layout based on its own hardware tiling rules. The model should have called out this disconnect between MLIR’s frontend block size expectation and XLA’s backend hardware tiling.
+      weight: 0.5

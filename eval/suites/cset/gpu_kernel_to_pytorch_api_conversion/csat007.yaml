@@ -1,0 +1,343 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT007 from the "GPU Kernel to PyTorch API conversion" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat007
+    prompt: |-
+      We use vLLM's moe_align_block_size CUDA path before our fused MoE GEMM. I need a general drop-in implementation using only standard PyTorch tensor operations that OpenXLA can compile for TPU v6e. In our case, topk_ids is in int32 with shape [4096,8], num-experts=256, block_size=128, and expert_map is optional.
+
+      def moe_align_block_size(
+      topk_ids: torch.Tensor,
+      block_size: int,
+      num_experts: int,
+      expert_map: torch.Tensor | None = None,
+      pad_sorted_ids: bool = False,
+      ignore_invalid_experts: bool = False,
+      ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+      """
+      Aligns the token distribution across experts to be compatible with block
+      size for matrix multiplication.
+      Note: In the case of expert_parallel, moe_align_block_size initially
+      considers all experts as valid and aligns all tokens appropriately.
+      Before the function returns it marks the experts_ids that are not in
+      the current GPU rank as -1 so the MoE matmuls could skip those blocks.
+      This requires the num_experts input arg to be the num global experts.
+      Parameters:
+      topk_ids: A tensor of shape [total_tokens, top_k] representing the
+      top-k expert indices for each token.
+      block_size: The block size used in block matrix multiplication.
+      num_experts: The total number of experts.
+      expert_map: A tensor of shape [num_experts] that maps the expert index
+      from the global space to the local index space of the current
+      expert parallel shard. If the expert is not in the current expert
+      parallel shard, the mapping is set to -1.
+      pad_sorted_ids: A flag indicating whether the sorted_token_ids length
+      should be padded to a multiple of block_size,
+      ignore_invalid_experts: A flag indicating whether to ignore invalid
+      experts. When False, all expert_ids in topk_ids will participate in
+      counting and ranking, but invalid experts in expert_ids will be marked
+      as -1. When True, all invalid expert_ids in topk_ids will be ignored
+      and will not participate in counting or ranking, and there will be no
+      -1 in expert_ids.
+      Returns:
+      sorted_token_ids: A tensor containing the sorted token indices according
+      to their allocated expert.
+      expert_ids: A tensor indicating the assigned expert index for each block.
+      num_tokens_post_padded: The total number of tokens after padding,
+      ensuring divisibility by block_size.
+      This function pads the number of tokens that each expert needs to process
+      so that it is divisible by block_size.
+      Padding ensures that during block matrix multiplication, the dimensions
+      align correctly.
+      Example:
+      Given topk_ids = [[2, 3, 4], [1, 2, 4], [1, 3, 4], [1, 2, 3]],
+      block_size = 4, and num_experts = 4:
+      We initially have 12 tokens (after repeating 'top_k' times) and 4 experts,
+      with each expert needing to process 3 tokens.
+      As block_size is 4, we pad 1 token for each expert.
+      First, flatten topk_ids to [2, 3, 4, 1, 2, 4, 1, 3, 4, 1, 2, 3].
+      Then append padding tokens [12, 12, 12, 12] for each block.
+      After sorting by expert index, we obtain token_ids
+      [3, 6, 9, 12, 0, 4, 10, 12, 1, 7, 11, 12, 2, 5, 8, 12].
+      Tokens 12 are non-existent (padding) and are ignored in
+      the subsequent matrix multiplication.
+      The padding ensures that the total number of tokens is now divisible
+      by block_size for proper block matrix operations.
+      """
+      max_num_tokens_padded = topk_ids.numel() + num_experts * (block_size - 1)
+      if pad_sorted_ids:
+      max_num_tokens_padded = round_up(max_num_tokens_padded, block_size)
+      if topk_ids.numel() < num_experts:
+      max_num_tokens_padded = min(
+      topk_ids.numel() * block_size, max_num_tokens_padded
+      )
+      sorted_ids = torch.empty(
+      (max_num_tokens_padded,), dtype=torch.int32, device=topk_ids.device
+      )
+      max_num_m_blocks = triton.cdiv(max_num_tokens_padded, block_size)
+      expert_ids = torch.empty(
+      (max_num_m_blocks,), dtype=torch.int32, device=topk_ids.device
+      )
+      num_tokens_post_pad = torch.empty((1), dtype=torch.int32, device=topk_ids.device)
+      ops.moe_align_block_size(
+      topk_ids,
+      num_experts,
+      block_size,
+      sorted_ids,
+      expert_ids,
+      num_tokens_post_pad,
+      expert_map if ignore_invalid_experts else None,
+      )
+      if expert_map is not None and not ignore_invalid_experts:
+      expert_ids = expert_map[expert_ids]
+      return sorted_ids, expert_ids, num_tokens_post_pad
+
+      template <typename scalar_t>
+      device forceinline int get_local_expert_id(
+      size_t idx, const scalar_t* restrict topk_ids,
+      int32_t* restrict expert_map, int32_t num_experts,
+      bool has_expert_map) {
+      int expert_id = topk_ids[idx];
+      if (expert_id >= num_experts || expert_id < 0) {
+      return -1;
+      }
+      if (has_expert_map) {
+      expert_id = expert_map[expert_id];
+      }
+      return expert_id;
+      }
+      template <typename scalar_t>
+      device void _moe_align_block_size(
+      const scalar_t* restrict topk_ids,
+      int32_t* restrict sorted_token_ids, int32_t* restrict expert_ids,
+      int32_t* restrict total_tokens_post_pad,
+      int32_t* restrict expert_map, int32_t num_experts,
+      int32_t padded_num_experts, int32_t experts_per_warp, int32_t block_size,
+      size_t numel, int32_t* restrict cumsum, int32_t max_num_tokens_padded,
+      int32_t max_num_m_blocks, int32_t model_offset, int32_t inactive_expert_id,
+      int32_t topk_num, int32_t* token_mask, bool has_expert_map) {
+      extern shared int32_t shared_counts[];
+      // Compute input buffer offsets. Typically these will all be 0, except when
+      // using Multi LoRA.
+      int sorted_token_ids_offset = max_num_tokens_padded * model_offset;
+      int expert_ids_offset = max_num_m_blocks * model_offset;
+      int cumsum_offset = (num_experts + 1) * model_offset;
+      // Use separate threadblocks to fill sorted_token_ids.
+      // This is safe since the current kernel does not use sorted_token_ids.
+      if (blockIdx.x % 2) {
+      // Initialize sorted_token_ids with numel
+      for (size_t it = threadIdx.x; it < max_num_tokens_padded;
+      it += blockDim.x) {
+      sorted_token_ids[sorted_token_ids_offset + it] = numel;
+      }
+      return;
+      }
+      const int warp_id = threadIdx.x / WARP_SIZE;
+      const int my_expert_start = warp_id * experts_per_warp;
+      for (int i = 0; i < experts_per_warp; ++i) {
+      if (my_expert_start + i < padded_num_experts) {
+      shared_counts[warp_id * experts_per_warp + i] = 0;
+      }
+      }
+      __syncthreads();
+      const size_t tid = threadIdx.x;
+      const size_t stride = blockDim.x;
+      for (size_t i = tid; i < numel; i += stride) {
+      if (int expert_id = get_local_expert_id(i, topk_ids, expert_map,
+      num_experts, has_expert_map);
+      expert_id != -1) {
+      int warp_idx = expert_id / experts_per_warp;
+      int expert_offset = expert_id % experts_per_warp;
+      int mask = token_mask == nullptr ? 1 : token_mask[i / topk_num];
+      atomicAdd(&shared_counts[warp_idx * experts_per_warp + expert_offset],
+      mask);
+      }
+      }
+      __syncthreads();
+      // Compute prefix sum over token counts per expert
+      using BlockScan = cub::BlockScan<int32_t, 1024>;
+      shared typename BlockScan::TempStorage temp_storage;
+      int expert_count = 0;
+      int expert_id = threadIdx.x;
+      if (expert_id < num_experts) {
+      int warp_idx = expert_id / experts_per_warp;
+      int expert_offset = expert_id % experts_per_warp;
+      expert_count = shared_counts[warp_idx * experts_per_warp + expert_offset];
+      expert_count = CEILDIV(expert_count, block_size) * block_size;
+      }
+      int cumsum_val;
+      BlockScan(temp_storage).ExclusiveSum(expert_count, cumsum_val);
+      if (expert_id <= num_experts) {
+      cumsum[cumsum_offset + expert_id] = cumsum_val;
+      }
+      if (expert_id == num_experts) {
+      total_tokens_post_pad[model_offset] = cumsum_val;
+      }
+      __syncthreads();
+      if (threadIdx.x < num_experts) {
+      for (int i = cumsum[cumsum_offset + threadIdx.x];
+      i < cumsum[cumsum_offset + threadIdx.x + 1]; i += block_size) {
+      expert_ids[expert_ids_offset + i / block_size] = threadIdx.x;
+      }
+      }
+      // Fill remaining expert_ids with -1
+      const size_t fill_start_idx =
+      cumsum[cumsum_offset + num_experts] / block_size + threadIdx.x;
+      for (size_t i = fill_start_idx; i < max_num_m_blocks; i += blockDim.x) {
+      expert_ids[expert_ids_offset + i] = inactive_expert_id;
+      }
+      }
+      template <typename scalar_t, int32_t fill_threads>
+      device void _moe_align_block_size_small_batch_expert(
+      const scalar_t* restrict topk_ids,
+      int32_t* restrict sorted_token_ids, int32_t* restrict expert_ids,
+      int32_t* restrict total_tokens_post_pad,
+      int32_t* restrict expert_map, int32_t num_experts, int32_t block_size,
+      size_t numel, int32_t max_num_tokens_padded, int32_t max_num_m_blocks,
+      int32_t inactive_expert_id, int32_t model_offset, int32_t topk_num,
+      int32_t* token_mask, bool has_expert_map) {
+      // Compute input buffer offsets. Typically these will all be 0, except when
+      // using Multi LoRA.
+      int sorted_token_ids_offset = max_num_tokens_padded * model_offset;
+      int expert_ids_offset = max_num_m_blocks * model_offset;
+      // Use an additional group of threads to fill sorted_token_ids.
+      // Since the current kernel will use sorted_token_ids afterward,
+      // we fill sorted_token_ids within the same threadblock to make
+      // synchronization easier.
+      if (threadIdx.x < fill_threads) {
+      // Initialize sorted_token_ids with numel
+      for (size_t it = threadIdx.x; it < max_num_tokens_padded;
+      it += fill_threads) {
+      sorted_token_ids[sorted_token_ids_offset + it] = numel;
+      }
+      // Three __syncthreads() corresponding to the other threads
+      __syncthreads();
+      __syncthreads();
+      __syncthreads();
+      return;
+      }
+      const size_t tid = threadIdx.x - fill_threads;
+      const size_t stride = blockDim.x - fill_threads;
+      extern shared int32_t shared_mem[];
+      int32_t* cumsum = shared_mem;
+      int32_t* tokens_cnts = (int32_t*)(shared_mem + num_experts + 1);
+      for (int i = 0; i < num_experts; ++i) {
+      tokens_cnts[(tid + 1) * num_experts + i] = 0;
+      }
+      for (size_t i = tid; i < numel; i += stride) {
+      if (int expert_id = get_local_expert_id(i, topk_ids, expert_map,
+      num_experts, has_expert_map);
+      expert_id != -1) {
+      int mask = token_mask == nullptr ? 1 : token_mask[i / topk_num];
+      tokens_cnts[(tid + 1) * num_experts + expert_id] += mask;
+      }
+      }
+      __syncthreads();
+      if (tid < num_experts) {
+      tokens_cnts[tid] = 0;
+      for (int i = 1; i <= stride; ++i) {
+      tokens_cnts[i * num_experts + tid] +=
+      tokens_cnts[(i - 1) * num_experts + tid];
+      }
+      }
+      __syncthreads();
+      if (tid == 0) {
+      cumsum[0] = 0;
+      for (int i = 1; i <= num_experts; ++i) {
+      cumsum[i] =
+      cumsum[i - 1] +
+      CEILDIV(tokens_cnts[stride * num_experts + i - 1], block_size) *
+      block_size;
+      }
+      total_tokens_post_pad[model_offset] =
+      static_cast<int32_t>(cumsum[num_experts]);
+      }
+      __syncthreads();
+      if (tid < num_experts) {
+      for (int i = cumsum[tid]; i < cumsum[tid + 1]; i += block_size) {
+      expert_ids[expert_ids_offset + i / block_size] = tid;
+      }
+      }
+      // Fill remaining expert_ids with -1
+      const size_t fill_start_idx = cumsum[num_experts] / block_size + tid;
+      for (size_t i = fill_start_idx; i < max_num_m_blocks; i += stride) {
+      expert_ids[expert_ids_offset + i] = inactive_expert_id;
+      }
+      for (size_t i = tid; i < numel; i += stride) {
+      if (int expert_id = get_local_expert_id(i, topk_ids, expert_map,
+      num_experts, has_expert_map);
+      expert_id != -1) {
+      int32_t rank_post_pad =
+      tokens_cnts[tid * num_experts + expert_id] + cumsum[expert_id];
+      if (token_mask == nullptr || token_mask[i / topk_num]) {
+      sorted_token_ids[sorted_token_ids_offset + rank_post_pad] = i;
+      ++tokens_cnts[tid * num_experts + expert_id];
+      }
+      }
+      }
+      }
+      template <typename scalar_t>
+      device void _count_and_sort_expert_tokens(
+      const scalar_t* restrict topk_ids,
+      int32_t* restrict sorted_token_ids, int32_t* restrict cumsum_buffer,
+      int32_t* restrict expert_map, size_t numel, int32_t num_experts,
+      int32_t max_num_tokens_padded, int32_t* restrict token_mask,
+      int32_t model_offset, int32_t topk_num, bool has_expert_map) {
+      const size_t tid = blockIdx.y * blockDim.x + threadIdx.x;
+      const size_t stride = blockDim.x * gridDim.y;
+      for (size_t i = tid; i < numel; i += stride) {
+      if (int expert_id = get_local_expert_id(i, topk_ids, expert_map,
+      num_experts, has_expert_map);
+      expert_id != -1) {
+      if (token_mask == nullptr || token_mask[i / topk_num]) {
+      int32_t rank_post_pad = atomicAdd(
+      &cumsum_buffer[(model_offset * (num_experts + 1)) + expert_id], 1);
+      sorted_token_ids[max_num_tokens_padded * model_offset + rank_post_pad] =
+      i;
+      }
+      }
+      }
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT007
+      category: GPU Kernel to PyTorch API conversion
+      sub_category: CUDA thread-level to PyTorch
+      difficulty: Hard
+      has_code: 'Yes'
+      baseline_result: Partially Solved
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        A correct response should provide a fixed-shape, standard PyTorch implementation that OpenXLA can compile and that runs with torch.int32 topk_ids of shape [4096,8]. For the supplied configuration, it should allocate 65,280 sorted-token slots and 510 expert-block slots; return sorted_token_ids, expert_ids, and num_tokens_post_padded as int32 tensors; use 32,768 as the padding token ID; pad every participating expert's route count to a multiple of 128; and use torch.int64 for every scatter or gather index. It must preserve both expert_map modes: when ignore_invalid_experts is False, global routes participate in counting and ranking before nonlocal block labels are mapped to -1; when True, invalid or nonlocal routes are excluded before counting and ranking. The implementation should avoid data dependent Python loops and dynamically sized masking.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        The proposed implementation is not executable for the stated torch.int32 topk_ids. In the default path, effective_ids remains torch.int32 and is passed directly as the index to one_hot.scatter_ and both gather calls; these operations require torch.int64 index tensors, so execution fails at the first scatter_. The final scatter is not affected because the response explicitly casts target_pos to torch.int64. Even after fixing those index uses, the default path returns expert_ids as int64 because sum(dim=1) promotes its int32 input, whereas vLLM returns expert_ids as int32. Although the response captures much of the fixed capacity, per-expert-padding, flattened-route, block-label, and expert_map logic, it is not an executable drop-in implementation for the supplied inputs.
+      weight: 0.5

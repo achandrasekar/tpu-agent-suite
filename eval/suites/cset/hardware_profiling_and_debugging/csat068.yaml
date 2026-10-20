@@ -1,0 +1,133 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT068 from the "Hardware profiling and debugging" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat068
+    prompt: |-
+      Needs multi-host v6e. Single-host probably won't trigger it since the scheck is about mismatched launch IDs across peers.
+
+      import jax
+      import jax.numpy as jnp
+      from jax.experimental.pallas.ops.tpu.splash_attention import (
+          splash_attention_kernel as splash,
+          splash_attention_mask as mask_lib,
+      )
+
+      config = splash.SplashConfig(
+          block_q=1024,
+          block_kv=2048,
+          block_kv_compute=1024,
+          block_q_dkv=2048,
+          block_kv_dkv=2048,
+          block_kv_dkv_compute=256,
+          # Either of these triggers the crash independently:
+          q_layout=splash.QKVLayout.SEQ_MINOR,   # HEAD_DIM_MINOR works
+          k_layout=splash.QKVLayout.HEAD_DIM_MINOR,
+          v_layout=splash.QKVLayout.SEQ_MINOR,   # HEAD_DIM_MINOR works
+          use_experimental_scheduler=True,        # False works (if layouts are also default)
+          dq_reduction_steps=3,
+      )
+
+      batch, num_heads, num_kv_heads, seq_len, head_dim = 4, 8, 2, 4096, 256
+      mask = mask_lib.CausalMask(shape=(seq_len, seq_len))
+      kernel = splash.make_splash_mha_single_device(mask, config=config)
+
+      key = jax.random.PRNGKey(0)
+      k1, k2, k3 = jax.random.split(key, 3)
+      scale = head_dim ** -0.5
+      q = jax.random.normal(k1, (batch, num_heads, seq_len, head_dim), dtype=jnp.bfloat16) * scale
+      k = jax.random.normal(k2, (batch, num_kv_heads, seq_len, head_dim), dtype=jnp.bfloat16) * scale
+      v = jax.random.normal(k3, (batch, num_kv_heads, seq_len, head_dim), dtype=jnp.bfloat16) * scale
+
+      f = jax.jit(jax.vmap(kernel))
+      grad_fn = jax.jit(jax.grad(lambda q, k, v: f(q, k, v).mean(), argnums=(0, 1, 2)))
+      dq, dk, dv = grad_fn(q, k, v)  # crashes here
+
+      We train a GQA protein language model on v6e-16 (Trillium, 4 hosts). We ran the tokamax Splash attention benchmarking tool to tune kernel block sizes, and the tuner picked use_experimental_scheduler=True and QKVLayout.SEQ_MINOR layouts as faster. Applying that config to training crashes every time with a core halt:
+
+      Core halted unexpectedly at tag:pc TensorCoreSequencer:1:0xba
+      (from TensorCoreSequencer:1:0x1ea): scheck ne:
+      ***
+      An unexpected peer shows up in the launch group with a different launch id
+      than the current group leader.
+
+      We narrowed it down to two independent triggers — either one alone is enough to crash:
+
+      use_experimental_scheduler=True (with any layout)
+      q_layout=SEQ_MINOR and/or v_layout=SEQ_MINOR with dq_reduction_steps=3 (with default scheduler)
+      Using HEAD_DIM_MINOR layouts + use_experimental_scheduler=False with the same block sizes works fine.
+
+      Trace the compilation path from jax.grad/vmap through Pallas and Mosaic to the TPU executable. Explain why use_experimental_scheduler=True can create an invalid launch-group relationship and why the failure manifests as a hardware check rather than a normal compiler error.
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT068
+      category: Hardware profiling and debugging
+      sub_category: Compilation cache and runtime failures
+      difficulty: Hard
+      has_code: 'Yes'
+      baseline_result: Partially Solved
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        Performance Bands:
+        Solved:
+                Accurate Pipeline Trace: Outlines the JAX -> Pallas -> Mosaic -> LLO -> TPU binary lowering chain precisely.
+                Anchored Root Cause: Recognizes that use_experimental_scheduler=True engages an experimental scheduler path (the LP scheduler in LLO) that emits an invalid schedule, and that SEQ_MINOR alters the generated kernel body under the backward pass's dynamic 2D grid. Crucially, it avoids inventing cross-core SPMD divergence or collective reduction trees.
+                Hardware/Compiler Boundary: Clearly explains that the emitted instructions are locally complete during static compilation, but cause a deterministic runtime rendezvous failure at the sequencer PC (0xba) where peer launch group IDs mismatch.
+                Grounded Workarounds: Recommends setting use_experimental_scheduler=False and reverting to HEAD_DIM_MINOR layouts without proposing unverified rules.
+
+        Partially Solved:
+                Accurate High-Level Trace: Correctly identifies the core compiler stack (Pallas, Mosaic, LLO) and names the hardware units (TensorCore Sequencer, scheck).
+                Plausible but Fabricated Hypotheses: Invents speculative or conflicting mechanisms to explain the triggers (e.g., claiming identical SPMD peer cores take divergent unrolled loop iterations/trip counts, or misrepresenting sequence-chunked accumulation as an odd-sized collective tree reduction).
+                Unsupported Boundary Claims: Attributes the runtime manifestation to generic assertions (e.g., claiming Mosaic strictly analyzes "per-core CFGs" in isolation) rather than the separation between static scheduling and multi-host launch group token validation.
+                Ungrounded Workaround Guidance: Introduces unverified fixes (such as requiring dq_reduction_steps=1 or power-of-two values) derived from hallucinated failure mechanisms.
+
+        Stumped:
+                Incorrect Architecture/Pipeline: Confuses the TPU compilation pipeline with standard GPU or CPU flows (e.g., referencing CUDA, LLVM NVPTX, or generic host thread barriers).
+                Misinterprets scheck: Treats scheck as a standard Python/JAX exception, a memory allocation out-of-memory (OOM) error, or a software assertion rather than a hardware sequencer halt.
+                Fails on Failure Triggers: Cannot explain why multi-host execution is required to trigger the issue or why it avoids detection during AOT compilation.
+                Generic or Irrelevant Fixes: Recommends irrelevant debugging steps (e.g., reinstalling packages, altering batch sizes, or modifying data types).
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        While the model correctly traces the lowering pipeline down to Mosaic/LLO and accurately identifies scheck ne as a hardware assertion executed by the TensorCore Sequencer on TPU v6e, its response fails to reach Solved due to factual inventions regarding the failure mechanism:
+
+        Fabricated SPMD Divergence (Item 3A): The model claims the scheduler creates "Asymmetric Software Pipelining" where peer cores have "uneven trip counts" and desynchronize because one finishes early while another remains in an unrolled loop. On homogeneous TPU cores running identical SPMD grids, trip counts do not arbitrarily diverge across peers; the invalid schedule is statically emitted by the scheduler path (the Linear Programming / LP scheduler driven via pltpu.CompilerParams).
+
+        Invented Reduction-Tree Contention (Item 3B): Framing dq_reduction_steps=3 as an odd-parity failure in a cross-core collective reduction tree is an invention. In Splash Attention, reduction steps define loop chunking intervals along the sequence dimension within the kernel body, which interacts with the dynamic 2D backward grid and GQA aliasing—not an odd vs. power-of-two collective tree reduction.
+
+        Unsupported Compiler/CFG Claims (Item 4): Assertions that "Mosaic/LLO optimize instruction streams on a per-core / per-block CFG basis" and that every instruction is merely "locally structurally valid" are fabricated generalizations rather than grounded explanations of why the invalid static schedule deterministically halts at the sequencer PC (0xba) during multi-host runtime rendezvous.
+
+        Ungrounded Workaround Heuristics: The recommendation to set dq_reduction_steps=1 or use "power-of-two reduction steps" is unjustified and stems directly from the model's invented tree-reduction hypothesis. The verified mitigations established by the prompt are simply:
+
+        Set use_experimental_scheduler=False.
+
+        Revert to HEAD_DIM_MINOR layouts.
+      weight: 0.5

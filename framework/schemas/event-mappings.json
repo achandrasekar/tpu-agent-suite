@@ -1,0 +1,275 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Canonical Event Mappings",
+  "description": "Explicit per-harness hook event mappings and identifiers.",
+  "events": {
+    "PreToolUse": {
+      "canonical_name": "PreToolUse",
+      "harnesses": {
+        "claude-code": {
+          "event_name": "PreToolUse",
+          "fields": {
+            "tool": ["tool_name"],
+            "args": ["tool_input"],
+            "session_id": ["session_id"]
+          }
+        },
+        "antigravity": {
+          "event_name": "PreToolUse",
+          "fields": {
+            "tool": ["toolCall.name", "name"],
+            "args": ["toolCall.args", "args"],
+            "session_id": ["conversationId"]
+          }
+        },
+        "cursor": {
+          "event_name": "preToolUse",
+          "fields": {
+            "tool": ["tool_name"],
+            "args": ["tool_input"],
+            "session_id": ["conversation_id"]
+          }
+        },
+        "codex": {
+          "event_name": "PreToolUse",
+          "fields": {
+            "tool": ["tool_name"],
+            "args": ["tool_input"],
+            "session_id": ["session_id"]
+          }
+        }
+      }
+    },
+    "PostToolUse": {
+      "canonical_name": "PostToolUse",
+      "harnesses": {
+        "claude-code": {
+          "event_name": "PostToolUse",
+          "fields": {
+            "tool": ["tool_name"],
+            "args": ["tool_input"],
+            "output": ["tool_response", "tool_output", "tool_result"],
+            "session_id": ["session_id"],
+            "error": []
+          }
+        },
+        "antigravity": {
+          "event_name": "PostToolUse",
+          "fields": {
+            "tool": ["toolCall.name", "name"],
+            "args": ["toolCall.args", "args"],
+            "output": ["result", "toolOutput"],
+            "session_id": ["conversationId"],
+            "error": ["error"]
+          }
+        },
+        "cursor": {
+          "event_name": "postToolUse",
+          "fields": {
+            "tool": ["tool_name"],
+            "args": ["tool_input"],
+            "output": ["tool_output"],
+            "session_id": ["conversation_id"],
+            "error": []
+          }
+        },
+        "codex": {
+          "event_name": "PostToolUse",
+          "fields": {
+            "tool": ["tool_name"],
+            "args": ["tool_input"],
+            "output": ["tool_response"],
+            "session_id": ["session_id"],
+            "error": ["tool_response.isError"]
+          }
+        }
+      }
+    },
+    "SubagentStop": {
+      "canonical_name": "SubagentStop",
+      "harnesses": {
+        "claude-code": {
+          "event_name": "SubagentStop",
+          "fields": {
+            "subagent": ["agent_type"],
+            "output": ["last_assistant_message"],
+            "stop_reason": ["stop_reason"],
+            "session_id": ["session_id"],
+            "transcript_path": ["agent_transcript_path"],
+            "prompt_id": ["prompt_id"],
+            "permission_mode": ["permission_mode"],
+            "container": ["tool_input"]
+          },
+          "handback": {
+            "event_name": "PreToolUse",
+            "matcher": "SubagentHandback",
+            "transcript_prompt_id": "promptId",
+            "transcript_offer": {
+              "flag": "isMeta",
+              "text": "delivered through SubagentHandback"
+            },
+            "requires_mode": "auto",
+            "fields": {
+              "subagent": ["agent_type"],
+              "output": ["tool_input.message"],
+              "session_id": ["session_id"]
+            }
+          }
+        },
+        "antigravity": {
+          "event_name": "Stop",
+          "fields": {
+            "subagent": ["typeName", "role"],
+            "output": ["finalModelOutput", "toolOutput"],
+            "stop_reason": ["terminationReason"],
+            "fully_idle": ["fullyIdle"],
+            "session_id": ["conversationId"],
+            "transcript_path": ["transcriptPath"],
+            "container": ["toolCall"]
+          }
+        },
+        "cursor": {
+          "event_name": "subagentStop",
+          "fields": {
+            "subagent": ["subagent_type"],
+            "output": ["summary"],
+            "stop_reason": ["status"],
+            "session_id": ["conversation_id"],
+            "transcript_path": ["agent_transcript_path"],
+            "container": []
+          }
+        },
+        "codex": {
+          "event_name": "SubagentStop",
+          "fields": {
+            "subagent": ["agent_type"],
+            "output": ["last_assistant_message"],
+            "session_id": ["session_id"],
+            "transcript_path": ["agent_transcript_path"],
+            "container": []
+          }
+        }
+      }
+    },
+    "SessionStart": {
+      "canonical_name": "SessionStart",
+      "harnesses": {
+        "claude-code": {
+          "event_name": "SessionStart",
+          "fields": {
+            "session_id": ["session_id"],
+            "source": ["source"],
+            "cwd": ["cwd"],
+            "transcript_path": ["transcript_path"]
+          }
+        },
+        "antigravity": {
+          "event_name": "PreInvocation",
+          "fields": {
+            "session_id": ["conversationId"],
+            "source": ["source"],
+            "cwd": ["workspacePaths"],
+            "transcript_path": ["transcriptPath"],
+            "invocation_num": ["invocationNum"],
+            "initial_num_steps": ["initialNumSteps"]
+          }
+        },
+        "cursor": {
+          "event_name": "sessionStart",
+          "fields": {
+            "session_id": ["session_id", "conversation_id"],
+            "cwd": ["workspace_roots"],
+            "transcript_path": ["transcript_path"]
+          }
+        },
+        "codex": {
+          "event_name": "SessionStart",
+          "fields": {
+            "session_id": ["session_id"],
+            "source": ["source"],
+            "cwd": ["cwd"],
+            "transcript_path": ["transcript_path"]
+          }
+        }
+      }
+    },
+    "Stop": {
+      "canonical_name": "Stop",
+      "harnesses": {
+        "claude-code": {
+          "event_name": "Stop",
+          "fields": {
+            "stop_reason": ["stop_reason", "reason"],
+            "error": ["error"],
+            "session_id": ["session_id"],
+            "transcript_path": ["transcript_path"]
+          }
+        },
+        "antigravity": {
+          "event_name": "Stop",
+          "fields": {
+            "stop_reason": ["terminationReason"],
+            "error": ["error"],
+            "execution_num": ["executionNum"],
+            "fully_idle": ["fullyIdle"],
+            "conversation_id": ["conversationId"],
+            "session_id": ["conversationId"],
+            "transcript_path": ["transcriptPath"]
+          }
+        },
+        "cursor": {
+          "event_name": "stop",
+          "fields": {
+            "stop_reason": ["status"],
+            "conversation_id": ["conversation_id"],
+            "session_id": ["conversation_id"]
+          }
+        },
+        "codex": {
+          "event_name": "Stop",
+          "fields": {
+            "session_id": ["session_id"],
+            "transcript_path": ["transcript_path"]
+          }
+        }
+      }
+    },
+    "SessionEnd": {
+      "canonical_name": "SessionEnd",
+      "harnesses": {
+        "claude-code": {
+          "event_name": "SessionEnd",
+          "fields": {
+            "session_id": ["session_id"],
+            "stop_reason": ["reason", "stop_reason"],
+            "transcript_path": ["transcript_path"]
+          }
+        },
+        "antigravity": {
+          "event_name": "Stop",
+          "fields": {
+            "session_id": ["conversationId"],
+            "stop_reason": ["terminationReason"],
+            "fully_idle": ["fullyIdle"],
+            "conversation_id": ["conversationId"],
+            "transcript_path": ["transcriptPath"]
+          }
+        },
+        "cursor": {
+          "event_name": "sessionEnd",
+          "fields": {
+            "session_id": ["sessionId", "session_id"],
+            "stop_reason": ["stop_reason", "reason"]
+          }
+        },
+        "codex": {
+          "event_name": "SessionEnd",
+          "fields": {
+            "session_id": ["session_id", "conversation_id"],
+            "stop_reason": ["stop_reason", "reason"]
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,55 @@
+# Roofline answer keys for this component: one `cases` block per scenario, each a
+# self-contained prompt plus its expected values. Each expected value derives from the formulas
+# in this directory's SKILL.md. Originally a textproto eval suite bound to a proto schema that is
+# not part of this package; nothing parses the textproto grammar itself.
+suite_name: "ffn-roofline"
+timeout_seconds: 300
+
+cases {
+  name: "ffn_up_proj_prefill"
+  prompt: "Calculate the memory time and compute time for the up_proj of a standard FFN.\nWorkload parameters:\n- LHS (Activation): bf16 [64, 1024, 5376]\n- RHS (Weight): bf16 [5376, 21504]\nHardware parameters:\n- TPU: TPUv7x"
+  expectations: "The agent calculates memory transfer for the up_proj as 6572998656 bytes"
+  expectations: "The agent calculates flops as 15152644620288"
+  expectations: "The agent calculates compute time as 16.9ms"
+  expectations: "The agent calculates memory time as 1.9ms"
+  expectations: "The agent assumes the accumulation data type is float32 by default, meaning the output is written as float32 (4 bytes per element)"
+}
+
+cases {
+  name: "ffn_up_proj_decode"
+  prompt: "Calculate the memory time and compute time for the up_proj of a standard FFN.\nWorkload parameters:\n- LHS (Activation): bf16 [64, 1, 5376]\n- RHS (Weight): bf16 [5376, 21504]\nHardware parameters:\n- TPU: TPUv7x"
+  expectations: "The agent calculates memory transfer for the up_proj as 237404160 bytes"
+  expectations: "The agent calculates flops as 14797504512"
+  expectations: "The agent calculates compute time as 0.01657426581ms"
+  expectations: "The agent calculates memory time as 0.07055311005ms"
+  expectations: "The agent assumes the accumulation data type is float32 by default, meaning the output is written as float32 (4 bytes per element)"
+}
+
+cases {
+  name: "ffn_down_proj_prefill"
+  prompt: "Calculate the memory time and compute time for the down_proj of a standard FFN.\nWorkload parameters:\n- LHS (Activation): bf16 [64, 1024, 21504]\n- RHS (Weight): bf16 [21504, 5376]\nHardware parameters:\n- TPU: TPUv7x"
+  expectations: "The agent calculates memory transfer for the down_proj as 4459069440 bytes"
+  expectations: "The agent calculates flops as 15152644620288"
+  expectations: "The agent calculates compute time as 16.9ms"
+  expectations: "The agent calculates memory time as 1.32ms"
+  expectations: "The agent assumes the accumulation data type is float32 by default, meaning the output is written as float32 (4 bytes per element)"
+}
+
+cases {
+  name: "ffn_down_proj_decode"
+  prompt: "Calculate the memory time and compute time for the down_proj of a standard FFN.\nWorkload parameters:\n- LHS (Activation): bf16 [64, 1, 21504]\n- RHS (Weight): bf16 [21504, 5376]\nHardware parameters:\n- TPU: TPUv7x"
+  expectations: "The agent calculates memory transfer for the down_proj as 235339776 bytes"
+  expectations: "The agent calculates flops as 14797504512"
+  expectations: "The agent calculates compute time as 0.01657426581ms"
+  expectations: "The agent calculates memory time as 0.06993960474ms"
+  expectations: "The agent assumes the accumulation data type is float32 by default, meaning the output is written as float32 (4 bytes per element)"
+}
+
+cases {
+  name: "ffn_tp_prefill_tp2_v7x"
+  prompt: "Calculate the memory time, compute time, and collective communication time for the up_proj and down_proj of a standard FFN under 1D Tensor Parallelism (TP=2).\nWorkload parameters:\n- Hidden Dimension (D): 5376\n- Intermediate Dimension (F): 21504\n- LHS (Activation): bf16 [64, 1024, 5376]\nParallelism parameters:\n- TP degree: 2\nHardware parameters:\n- TPU: TPUv7x"
+  expectations: "The agent calculates compute time for up_proj as 8.49ms"
+  expectations: "The agent calculates there are no collective after up_proj."
+  expectations: "The agent calculates compute time for down_proj as 8.49ms"
+  expectations: "The agent calculates there is one all-reduce after donw_proj and it takes 1.17 ms."
+}

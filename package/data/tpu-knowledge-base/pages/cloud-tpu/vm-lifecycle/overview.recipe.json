@@ -1,0 +1,7 @@
+{
+  "query": "Explain the Cloud TPU VM lifecycle: connecting over SSH, inspecting resources, starting, stopping and deleting resources, and coordinating multi-host access. Distinguish resource deletion from stopping. Prefer concepts over CLI flag inventories.",
+  "authoring_request": "Cloud TPU/GKE: simple queries based on GCP pages for content that will not change often",
+  "source_ids": [
+    "gcp-tpu-vm-guide"
+  ]
+}

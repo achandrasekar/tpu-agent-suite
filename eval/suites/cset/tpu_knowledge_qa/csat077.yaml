@@ -1,0 +1,55 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT077 from the "TPU Knowledge Q&A" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat077
+    prompt: 'I keep getting conflicting answers for this reshard and need the hand-waving
+      to stop: on a full untwisted 16x16x24 TPU v5p torus, a global bf16[61440,12288]
+      tensor must move from A[I_XYZ, J] to A[I,J_XYZ] using either one bandwidth-bound
+      3D AllToAll over XYZ or three non-overlapped 1D AllToAlls over X,Y,Z, with 180
+      GB/s bidirectional ICI per axis and zero startup latency. Which plan is actually
+      faster under the roofline model, based on the exact communication time for each?'
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT077
+      category: TPU Knowledge Q&A
+      sub_category: Sharding and parallelism
+      difficulty: Moderate
+      has_code: 'No'
+      baseline_result: Partially Solved
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        The response should identify Plan A as faster. Each chip holds 245,760  bytes, producing maximum directed link loads of 491.520 bytes on X, 491,520 bytes on Y, and 737,280 bytes on Z. Using the correct one way link rate of 90 GB/s, Plan A takes 8.192 us because all three axes operate concurrently and completion is determined by the slower Z axis. Plan B takes 19.115 us because its X,Y, and Z stages run sequentially. Therefore, plan A is exactly 7/3, or about 2.333x, faster than plan B.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        The response correctly selects Plan A and derives the 7/3 speedup, but its final communication times are wrong. It divides the stated 180 GB/s bidirectional bandwith twice and incorrectly uses 45GB/s  as the one-way link rate. The correct one way rate is 90 GB/s. As a result, its final times of 16.384 us and 38.229 us are 2x too large. The response does show the correct values of 8.192 us and 19.115 us under an "alternative interpretation," but it wrongly rejects them and presents the incorrect values in its conclusion.
+      weight: 0.5

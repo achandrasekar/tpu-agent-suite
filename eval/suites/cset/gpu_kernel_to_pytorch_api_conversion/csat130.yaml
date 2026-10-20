@@ -1,0 +1,232 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT130 from the "GPU Kernel to PyTorch API conversion" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat130
+    prompt: |-
+      Convert the below CUDA kernel to standard PyTorch for TPU execution through OpenXLA. The wrapper uses contiguous torch.int32 input of shape (size_k, size_n//(32//num_bits)) and returns torch.int32 of shape (size_k//16, size_n16//(32//num_bits)). External constants: tile_k_size=16,tile_n_size=64,repack_stages=8,num_threads=256.
+      template <int const num_threads, int const num_bits, bool is_a_8bit>
+      global void awq_marlin_repack_kernel(
+      uint32_t const restrict b_q_weight_ptr, uint32_t* restrict out_ptr,
+      int size_k, int size_n) {
+      constexpr int pack_factor = 32 / num_bits;
+      constexpr int target_tile_n_size = tile_n_size / (is_a_8bit ? 2 : 1);
+      constexpr int target_tile_k_size = tile_k_size * (is_a_8bit ? 2 : 1);
+      int k_tiles = size_k / target_tile_k_size;
+      int n_tiles = size_n / target_tile_n_size;
+      int block_k_tiles = div_ceil(k_tiles, gridDim.x);
+      auto start_k_tile = blockIdx.x * block_k_tiles;
+      if (start_k_tile >= k_tiles) {
+      return;
+      }
+      int finish_k_tile = min(start_k_tile + block_k_tiles, k_tiles);
+      // Wait until the next thread tile has been loaded to shared memory.
+      auto wait_for_stage = & {
+      // We only have stages - 2 active fetches since we are double buffering
+      // and can only issue the next fetch when it is guaranteed that the previous
+      // shared memory load is fully complete (as it may otherwise be
+      // overwritten).
+      cp_async_wait<repack_stages - 2>();
+      __syncthreads();
+      };
+      extern shared int4 sh[];
+      constexpr int tile_n_ints = target_tile_n_size / pack_factor;
+      constexpr int stage_n_threads = tile_n_ints / 4;
+      constexpr int stage_k_threads = target_tile_k_size;
+      constexpr int stage_size = stage_k_threads * stage_n_threads;
+      auto fetch_to_shared = [&](int pipe, int k_tile_id, int n_tile_id) {
+      if (n_tile_id >= n_tiles) {
+      cp_async_fence();
+      return;
+      }
+      int first_n = n_tile_id * target_tile_n_size;
+      int first_n_packed = first_n / pack_factor;
+
+      int4* sh_ptr = sh + stage_size * pipe;
+
+      if (threadIdx.x < stage_size) {
+        auto k_id = threadIdx.x / stage_n_threads;
+        auto n_id = threadIdx.x % stage_n_threads;
+
+        int first_k = k_tile_id * target_tile_k_size;
+
+        cp_async4(&sh_ptr[k_id * stage_n_threads + n_id],
+                  reinterpret_cast<int4 const*>(
+                      &(b_q_weight_ptr[(first_k + k_id) * (size_n / pack_factor) +
+                                       first_n_packed + (n_id * 4)])));
+      }
+
+      cp_async_fence();
+      };
+      auto repack_tile = [&](int pipe, int k_tile_id, int n_tile_id) {
+      if (n_tile_id >= n_tiles) {
+      return;
+      }
+      auto warp_id = threadIdx.x / 32;
+      auto th_id = threadIdx.x % 32;
+
+      if (warp_id >= 4) {
+        return;
+      }
+
+      int tc_col = th_id / 4;
+      int tc_row = (th_id % 4) * (is_a_8bit ? 4 : 2);
+
+      constexpr int tc_offsets[4] = {0, 1, 8, 9};
+
+      int cur_n = (warp_id / (is_a_8bit ? 2 : 1)) * 16 + tc_col;
+      int cur_n_packed = cur_n / pack_factor;
+      int cur_n_pos = cur_n % pack_factor;
+
+      constexpr int sh_stride = tile_n_ints;
+      constexpr uint32_t mask = (1 << num_bits) - 1;
+
+      int4* sh_stage_ptr = sh + stage_size * pipe;
+      uint32_t* sh_stage_int_ptr = reinterpret_cast<uint32_t*>(sh_stage_ptr);
+
+      // Undo interleaving
+      int cur_n_pos_unpacked;
+      if constexpr (num_bits == 4) {
+        constexpr int undo_pack[8] = {0, 4, 1, 5, 2, 6, 3, 7};
+        cur_n_pos_unpacked = undo_pack[cur_n_pos];
+      } else {
+        constexpr int undo_pack[4] = {0, 2, 1, 3};
+        cur_n_pos_unpacked = undo_pack[cur_n_pos];
+      }
+
+      uint32_t vals[8];
+      #pragma unroll
+      for (int i = 0; i < 4; i++) {
+      if constexpr (is_a_8bit) {
+      int cur_elem = tc_row + i;
+      int packed_src_0 =
+              sh_stage_int_ptr[cur_n_packed + (8 / pack_factor) * (warp_id % 2) +
+                               sh_stride * cur_elem];
+          int packed_src_1 =
+              sh_stage_int_ptr[cur_n_packed + (8 / pack_factor) * (warp_id % 2) +
+                               sh_stride * (cur_elem + 16)];
+
+          vals[i] = (packed_src_0 >> (cur_n_pos_unpacked * num_bits)) & mask;
+          vals[4 + i] = (packed_src_1 >> (cur_n_pos_unpacked * num_bits)) & mask;
+        } else {
+          int cur_elem = tc_row + tc_offsets[i];
+
+          int packed_src_0 =
+              sh_stage_int_ptr[cur_n_packed + sh_stride * cur_elem];
+          int packed_src_1 = sh_stage_int_ptr[cur_n_packed + (8 / pack_factor) +
+                                              sh_stride * cur_elem];
+
+          vals[i] = (packed_src_0 >> (cur_n_pos_unpacked * num_bits)) & mask;
+          vals[4 + i] = (packed_src_1 >> (cur_n_pos_unpacked * num_bits)) & mask;
+        }
+      }
+
+      constexpr int tile_size =
+          target_tile_k_size * target_tile_n_size / pack_factor;
+      int out_offset = (k_tile_id * n_tiles + n_tile_id) * tile_size;
+
+      // Result of:
+      // https://github.com/NVIDIA/FasterTransformer/blob/main/src/fastertransformer/cutlass_extensions/include/cutlass_extensions/interleaved_numeric_conversion.h
+      if constexpr (!is_a_8bit && num_bits == 4) {
+        int pack_idx[8] = {0, 2, 4, 6, 1, 3, 5, 7};
+
+        uint32_t res = 0;
+      #pragma unroll
+      for (int i = 0; i < 8; i++) {
+      res |= vals[pack_idx[i]] << (i * 4);
+      }
+      out_ptr[out_offset + th_id * 4 + warp_id] = res;
+
+      } else if constexpr (is_a_8bit && num_bits == 4) {
+        int pack_idx[8] = {0, 4, 1, 5, 2, 6, 3, 7};
+
+        uint32_t res = 0;
+      #pragma unroll
+      for (int i = 0; i < 8; i++) {
+      res |= vals[pack_idx[i]] << (i * 4);
+      }
+      out_ptr[out_offset + th_id * 4 + warp_id] = res;
+
+      } else {
+        constexpr int pack_idx[4] = {0, 2, 1, 3};
+
+        uint32_t res1 = 0;
+        uint32_t res2 = 0;
+      #pragma unroll
+      for (int i = 0; i < 4; i++) {
+      const int ii = is_a_8bit ? i : pack_idx[i];
+      res1 |= vals[ii] << (i * 8);
+      res2 |= vals[4 + ii] << (i * 8);
+      }
+      out_ptr[out_offset + th_id * 8 + (warp_id * 2) + 0] = res1;
+        out_ptr[out_offset + th_id * 8 + (warp_id * 2) + 1] = res2;
+      }
+      };
+      auto start_pipes = [&](int k_tile_id, int n_tile_id) {
+      #pragma unroll
+      for (int pipe = 0; pipe < repack_stages - 1; pipe++) {
+      fetch_to_shared(pipe, k_tile_id, n_tile_id + pipe);
+      }
+      wait_for_stage();
+      };
+      #pragma unroll
+      for (int k_tile_id = start_k_tile; k_tile_id < finish_k_tile; k_tile_id++) {
+      int n_tile_id = 0;
+      start_pipes(k_tile_id, n_tile_id);
+
+      while (n_tile_id < n_tiles) {
+      #pragma unroll
+      for (int pipe = 0; pipe < repack_stages; pipe++) {
+      fetch_to_shared((pipe + repack_stages - 1) % repack_stages, k_tile_id,
+      n_tile_id + pipe + repack_stages - 1);
+      repack_tile(pipe, k_tile_id, n_tile_id + pipe);
+      wait_for_stage();
+      }
+      n_tile_id += repack_stages;
+      }
+      }
+      }
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT130
+      category: GPU Kernel to PyTorch API conversion
+      sub_category: CUDA shared memory to PyTorch tiling
+      difficulty: Hard
+      has_code: 'Yes'
+      baseline_result: Partially Solved
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        A correct response provides a complete conversion using standard PyTorch tensor operations suitable for TPU execution through OpenXLA. It preserves the CUDA kernel's exact packed output words, their order, and the required output shape and dtype throughout the valid input domain. Negative input words must be treated as valid packed bit patterns, with integer operations that preserve those bits during unpacking and repacking under OpenXLA. Tensor computation and the returned output must remain on the input device . Static Python control flow based on fixed arguments is acceptable.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        The model correctly reconstructs the AWQ values and applies the Marlin layout in ordinary PyTorch. The failure is its reliance on >> for signed packed integers without accounting for OpenXLA lowering differences. Where this operator lowers to integer division, truncation toward zero gives different results from arithmetic right shifting for some negative values. This changes the extracted bits and produces incorrect packed output. Negative words are valid inputs, so the error violates the required conversion semantics and makes the unconditional claim of identical output through OpenXLA incorrect.
+      weight: 0.5

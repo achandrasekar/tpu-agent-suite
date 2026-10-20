@@ -1,0 +1,7 @@
+{
+  "query": "Summarize stable TPU performance principles: input bottlenecks, shape alignment and padding, batching, XLA fusion, memory movement and distributed communication. Separate general principles from generation-specific tuning.",
+  "authoring_request": "Cloud TPU/GKE: simple queries based on GCP pages for content that will not change often",
+  "source_ids": [
+    "cloud-tpu-performance-guide"
+  ]
+}

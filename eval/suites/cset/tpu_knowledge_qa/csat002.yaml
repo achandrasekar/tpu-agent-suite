@@ -1,0 +1,52 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT002 from the "TPU Knowledge Q&A" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat002
+    prompt: My Pallas dropout forward and backward reuse the same key, but their masks
+      stop matching whenever autotuning changes the block size or grid order. A teammate
+      wants me to split the key. Is that the right fix?
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT002
+      category: TPU Knowledge Q&A
+      sub_category: Training concerns
+      difficulty: Moderate
+      has_code: 'No'
+      baseline_result: Partially Solved
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        The correct answer rejects key splitting and derives each dropout sample from the shared global key and logical tensor position, independent of block size or grid order. It should give a valid JAX/Pallas implementation, such as pltpu.sample_block, that produces correctly distributed Bernoulli masks and identical forward and backward masks.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        The response correctly rejects key splitting and identifies block dependent RNG assignment, but its proposed remedy is not executable as written. It calls the undocumented jax.random.threefry2x32; the documented low-level API is jax.extend.random.threefry_2x32. It then compares the resulting raw uint32 values with an undefined keep_prob_threshhold without converting the random bits to uniform samples or defining a correctly scaled unint32 threshold. Consequently, the code does not provide a valid dropout mask implementation. Jax documents pltpu.sample_block with a shared global key as the Pallas helper for block and grid invariant sampling. The diagnosis is correct, but the remedy is invalid or incomplete.
+      weight: 0.5

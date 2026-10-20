@@ -1,0 +1,1 @@
+Answer this question about `concept-vmem`, grounded in the TPU documentation, passing it exactly as written: "How much higher is VMEM bandwidth to the MXU than HBM bandwidth?" Answer clearly, citing any references you can for grounding. Drop a JSON at `/logs/artifacts/answer.json` with keys `answer` and `reference`, for scoring.

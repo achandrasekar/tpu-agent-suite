@@ -1,0 +1,35 @@
+# Roofline answer keys for this component: one `cases` block per scenario, each a
+# self-contained prompt plus its expected values. Each expected value derives from the formulas
+# in this directory's SKILL.md. Originally a textproto eval suite bound to a proto schema that is
+# not part of this package; nothing parses the textproto grammar itself.
+
+suite_name: "dsa-attention-roofline"
+timeout_seconds: 300
+
+cases {
+  name: "dsa_prefill_indexer_wq_b"
+  prompt: "Calculate the Local FLOPS (GFLOPS) and Local Memory Transfer (MiB) per core for the Indexer Query Projection (wq_b) in DSA during the Prefill phase with local_batch=1, seq_len=4096, D_c_q=1536, H_idx=64, D_idx=128, input_dtype=fp8, weight_dtype=fp8, output_dtype=bf16."
+  expectations: "The calculated GFlops for Indexer Query Projection is approximately 103.08"
+  expectations: "The calculated memory_transfer for Indexer Query Projection is approximately 82.00"
+}
+
+cases {
+  name: "dsa_prefill_indexer_wk"
+  prompt: "Calculate the Local FLOPS (GFLOPS) and Local Memory Transfer (MiB) per core for the Indexer Key Projection (wk) in DSA during the Prefill phase with local_batch=1, seq_len=4096, hidden_dim=7168, D_idx=128, input_dtype=fp8, weight_dtype=fp8, output_dtype=bf16."
+  expectations: "The calculated GFlops for Indexer Key Projection is approximately 7.52"
+  expectations: "The calculated memory_transfer for Indexer Key Projection is approximately 29.88"
+}
+
+cases {
+  name: "dsa_prefill_indexer_qk"
+  prompt: "Calculate the Local FLOPS (GFLOPS) and Local Memory Transfer (MiB) per core for the Indexer QK Logits in DSA during the Prefill phase with local_batch=1, seq_len=4096, H_idx=64, D_idx=128, input_dtype=bf16, output_dtype=bf16. Assume the kernel is fused and only reads inputs from HBM."
+  expectations: "The calculated GFlops for Indexer QK Logits is approximately 274.88"
+  expectations: "The calculated memory_transfer for Indexer QK Logits is approximately 65.00"
+}
+
+cases {
+  name: "dsa_prefill_mla_qk_nope"
+  prompt: "Calculate the Local FLOPS (GFLOPS) and Local Memory Transfer (MiB) per core for the QK (nope) phase in DSA during the Prefill phase with local_batch=1, seq_len=4096, K_idx=2048, H_q=128, D_c=512, input_dtype=bf16, cache_dtype=fp8, output_dtype=bf16. Assume weight absorption is applied, and we only read selected keys from the cache."
+  expectations: "The calculated GFlops for QK nope is approximately 1099.51"
+  expectations: "The calculated memory_transfer for QK nope is approximately 4608.00"
+}

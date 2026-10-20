@@ -1,0 +1,53 @@
+{
+  "task": "a9_step_time_reconciliation",
+  "title": "Three tools, three step times. Which one is the step time?",
+  "answer_file": "answer.json",
+  "pass_threshold": 12,
+  "fields": {
+    "overview_step_time_ms": {
+      "type": "number",
+      "tol_abs": 0.5,
+      "weight": 1
+    },
+    "avg_step_time_tool_ms": {
+      "type": "number",
+      "tol_rel": 0.02,
+      "weight": 1
+    },
+    "avg_step_time_tool_step_count": {
+      "type": "number",
+      "tol_abs": 0,
+      "weight": 2
+    },
+    "host_boundness_step_count": {
+      "type": "number",
+      "tol_abs": 0,
+      "weight": 2
+    },
+    "step_times_are_numerically_equal": {
+      "type": "bool",
+      "weight": 2,
+      "grounded": false
+    },
+    "avg_step_time_counts": {
+      "type": "enum",
+      "weight": 4,
+      "grounded": false,
+      "values": [
+        "training_steps",
+        "xla_module_executions",
+        "unknown"
+      ]
+    },
+    "training_step_time_ms": {
+      "type": "number",
+      "tol_abs": 0.5,
+      "weight": 2
+    },
+    "core_count": {
+      "type": "number",
+      "tol_abs": 0,
+      "weight": 1
+    }
+  }
+}

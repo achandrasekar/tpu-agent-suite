@@ -1,0 +1,59 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT087 from the "TPU Knowledge Q&A" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat087
+    prompt: |-
+      We spent this year moving our serving stack onto torch_xla. This week two
+      links showed up in our team chat. One says vLLM on TPU stopped going
+      through torch_xla and now runs PyTorch models through JAX with something
+      called torchax. The other says Google announced a thing called TorchTPU
+      that will replace PyTorch/XLA once it is out. Half the team says these are
+      rumors, the docs still say torch_xla everywhere, so keep porting. The other
+      half says we are porting onto a dead stack and should stop. What is
+      actually true here as of now, and what would you do with a serving codebase
+      that is halfway through a torch_xla port?
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT087
+      category: TPU Knowledge Q&A
+      sub_category: PyTorch API code and OpenXLA behaviour
+      difficulty: Hard
+      has_code: 'No'
+      baseline_result: Partially Solved
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        A good answer treats both links as real announcements, or says plainly it cannot verify the newest state and lays out how to check, which counts in its favor. The facts are the October 2025 vLLM TPU move to a JAX and torchax backend, and the April 2026 PyTorch/XLA announcement of TorchTPU as the replacement once public. The advice is that torch_xla works and is supported today so the port is not wasted, new serving work rides vLLM's TPU backend, and the code stays loosely coupled to torch_xla private APIs so the later migration is cheap.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        The model fully knows the vLLM side, torchax mechanics and Pallas kernels included, and its advice matches the target, model code reusable, standard serving on vLLM's TPU backend, port not wasted. It does not know the latest TorchTPU updates, calls the user's accurate reading misconstrued in timeline, invents specifics the announcement never states, and presents the reconstruction as ground truth with unsourced precision instead of offering to verify.
+      weight: 0.5

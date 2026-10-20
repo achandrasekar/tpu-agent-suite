@@ -1,0 +1,74 @@
+{
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "$id": "kernel-worker-result.json",
+   "additionalProperties": false,
+   "status_requires": {
+      "optimized": [
+         "optimized_kernel_artifact"
+      ]
+   },
+   "properties": {
+      "error_message": {
+         "description": "Why the stage did not reach 'optimized'.",
+         "type": "string"
+      },
+      "failure_reason": {
+         "description": "The cause, on the axis the status enum deliberately does not cover.",
+         "enum": [
+            "compilation_error",
+            "test_failure",
+            "timeout",
+            "no_device",
+            "cancelled"
+         ],
+         "type": "string"
+      },
+      "iteration": {
+         "description": "Required of every outcome, not just success: the kernel-worker knows its iteration number before it does any work, so a failure can always say which iteration failed.",
+         "minimum": 1,
+         "type": "integer"
+      },
+      "latency_ms": {
+         "minimum": 0,
+         "type": "number"
+      },
+      "optimized_kernel_artifact": {
+         "description": "Path to the optimized kernel artifact. Owed by an 'optimized' result; absent otherwise.",
+         "type": "string"
+      },
+      "run_id": {
+         "pattern": "^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}$",
+         "type": "string"
+      },
+      "speedup_factor": {
+         "minimum": 0,
+         "type": "number"
+      },
+      "status": {
+         "description": "What this iteration produced. 'optimized' means the iteration ended with a kernel that compiled and passed its tests. This replaces {success, failed, completed}, in which `success` and `completed` overlapped with no stated difference. 'needs_input' means the target needs a setting only the user can give, such as a `gke_job` profile with no `staging_bucket` to bring profile traces back; `error_message` carries the question and the setup command. The fields 'optimized' owes are declared in `status_requires` and enforced by the runtime, because this validator has no conditional keywords.",
+         "enum": [
+            "optimized",
+            "invalid_input",
+            "needs_input",
+            "failed"
+         ],
+         "type": "string"
+      }
+   },
+   "required": [
+      "iteration",
+      "run_id",
+      "status"
+   ],
+   "type": "object",
+   "examples": [
+      {
+         "status": "optimized",
+         "iteration": 1,
+         "latency_ms": 1.0,
+         "speedup_factor": 1.5,
+         "run_id": "20260914T120000Z-000000000000",
+         "optimized_kernel_artifact": "artifacts/kernel.py"
+      }
+   ]
+}

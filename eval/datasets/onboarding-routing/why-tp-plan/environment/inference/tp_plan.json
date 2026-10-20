@@ -1,0 +1,20 @@
+{
+  "devices": 8,
+  "hbm_gib_per_device": 32.0,
+  "num_attention_heads": 24,
+  "num_key_value_heads": 4,
+  "use_mla": false,
+  "linear_attention_heads": [
+    16,
+    48
+  ],
+  "weights_gib": 51.75,
+  "recommended_engine": "vllm",
+  "smallest_fitting_tp": 4,
+  "source": "recommended",
+  "ok": true,
+  "tensor_parallel_size": 8,
+  "data_parallel_size": 1,
+  "reason": "largest TP that divides 24 heads and whose weight shard (6.5 GiB) fits 80% of 32 GiB, leaving the most HBM for the KV cache and compiling one engine; TP 4 also fits and, with more replicas, may serve faster: pass --tp to measure it, at the cost of startup time and memory headroom; torch_tpu has no device layout for TP 2 (No TPU topology found for count: 2)",
+  "tp_if_no_data_parallel": 8
+}

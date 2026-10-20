@@ -1,0 +1,153 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT145 from the "Kernel optimization" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat145
+    prompt: |-
+      We serve a text embedding model on TPU7x and the pooling step at the end of the
+      encoder is costing more than it should. Requests are packed into one ragged batch
+      with cu_seqlens, and the pooler takes the mean over each sequence's own tokens and
+      L2 normalises the result. There is no matmul in it, it is pure bandwidth, but XLA
+      lowers it into ten separate passes and reads a 67 MB hidden state tensor to
+      produce 256 KB of embeddings.
+
+      Optimize the computation below into a Pallas kernel for TPU. Shapes are T=8192
+      packed tokens across B=32 sequences with hidden size H=4096, hidden states bf16
+      in and out with the pooling arithmetic in f32. cu_seqlens is int32 of length
+      B+1 and holds the exclusive prefix sums of the sequence lengths.
+
+      The layout is fixed by the rest of the serving stack. You cannot change the
+      [B, H] output shape or ordering, reorder or drop sequences, or return the
+      unnormalised sums. Sequence lengths vary by more than two orders of magnitude in
+      a real batch and you cannot assume they are equal, that they are multiples of any
+      tile size, or that they are sorted. The mean must be taken over each sequence's
+      own tokens only, never across a boundary into a neighbouring sequence, and every
+      sequence must produce a row even when it holds a single token. The output must be
+      L2 normalised per row, and a sequence whose pooled vector is all zeros must come
+      back finite rather than as NaN.
+
+      Test with rtol=0.01 and atol=0.05.
+
+      # Imports
+      import jax
+      import jax.numpy as jnp
+
+      # Initialization
+      def get_inputs():
+          key = jax.random.key(0)
+          k1, k2 = jax.random.split(key, 2)
+
+          B, H, T = 32, 4096, 8192
+
+          raw = jax.random.uniform(k1, (B,), minval=0.0, maxval=1.0)
+          lens = jnp.maximum((raw / jnp.sum(raw) * T).astype(jnp.int32), 1)
+          lens = lens.at[-1].set(T - jnp.sum(lens[:-1]))
+          cu_seqlens = jnp.concatenate([jnp.zeros((1,), jnp.int32), jnp.cumsum(lens)])
+
+          hidden = jax.random.normal(k2, (T, H), dtype=jnp.float32).astype(jnp.bfloat16)
+
+          dynamic_args = [hidden, cu_seqlens]
+          static_args = []
+          return dynamic_args, static_args
+
+      # Computation
+      def computation(hidden, cu_seqlens):
+          T, H = hidden.shape
+          B = cu_seqlens.shape[0] - 1
+
+          seg = jnp.sum(jnp.arange(T, dtype=jnp.int32)[:, None] >= cu_seqlens[None, 1:], axis=-1)
+          summed = jnp.zeros((B, H), jnp.float32).at[seg].add(hidden.astype(jnp.float32))
+
+          lens = (cu_seqlens[1:] - cu_seqlens[:-1]).astype(jnp.float32)
+          pooled = summed / jnp.maximum(lens[:, None], 1.0)
+
+          norm = jnp.sqrt(jnp.maximum(jnp.sum(pooled * pooled, axis=-1, keepdims=True), 1e-12))
+          return (pooled / norm).astype(jnp.bfloat16)
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT145
+      category: Kernel optimization
+      sub_category: Embedding model pooling
+      difficulty: Hard
+      has_code: 'Yes'
+      baseline_result: Stumped
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        A good answer pools each sequence in one streaming pass over the packed hidden
+        states instead of ten, keeping the running sums on chip and never materialising
+        the [T, B] segment tensor the baseline builds. It handles the ragged boundaries
+        without assuming equal lengths, produces a row for every sequence including one
+        token ones, never reads across a sequence boundary, and normalises the result
+        without returning NaN for a zero vector.
+
+        The chip decides the grade. Correct inside rtol 0.01 and atol 0.05 with a real
+        speedup is a win. Correct and only slightly faster, or correct after several
+        repair attempts, is partial. A kernel that will not compile, gives wrong answers,
+        or runs slower than the plain JAX is a fail, and slower counts as a fail even
+        when the code is right.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        The kernel does not compile. The error names the line: at optimized.py line 45,
+        out_ref[b, :] = (mean / norm).astype(jnp.bfloat16), rejected with Loads and
+        stores are only allowed on VMEM and SMEM references.
+
+        The cause is a single inconsistency in the kernel's own memory plan. It declares
+        both the input and the output in HBM, in_specs and out_specs each using
+        pl.BlockSpec(memory_space=pltpu.HBM). An HBM reference can only be reached by
+        DMA, not by a load or a store. For every input read the kernel does exactly that,
+        using pltpu.make_async_copy to move a tile from the HBM hidden state into a VMEM
+        scratch buffer and waiting on a semaphore. For the single output write it uses a
+        direct store instead. The same rule it followed four lines earlier applies, and
+        the write needed a DMA from a VMEM staging buffer back to the HBM output.
+
+        The pooling itself is correct. Run in Pallas interpret mode on CPU against the
+        reference at reduced size, the maximum absolute difference was 0.000e+00 across
+        every sequence, with all rows unit norm and all values finite. The ragged
+        boundary handling is right and not obvious: the kernel reads in 128 token tiles,
+        clamps the load start to T minus the tile size so that the final tile of a
+        sequence near the end of the packed tensor cannot read past it, then recovers the
+        true position with an offset-in-tile term and masks each tile to the tokens that
+        belong to the current sequence. That construction handles a sequence shorter than
+        one tile, a sequence whose tail is not tile aligned, and the last sequence in the
+        batch, without reading across a boundary. The epsilon floor on the norm returns
+        zero rather than NaN for an all zero vector, as the prompt required.
+
+        The agent made no numerical claim about this kernel and no claim about having
+        compiled it for a TPU. It described the design and the edge case behaviour only,
+        both of which hold.
+
+        Credit where due. Choosing scalar prefetch for cu_seqlens, keeping the 67 MB
+        hidden state in HBM rather than attempting to tile it through a BlockSpec
+        pipeline, accumulating in float32, and the clamp-and-mask treatment of the ragged
+        tail are all correct and none of them are obvious. The failure is one line of
+        plumbing at the end of an otherwise sound kernel.
+      weight: 0.5

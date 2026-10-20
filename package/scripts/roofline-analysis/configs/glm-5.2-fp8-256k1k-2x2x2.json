@@ -1,0 +1,111 @@
+{
+  "_provenance": {
+    "model_pins": "GLM-5.2-FP8 config.json @ gs generation 1785565055944226, read 2026-09-09",
+    "hardware_pins": "tpu/V7X.md s2 (GhostFish P3 derated), tpu/V7X_2x2x2.md",
+    "numerics": "user-supplied sheet 2026-09-17; NOT re-derived from the checkout",
+    "cell": "[256K/1K] 2x2x2, 16 cores, pure DP16 + EP16, no TP. Architecture from model/architecture/glm/5_2.md; numerics carried from the 8K cell (user-supplied sheet, not re-derived from the checkout).",
+    "chunking": "mnbt=1024 per engine, confirmed by the user for the 8K/1K cell. Prefill: an 8192-token prompt is 8 chunks of 1024. Decode: 1024 requests fleet-wide = 64 per core under DP16, 1 token each, well inside the budget. vLLM's token budget is per STEP and shared with decode -- README s3.1.",
+    "assumptions": "mnbt=1024 -- NOT specified for this cell, carried from the 8K/1K one. decode batch = 2/core -- NOT specified; set by the KV gate, which admits 2.12 req/core at 257k context. Both are assumptions, not pins."
+  },
+  "model": {
+    "name": "GLM-5.2-FP8",
+    "layers": 78,
+    "dense_layers": 3,
+    "indexer_layers": 21,
+    "indexer_freq": 4,
+    "indexer_offset": 3,
+    "hidden": 6144,
+    "heads": 64,
+    "kv_lora_rank": 512,
+    "q_lora_rank": 2048,
+    "qk_nope_head_dim": 192,
+    "qk_rope_head_dim": 64,
+    "v_head_dim": 256,
+    "indexer_heads": 32,
+    "indexer_head_dim": 128,
+    "indexer_topk": 2048,
+    "indexer_cache_bytes_per_token": 132,
+    "sparse_attention_strategy": "gathered",
+    "moe_dispatch_strategy": "hierarchical_ag",
+    "dense_fused_activation": false,
+    "moe_fused_activation": true,
+    "dense_ffn": 12288,
+    "n_experts": 256,
+    "topk": 8,
+    "expert_ffn": 2048,
+    "n_shared_experts": 1,
+    "shared_ffn": 2048,
+    "vocab": 154880,
+    "tie_embeddings": false
+  },
+  "numerics": {
+    "default": "bf16",
+    "sites": {
+      "weights": "fp8",
+      "moe_weights": "fp8",
+      "kv_cache": "fp8",
+      "indexer_cache": "fp8",
+      "kv_write": "bf16",
+      "indexer_write": "bf16",
+      "indexer_indices": "int32",
+      "act_in": "fp8",
+      "act_out": "bf16",
+      "attn_qk": "bf16",
+      "attn_av": "bf16",
+      "indexer_qk": "fp8",
+      "indexer_av": "bf16",
+      "tp_allreduce": "bf16",
+      "expert_dispatch": "fp8",
+      "expert_collect": "bf16",
+      "router_logits": "fp32",
+      "dcp_gather": "fp32"
+    }
+  },
+  "hardware": {
+    "gen": "v7x",
+    "slice_dims": [
+      2,
+      2,
+      2
+    ],
+    "d2d": true,
+    "d2d_bw": 600000000000.0,
+    "ici_bw": 88660000000.0,
+    "hbm_bw": 3364900000000.0,
+    "hbm_capacity": 103079215104,
+    "peak_fp8": 1785620000000000.0,
+    "peak_bf16": 892809000000000.0,
+    "mxu_min_dim": 256,
+    "vmem_bytes": 8388608,
+    "kernel_efficiency": 1.0
+  },
+  "sharding": {
+    "tp": 1,
+    "dp": 16,
+    "pp": 1,
+    "pcp": 1,
+    "dcp": 1,
+    "ep": true,
+    "sp": false
+  },
+  "phases": [
+    {
+      "name": "prefill",
+      "tokens": 262144,
+      "kv_len": 262144,
+      "batch": 1,
+      "mnbt": 1024
+    },
+    {
+      "name": "decode",
+      "tokens": 2,
+      "kv_len": 263168,
+      "batch": 2,
+      "mnbt": 1024
+    }
+  ],
+  "workload": {
+    "isl": 262144,
+    "osl": 1024
+  }
+}

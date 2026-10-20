@@ -1,0 +1,7 @@
+{
+  "query": "Explain a stable troubleshooting workflow for slow, hung or failing TPU jobs: collect logs and metrics, compare workers, distinguish host/input/communication/device bottlenecks, inspect profiles and handle VM boot problems. Avoid unsupported diagnosis rules.",
+  "authoring_request": "Cloud TPU/GKE: simple queries based on GCP pages for content that will not change often",
+  "source_ids": [
+    "cloud-tpu-troubleshooting"
+  ]
+}

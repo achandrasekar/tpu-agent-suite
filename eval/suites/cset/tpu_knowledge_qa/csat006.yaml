@@ -1,0 +1,65 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT006 from the "TPU Knowledge Q&A" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat006
+    prompt: |-
+      I am serving a model with the vLLM TPU backend on TPU v6e.
+
+      I set the KV cache memory budget to 24 GB.
+
+      With a KV cache block size of 256, the process uses about 24 GB for the cache. Most of my requests are short, around 80 to 180 tokens.
+
+      I changed the block size from 256 to 64 because I expected the smaller blocks to waste less memory.
+
+      After the change, the KV cache still uses about 24 GB of HBM. The number of cache blocks is about 4 times larger, and I can fit more short requests before the cache fills up. But decode latency is worse.
+
+      If the smaller blocks are saving memory, why does my HBM usage stay the same? Where is the memory saving actually showing up?
+
+      Also, does TPU v6e have a hardware block size I should match, or should I choose the KV cache block size another way?
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT006
+      category: TPU Knowledge Q&A
+      sub_category: Inference concerns
+      difficulty: Moderate
+      has_code: 'No'
+      baseline_result: Stumped
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        A strong answer should explain that the fixed 24 GB KV cache budget controls how much HBM is reserved for the cache, so reducing the block size does not necessarily reduce total HBM allocation. The benefit of smaller blocks appears as lower internal fragmentation. Short requests leave fewer unused token slots allowing more requests to fit inside the same reserved cache.
+
+        It should recognize that smaller blocks can increase the number of blocks needed for each sequence and can add paging or attention kernel overhead, which may explain the worse decode latency.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        It incorrectly claimed that TPU v6e uses 128 x 128 MXUs and then treated that hardware dimension as a required KV cache block alignment. TPU v6e uses 256 x 256 MXUs, but MXU size does not determine KV cache block size.
+      weight: 0.5

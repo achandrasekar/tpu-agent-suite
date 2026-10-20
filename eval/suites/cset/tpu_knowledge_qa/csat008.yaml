@@ -1,0 +1,68 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT008 from the "TPU Knowledge Q&A" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat008
+    prompt: 'Need a decision today. We''ve got budget approved for one thing and I
+      have to pick before the quarter closes: either move our v6e training run from
+      256 chips to 512, or spend the same money on a second 256-chip slice in a different
+      zone to run experiments in parallel. Team''s split. Which one?'
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT008
+      category: TPU Knowledge Q&A
+      sub_category: Cost and hardware selection
+      difficulty: Moderate
+      has_code: 'No'
+      baseline_result: Partially Solved
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        A good answer refuses to pick until it knows the things that decide it, and names them. What's our scaling efficiency at 256 right now, are we already communication bound, can the global batch size grow with the chip count or would 512 just mean smaller per chip batches, is the bottleneck getting one result faster or getting more experiments per week, and what phase is the research in.
+
+        Then it should lay out the rule rather than the verdict. If scaling at 256 is already poor then 512 buys very little and the second slice wins. If scaling is clean and we're blocked waiting on a single result, go wider.
+
+        An answer that gives both branches without asking counts as good too, as long as it doesn't pick a side using numbers it made up.
+        An answer that offers conditions favouring 512 should present them as independently sufficient rather than jointly necessary. Not fitting on 256 chips forces 512 by itself, whatever the state of the recipe or the deadline.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        It picked a side in the first line and never asked a single question. Went with the second 256 chip slice, then made up the numbers it needed to justify it.
+
+        The 1.6x to 1.8x scaling figure for going 256 to 512 is invented. That number carries the whole argument and it depends entirely on our model, batch size and how communication bound we already are, none of which I told it. It also invented "90% of teams" as a statistic, assumed we still have ablations left to run, which is the fact that actually decides this, and asserted that rescaling would cost days or weeks of engineering.
+
+        The biggest miss is that it never asked whether we're already communication bound at 256. If our scaling efficiency there is poor then 512 is a dead option before any of the iteration velocity argument matters, and it just assumed scaling works fine.
+
+        It also asserts that all three of its listed conditions must hold to justify 512, and that is wrong. The three are not jointly necessary. A model that does not fit on 256 chips even with rematerialisation and full sharding requires 512 on its own, regardless of whether the recipe is locked or a launch date is fixed. Presenting them as a conjunction makes the 512 option look narrower than it is, which reinforces the verdict it had already picked.
+
+        Not scored lower because the reasoning underneath is sound. Iteration velocity over job latency is a real argument, the multi zone redundancy point is good and I hadn't thought of it, and the exception list covers most of what a good answer should. But it all sits under a verdict it had already committed to, and it says "here is the diagnostic to confirm it's right for you" and then never runs one.
+
+        Saved-session re-run, 08/30, appended below the original in Model Output: same failure shape. Commits to the second slice in the first line, asks nothing, and invents a ~1.7x to 1.85x scaling figure in place of the original's 1.6x to 1.8x, still unsourced and still workload dependent. Still never asks whether we are already communication bound at 256. One defect from the original is absent in the re-run: the disqualifying conditions are now presented as independently sufficient (explicit OR), not jointly necessary. The "90% of teams" statistic is also gone. Grade unchanged.
+      weight: 0.5

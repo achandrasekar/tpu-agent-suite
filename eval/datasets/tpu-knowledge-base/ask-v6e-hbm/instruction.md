@@ -1,0 +1,1 @@
+Answer this question about `tpu-v6e-spec`, grounded in the TPU documentation, passing it exactly as written: "What is the HBM capacity per chip of TPU v6e?" Answer clearly, citing any references you can for grounding. Drop a JSON at `/logs/artifacts/answer.json` with keys `answer` and `reference`, for scoring.

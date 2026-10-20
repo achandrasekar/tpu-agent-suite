@@ -1,0 +1,62 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT094 from the "TPU Knowledge Q&A" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat094
+    prompt: |-
+      Follow up on the TPU order. We took the quantization advice and finance
+      rewrote the plan, and now I have to sign off on their math by tomorrow.
+      Their sheet says, quote. On H100 our Transformer Engine fp8 path gives
+      about 2x matmul throughput over bf16, and v6e lists 1836 8 bit TOPs
+      against 918 bf16, the same 2x, so fp8 on v6e doubles our effective compute
+      to 1836 per chip. It also halves bytes, so resident memory goes 568 to
+      284GB and decode traffic 24.6 to 12.3 TB per second. Therefore prefill
+      compute needs drop by half as well, and a v6e-16 covers the whole service
+      with headroom. End quote. The conclusion matches what we heard last time,
+      so I am inclined to sign, but I did not write this and one of the middle
+      steps smells off. Check every line. Which claims are true, which are
+      false, and does the v6e-16 conclusion still stand at the end?
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT094
+      category: TPU Knowledge Q&A
+      sub_category: Cost and hardware selection
+      difficulty: Hard
+      has_code: 'No'
+      baseline_result: Stumped
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        A good answer splits the sheet into the false premise and the surviving conclusion. The Transformer Engine analogy does not transfer, v6e has no native fp8 matmul path, 1836 is the int8 rate, Ironwood is the first generation with native fp8, so the compute doubling line is void and fp8 tensors on v6e buy storage, not matmul rate, with offering to verify current support counting in its favor. The bytes halving survives through int8, 284GB and 12.3 TB per second are right, so the v6e-16 stands on capacity and bandwidth, about 9 chips and 7.5 chips of demand, with compute never binding at 16.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        The self contradiction is checkable inside the model's own text, it rates the fp8 doubling claim mostly true and prices prefill headroom at 16 times 1836 as fp8 in its own summary table, while v6e exposes no fp8 matmul path at all, 1836 is the int8 rate, and Ironwood is the first TPU generation with native fp8, a distinction it never draws and never offers to verify. It audited the wrong half of the sheet, sharply catching the demand side decoy, the prefill halving is a double count that would bake an imaginary 4x reduction into future plans, and validating the v6e-16 conclusion on the right resources, but it swallowed the planted premise whole. It also claims an audit report generated at tpu_order_audit.md
+      weight: 0.5

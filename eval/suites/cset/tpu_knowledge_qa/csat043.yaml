@@ -1,0 +1,101 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT043 from the "TPU Knowledge Q&A" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat043
+    prompt: |-
+      Scaling plan review, dense LLM training, and I need rulings on three load bearing assumptions before this goes to finance, the plan is written and socialized and redoing it is embarrassing, so only flag what is actually wrong.
+
+      Where we are. Training runs today on a v5e-256, healthy, checkpoints every 30 minutes, and demand says we grow about 25 percent. Capacity is tight in our region, a second v5e-256 is not available this quarter, but a v5e-64 is. Our lead, who has run TPU jobs for years, wrote the scaling plan around multislice, and these are its three load bearing assumptions, quoted:
+
+      First, we request one multislice environment combining our v5e-256 and a v5e-64, and weight the per slice batch 4 to 1 so each chip sees the same load. Multislice exists exactly to glue slices together over DCN, so mixing the two sizes in one request is the whole point.
+
+      Second, multislice buys us preemption isolation. The slices are independent failure domains, so if the v5e-64 gets preempted or eaten by a maintenance event, the 256 keeps training uninterrupted on its share of the batch, the 64 gets replaced and rejoins whenever it comes back, and the worst case is we temporarily lose about 20 percent of throughput. That resilience alone justifies the multislice setup.
+
+      Third, across the slices we run plain data parallelism, gradient reduction is the only traffic that crosses DCN, activations never leave the slice, they stay on ICI exactly as they do today on the single slice.
+
+      And to save time, we know DCN is slower than ICI per link, that is priced into the plan, and we checkpoint every 30 minutes as said, so no lectures on checkpointing basics.
+
+      Four asks, short answers, we ruled internally that vague answers do not count.
+
+      One, yes or no: can one multislice request combine a v5e-256 and a v5e-64?
+
+      Two, yes or no: is the preemption story right, when the 64 is preempted the 256 keeps training uninterrupted and the replacement rejoins later?
+
+      Three, yes or no: is he right that with cross slice data parallelism, activations stay on ICI and only gradient reduction crosses DCN?
+
+      Four, one word, keep or redo: the plan as written.
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT043
+      category: TPU Knowledge Q&A
+      sub_category: Training concerns
+      difficulty: Hard
+      has_code: 'No'
+      baseline_result: Partially Solved
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        Stumped, any one of these:
+        answers yes to ask one;
+        answers yes to ask two;
+        answers no to ask three, rejecting the leads correct assumption along with his wrong ones;
+        answers keep on ask four;
+        endorses the mixed size request or the preemption isolation story in its prose even while the short answers say otherwise.
+
+        Partially Solved, any one of these:
+        no on ask one but with a fabricated or wrong reason, anything other than the documented requirement that every slice in a multislice request is the same accelerator type, where accelerator type includes the size;
+        no on ask two but without the actual repair semantics, never stating that after a replacement slice is created all other slices in the environment are restarted and the job resumes from checkpoint, so the 256 does not keep training through it;
+        yes on ask three but with the mechanism garbled, for example claiming gradients also stay on ICI or activations also cross DCN;
+        correct on all three facts but hedges ask four or answers redo without naming which assumptions died;
+        correct verdicts overall but never quantifies the blast radius the user handed over, a preemption of either slice costs the whole environment up to the 30 minute checkpoint interval, not 20 percent of throughput.
+
+        Solved:
+        no on ask one, every slice in a multislice request must be the same accelerator type and the accelerator type includes the TensorCore count, so a 256 and a 64 cannot share one request, the mixing story is not what multislice is for;
+        no on ask two with the documented repair behavior, when a slice hits preemption or a maintenance event a replacement slice is created and then all other slices in the multislice environment are restarted, training resumes from the latest checkpoint, so the 256 does not keep training through it and the real worst case with their stated cadence is the entire job losing up to 30 minutes of progress plus restart time, which is a different resilience story than the plan sells to finance;
+        yes on ask three, stated plainly as the one thing the lead has right, activations stay on ICI within each slice and gradient reduction is what crosses DCN in cross slice data parallelism;
+        redo on ask four naming assumptions one and two as the dead ones and keeping three;
+        no invented constraints, counts, or mechanisms anywhere.
+        Accept equivalent formulations, the required elements are no, no, yes, redo, with the same accelerator type requirement, the all slices restart semantics, and the explicit concession on three.
+
+        Grading note for the reviewer, owner adjudication, disclosed. The run delivered the full correct verdict pattern, no, no, yes, redo, with a correct reason on ask one and a correct concession on ask three. It lands in Partially on the second Partially clause, the ask two reason describes an unmanaged crash and never states the documented repair semantics, replacement slice created then all other slices restarted with automatic resume, and additionally the blast radius clause fires, the 20 percent figure was never corrected against the 30 minute cadence. Separately, one Solved band sub requirement is void and disclosed, the band asked ask four to name the dead assumptions while the prompt commands a one word answer, a band cannot require what the prompts own format forbids, the model answered one word as instructed, the requirement is struck and the grade does not rest on it. Band lesson recorded in Notes.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        What it got wrong. Its account of ask two carries the right consequence on the wrong mechanism. It says that when the 64 is preempted, cross slice communication blocks and the entire job crashes, requiring a restart from the last checkpoint. The documented behavior is managed auto repair, Cloud TPU creates a replacement slice and then restarts all other slices in the multislice environment so training continues, automatically resuming from the latest checkpoint when the startup script is configured for it, multislice introduction docs, URL in Source. The words auto repair and replacement appear nowhere in the response. And it never assembled the blast radius the prompt handed it in two pieces, the restart semantics plus the stated 30 minute checkpoint cadence, so the leads worst case of 20 percent throughput was never explicitly corrected to the real worst case, the entire environment losing up to 30 minutes of progress plus restart time on a preemption of either slice.
+
+        Why it matters, checkable from the models own output. The team now redoes the plan believing preemption means an unmanaged crash, so they will design manual recovery tooling for a platform that already automates it, and they will miss the one configuration the automation depends on, the startup script that makes resume automatic. And the 20 percent figure survives the review unchallenged, which means the resilience section of the redone plan can carry the same wrong number to finance. Both gaps are visible in the response text, no mention of auto repair, no mention of the 30 minutes.
+
+        What it should have done. Same four verdicts, plus the documented repair flow on ask two, replacement created then all slices restarted, resume from checkpoint, automatic with a configured startup script, and the corrected worst case stated against the leads 20 percent, whole environment, up to the checkpoint interval.
+
+        Credit where due, and it is substantial. The verdict pattern is fully correct, no, no, yes, redo, under four forced short answers with mixed polarity. Ask one is refused with the correct requirement, homogeneous slices, same shape and chip count in one request. Ask three is the notable one, the model conceded the leads correct assumption inside a plan it was rejecting, with the mechanism right, activations on ICI, gradient reduction on DCN, so the suspicion overcorrection found on my conversion row did not replicate here. No fabricated counts or mechanisms on asks one and three. Fast and committed, no hedging.
+
+        Provenance. Round 1, cold, sourced design, bands written before the run. One Solved band sub requirement adjudicated void by the owner, the band demanded that ask four name the dead assumptions while the prompt itself commands a one word answer, the model complied with the prompt, the requirement is void and disclosed, grade does not rest on it. Ships as Partially per the pre run decision rule, no round 2, the rule reserved round 2 for a Solved only.
+      weight: 0.5

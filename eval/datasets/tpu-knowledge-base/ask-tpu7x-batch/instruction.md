@@ -1,0 +1,1 @@
+Answer these questions about the keyword `tpu7x` in one call, passing each question exactly as written: "What is the HBM capacity per chip of TPU7x?" "What is the power draw (TDP) of one TPU7x chip, in watts?" Answer clearly, citing any references you can for grounding. Drop a JSON at `/logs/artifacts/answer.json` with keys `answer` and `reference`, for scoring.

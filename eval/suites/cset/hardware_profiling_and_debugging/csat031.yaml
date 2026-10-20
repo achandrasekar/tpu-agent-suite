@@ -1,0 +1,112 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT031 from the "Hardware profiling and debugging" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat031
+    prompt: |-
+      I am running into a bizarre lowering crash with a Pallas kernel on TPU v4. I am trying to pull neighbor vectors using an adjacency matrix, but the compiler throws a verification error during Mosaic lowering.
+      I suspect this is caused by how I am handling the nested loops over b and m. Because I am indexing inside a Python loop, I think Mosaic's loop unroller is failing to resolve the index types statically and is incorrectly promoting my scalar indices into vector registers (vector). I tried rewriting the loop to use static unrolling and casting the index with jax.numpy conversions, but it either throws Tracer errors or fails the same way. Alternatively, could this be a VMEM scratch allocation bug where my scratch shape (8, m, d) is spilling over and corrupting the register file?
+      Also, this code is reduced from a larger file.
+      import jax
+      from jax.experimental import pallas as pl
+      import jax.numpy as jnp
+      from jax.experimental.pallas import tpu as pltpu
+      vectors = jnp.zeros((1000, 512), dtype=jnp.bfloat16)
+      n, d = vectors.shape
+      m = 1024
+      graph = jnp.zeros((n, m), dtype=jnp.uint32)
+      def fetch_neighbors_kernel(
+      neighbor_indices_ref,
+      vectors_all_ref,
+      out_ref,
+      semaphore_ref,
+      scratch_ref,
+      ):
+      b, m = neighbor_indices_ref.shape
+      for i in range(b):
+      for j in range(m):
+      neighbor_idx = neighbor_indices_ref[i, j]
+      copy = pltpu.make_async_copy(
+      vectors_all_ref.at[neighbor_idx],
+      scratch_ref.at[i, j],
+      semaphore_ref,
+      )
+      copy.start()
+      copy.wait()
+      TPUs require (8, 128) multiple for the last two dimensions.
+      grid = (n // 8, 1)
+      grid_spec = pltpu.PrefetchScalarGridSpec(
+      num_scalar_prefetch=0,
+      grid=grid,
+      in_specs=[
+      pl.BlockSpec((8, m), lambda i, j: (i, 0)),
+      pl.BlockSpec(memory_space=pltpu.TPUMemorySpace.ANY),
+      ],
+      out_specs=pl.BlockSpec((8, m), lambda i, j: (i, 0)),
+      scratch_shapes=[
+      pltpu.SemaphoreType.DMA,
+      pltpu.VMEM((8, m, d), jnp.bfloat16),
+      ],
+      )
+      pl.pallas_call(
+      fetch_neighbors_kernel,
+      grid_spec=grid_spec,
+      out_shape=jax.ShapeDtypeStruct((n, m), jnp.bfloat16),
+      )(graph, vectors)
+      This fails to compute with:
+      jax._src.pallas.mosaic.error_handling.VerificationError: Pallas encountered an internal verification error.Please file a bug at https://github.com/jax-ml/jax/issues. Error details: 'tpu.memref_slice' op operand #1 must be variadic of 32-bit signless integer
+      What is the real issue and how do I fix it?
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT031
+      category: Hardware profiling and debugging
+      sub_category: Pallas API misuse
+      difficulty: Hard
+      has_code: 'Yes'
+      baseline_result: Stumped
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        The ideal response must identify the architectural root cause as TPU DMA descriptors and tpu.memref_slice dynamic indexing are executed by the TPU Scalar Core and strictly require scalar integers (i32) in scalar registers, whereas reading neighbor_indices_ref from VMEM yields a VPU vector register (vector<i32>). The model must explicitly clarify that .astype(int32), jnp.squeeze(), and Python .item() or int() do not solve the issue because shape/dtype transforms remain in VMEM and host casts break tracing. The model must reject invalid host-side casts and false tiling premises. To resolve the issue, it should supply an architected fix, such as configuring num_scalar_prefetch=1 or using pltpu.SMEM to place indices directly into scalar registers. Furthermore, the model must correct the functional bugs by issuing the async copy directly to out_ref, fixing out_shape to include the embedding dimension d, and tiling the neighbor dimension to avoid massive trace-time loop unrolling.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        Failure Note:
+
+        The model fails by missing many obvious code level bugs and misdiagnosing the underlying hardware failures.
+
+        Preserved Broken Output: The provided solution by the model fails to write to out_ref and retains an invalid 2D out_shape = (n, m) that drops the 512 embedding dimension. The out_ref is basically returning uninitialized memory.
+
+        Misdiagnosing the compiler error: The hardened prompt we provided with a truncated error message, which forced the model to see that the issue was unit32 vs signless int32. But, the real error was happening because the compiler rejected the operand because it received a VPU vector <i32> instead of an SPU scalar register. The github source issue confirms that operand was already on vector <i32>, and hence the failure remained in the crossing of physical VMEM to scalar register boundary.
+
+        Hallucinated Casting: The model also suggested that casting using .astype(jnp.int32) inside the kernel, which executes on the VPU and keeps the data trapped in VMEM vector registers without resolving the lowering crash.
+
+        AST Bloat: The model also failed to unroll the 8192 iteration loop which results in a massive trace time compilation overhead and serialized DMA calls which we can also verify once TPU becomes available.
+      weight: 0.5

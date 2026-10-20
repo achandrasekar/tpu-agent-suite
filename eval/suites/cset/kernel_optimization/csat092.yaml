@@ -1,0 +1,170 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT092 from the "Kernel optimization" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat092
+    prompt: |-
+      We serve a Llama3 style MoE on TPU v7e and the dispatch metadata step in front of
+      the fused expert GEMM is costing more than it should. It is vLLM's
+      moe_align_block_size: it takes the top-k expert assignments, groups the token
+      slots by expert, pads each expert's region up to a multiple of the block size so
+      the grouped matmul can run block by block, and emits the sorted slot list, the
+      expert owning each block, and the padded length. There is no matmul in it, but
+      XLA lowers it into more than twenty separate passes, including a full argsort
+      over every assignment, a bincount, two prefix sums and a scatter.
+
+      Optimize the computation below into a Pallas kernel for TPU. Shapes are T=16384
+      tokens with TOP_K=8 expert assignments each, E=128 experts and block size 64, so
+      131072 assignments padded out to a 139136 entry slot list across 2174 blocks.
+      Inputs and outputs are int32 throughout.
+
+      The layout is fixed by the rest of the serving stack. You cannot change the
+      [139136], [2174] and [1] output shapes, return only the used prefix, or return
+      the counts instead of the slot list. Padding entries in the slot list must be set
+      to 131072, which is one past the last valid assignment and the value the
+      downstream gather tests against. Expert regions must be laid out in ascending
+      expert order, each padded to a whole multiple of 64, because the grouped matmul
+      walks them block by block. Within one expert the assignments must stay in
+      ascending slot order, since the gather that follows relies on that ordering. You
+      cannot assume the expert load is balanced, that every expert receives at least
+      one token, or that the number of blocks per expert is the same.
+
+      Test with rtol=0.01 and atol=0.05.
+
+      # Imports
+      import jax
+      import jax.numpy as jnp
+
+      # Initialization
+      def get_inputs():
+          key = jax.random.key(0)
+          k1, = jax.random.split(key, 1)
+
+          T, TOP_K, E = 16384, 8, 128
+
+          logits = jax.random.normal(k1, (T, E), dtype=jnp.float32) * 2.0
+          logits = logits + jnp.linspace(2.0, -2.0, E)[None, :]
+          topk_ids = jax.lax.top_k(logits, TOP_K)[1].astype(jnp.int32)
+
+          dynamic_args = [topk_ids]
+          static_args = []
+          return dynamic_args, static_args
+
+      # Computation
+      def computation(topk_ids):
+          E = 128
+          BS = 64
+
+          T, TOP_K = topk_ids.shape
+          N = T * TOP_K
+          MAX_PADDED = N + E * (BS - 1)
+          MAX_BLOCKS = MAX_PADDED // BS
+
+          flat = topk_ids.reshape(-1)
+
+          counts = jnp.zeros((E,), jnp.int32).at[flat].add(1)
+          padded = ((counts + BS - 1) // BS) * BS
+
+          zero = jnp.zeros((1,), jnp.int32)
+          pad_starts = jnp.concatenate([zero, jnp.cumsum(padded)[:-1]])
+          raw_starts = jnp.concatenate([zero, jnp.cumsum(counts)[:-1]])
+
+          order = jnp.argsort(flat, stable=True).astype(jnp.int32)
+          sorted_e = flat[order]
+          rank = jnp.arange(N, dtype=jnp.int32) - raw_starts[sorted_e]
+          slot = pad_starts[sorted_e] + rank
+
+          sorted_token_ids = jnp.full((MAX_PADDED,), N, jnp.int32).at[slot].set(order)
+
+          block_start = (jnp.arange(MAX_BLOCKS, dtype=jnp.int32) * BS)
+          expert_ids = (jnp.sum(block_start[:, None] >= pad_starts[None, :], axis=-1) - 1).astype(jnp.int32)
+
+          num_tokens_post_padded = jnp.sum(padded).reshape(1).astype(jnp.int32)
+
+          return sorted_token_ids, expert_ids, num_tokens_post_padded
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT092
+      category: Kernel optimization
+      sub_category: MoE expert dispatch
+      difficulty: Hard
+      has_code: 'Yes'
+      baseline_result: Stumped
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        Empirical category, the benchmark number is the grade. Solved would be correct
+        inside rtol 0.01 and atol 0.05 with a wall time speedup meaningfully above 1.0.
+        Partially Solved would be correct and faster but only slightly, or correct and
+        faster after several repair attempts. Stumped is a kernel that fails to compile,
+        produces wrong answers, or is slower than the plain JAX, and making it slower
+        counts as failure even when the code is correct. Written before the run.
+
+        Note that all three outputs are int32, so rtol and atol do nothing here and
+        correctness is exact match or nothing.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        The kernel does not compile. Mosaic rejects it with an unimplemented primitive,
+        dynamic_slice, so the evaluator never produced an output to compare. This is the
+        first row in this category to return a named primitive rather than the opaque
+        jaxlib/py_client.cc:425 seen on CSAT046, CSAT061 and CSAT048, and it identifies
+        what all four have in common.
+
+        The rejected construct is the agent's own choice of control flow. Both of its
+        fori_loops index VMEM arrays with a traced scalar, flat[i] to read the
+        assignment, counts[e] and pad_starts[e] to read the running offsets, and
+        sorted_ref[pos] = i to place the result. Each of those lowers to dynamic_slice,
+        which Mosaic does not implement, and the error message says so plainly enough to
+        point at a filed issue.
+
+        Checkable from the agent's own reply, it asserts that the block boundaries and
+        expert assignment lookups are computed within the same fused kernel call
+        directly into the output references, and it presents the design as an
+        optimization over the baseline. It offered no test result and made no claim about
+        having verified compilation, which is a change from the previous three rows where
+        it asserted TPU verification it could not have performed. Reply time 5.3 seconds.
+
+        The algorithm is not only correct, it is better than the reference. I ran the
+        kernel in Pallas interpret mode on CPU and all three outputs matched exactly. The
+        agent noticed that the global argsort is unnecessary: walking the flattened
+        assignment array in ascending index order already yields ascending order within
+        each expert, so a counting sort into per expert cursors reproduces exactly what a
+        stable argsort produces. That is a genuine algorithmic improvement over the
+        reference, and the reference is mine.
+
+        The failure is that it wrote a correct CPU algorithm. A counting sort with per
+        element cursors is the natural way to express this on a scalar machine and the
+        wrong way to express it on a vector machine, which is why the first primitive it
+        reaches for is the one Mosaic has not implemented. It also serialises 131072
+        iterations, which would have been slow even had it compiled. The gap here is not
+        reasoning about the operation, which it did better than I did, but knowing what
+        the target compiler accepts.
+      weight: 0.5

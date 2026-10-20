@@ -1,0 +1,6 @@
+{"schema_version": "ATIF-v1.7", "agent": {"name": "claude-code", "version": "2.1.296"}, "steps": [
+  {"tool_calls": [{"tool_call_id": "toolu_vrtx_016emLLqZpP8CbWLQVjnLJjy", "function_name": "Agent", "arguments": {"subagent_type": "tpu-knowledge-base"}}], "observation": {"results": [{"source_call_id": "toolu_vrtx_016emLLqZpP8CbWLQVjnLJjy"}]}},
+  {"tool_calls": [{"tool_call_id": "toolu_vrtx_011EdhuPRjX8AmWvcZH7BXPJ", "function_name": "Agent", "arguments": {"subagent_type": "tpu-diagnostics"}}], "observation": {"results": [{"source_call_id": "toolu_vrtx_011EdhuPRjX8AmWvcZH7BXPJ", "extra": {"tool_result_is_error": true}}]}},
+  {"tool_calls": [{"tool_call_id": "toolu_vrtx_01Jn2jGKAu4v65gpewy5szdJ", "function_name": "Agent", "arguments": {"subagent_type": "tpu-diagnostics"}}], "observation": {"results": [{"source_call_id": "toolu_vrtx_01Jn2jGKAu4v65gpewy5szdJ"}]}},
+  {"tool_calls": [{"tool_call_id": "toolu_vrtx_01JPpyZYLAQK28NSdGhMLDw6", "function_name": "Agent", "arguments": {"subagent_type": "tpu-diagnostics"}}], "observation": {"results": [{"source_call_id": "toolu_vrtx_01JPpyZYLAQK28NSdGhMLDw6"}]}}
+]}

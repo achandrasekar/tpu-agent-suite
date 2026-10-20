@@ -1,0 +1,234 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT016 from the "GPU Kernel to PyTorch API conversion" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat016
+    prompt: |-
+      convert the following code to PyTorch code that is OpenXLA compatible:
+
+      import torch
+      import triton
+      import triton.language as tl
+      import math
+
+      @triton.jit
+      def _gqa_attn_fwd(
+          Q, K, V, Out,
+          sm_scale,
+          stride_qb, stride_qh, stride_qm, stride_qk,
+          stride_kb, stride_kh, stride_kn, stride_kk,
+          stride_vb, stride_vh, stride_vn, stride_vk,
+          stride_ob, stride_oh, stride_om, stride_ok,
+          n_kv_heads,
+          seqlen_q, seqlen_k,
+          BLOCK_M: tl.constexpr,
+          BLOCK_N: tl.constexpr,
+          BLOCK_K: tl.constexpr,
+          GROUPS: tl.constexpr,
+          IS_CAUSAL: tl.constexpr,
+      ):
+          pid_m = tl.program_id(0)
+          pid_bh = tl.program_id(1)
+
+          # map Q head index to KV head index
+          # Q has GROUPS * n_kv_heads total heads
+          batch_idx = pid_bh // (n_kv_heads * GROUPS)
+          q_head_idx = pid_bh % (n_kv_heads * GROUPS)
+          kv_head_idx = q_head_idx // GROUPS
+
+          q_offset = batch_idx * stride_qb + q_head_idx * stride_qh
+          k_offset = batch_idx * stride_kb + kv_head_idx * stride_kh
+          v_offset = batch_idx * stride_vb + kv_head_idx * stride_vh
+          o_offset = batch_idx * stride_ob + q_head_idx * stride_oh
+
+          offs_m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+          offs_n = tl.arange(0, BLOCK_N)
+          offs_k = tl.arange(0, BLOCK_K)
+
+          # load Q tile
+          q_ptrs = Q + q_offset + offs_m[:, None] * stride_qm + offs_k[None, :] * stride_qk
+          q_mask = offs_m[:, None] < seqlen_q
+          q = tl.load(q_ptrs, mask=q_mask, other=0.0).to(tl.float32)
+
+          # online softmax state
+          m_i = tl.full([BLOCK_M], float("-inf"), dtype=tl.float32)
+          l_i = tl.zeros([BLOCK_M], dtype=tl.float32)
+          acc = tl.zeros([BLOCK_M, BLOCK_K], dtype=tl.float32)
+
+          hi = seqlen_k
+          if IS_CAUSAL:
+              hi = min((pid_m + 1) * BLOCK_M, seqlen_k)
+
+          for start_n in range(0, hi, BLOCK_N):
+              cur_n = start_n + offs_n
+
+              k_ptrs = K + k_offset + cur_n[None, :] * stride_kn + offs_k[:, None] * stride_kk
+              k_mask = cur_n[None, :] < seqlen_k
+              k = tl.load(k_ptrs, mask=k_mask, other=0.0)
+
+              s = tl.dot(q, k) * sm_scale
+
+              if IS_CAUSAL:
+                  causal_mask = offs_m[:, None] >= cur_n[None, :]
+                  s = tl.where(causal_mask, s, float("-inf"))
+
+              m_ij = tl.max(s, axis=1)
+              m_new = tl.maximum(m_i, m_ij)
+              alpha = tl.exp(m_i - m_new)
+              beta = tl.exp(m_ij - m_new)
+              l_i = l_i * alpha + tl.sum(tl.exp(s - m_ij[:, None]) * beta[:, None], axis=1)
+              m_i = m_new
+
+              acc = acc * alpha[:, None]
+
+              v_ptrs = V + v_offset + cur_n[:, None] * stride_vn + offs_k[None, :] * stride_vk
+              v_mask = cur_n[:, None] < seqlen_k
+              v = tl.load(v_ptrs, mask=v_mask, other=0.0)
+
+              p = tl.exp(s - m_i[:, None])
+              acc += tl.dot(p.to(v.dtype), v)
+
+          acc = acc / l_i[:, None]
+
+          o_ptrs = Out + o_offset + offs_m[:, None] * stride_om + offs_k[None, :] * stride_ok
+          o_mask = offs_m[:, None] < seqlen_q
+          tl.store(o_ptrs, acc.to(Out.dtype.element_ty), mask=o_mask)
+
+      def gqa_attention(
+          q: torch.Tensor,
+          k: torch.Tensor,
+          v: torch.Tensor,
+          causal: bool = True,
+      ) -> torch.Tensor:
+          """
+          Grouped Query Attention forward pass.
+
+          Q has more heads than K/V. The number of Q heads must be divisible
+          by the number of KV heads.
+
+          Args:
+              q: (batch, n_q_heads, seq_q, head_dim)
+              k: (batch, n_kv_heads, seq_k, head_dim)
+              v: (batch, n_kv_heads, seq_k, head_dim)
+              causal: causal mask
+
+          Returns:
+              (batch, n_q_heads, seq_q, head_dim)
+          """
+          assert q.ndim == 4 and k.ndim == 4 and v.ndim == 4
+          B, Hq, M, D = q.shape
+          _, Hkv, N, _ = k.shape
+          assert Hq % Hkv == 0, f"q heads ({Hq}) must be divisible by kv heads ({Hkv})"
+          assert k.shape == v.shape
+          assert q.shape[-1] == k.shape[-1]
+
+          groups = Hq // Hkv
+          sm_scale = 1.0 / math.sqrt(D)
+
+          out = torch.empty_like(q)
+
+          BLOCK_M = 64
+          BLOCK_N = 64
+          BLOCK_K = D
+
+          grid = (triton.cdiv(M, BLOCK_M), B * Hq)
+
+          _gqa_attn_fwd[grid](
+              q, k, v, out,
+              sm_scale,
+              q.stride(0), q.stride(1), q.stride(2), q.stride(3),
+              k.stride(0), k.stride(1), k.stride(2), k.stride(3),
+              v.stride(0), v.stride(1), v.stride(2), v.stride(3),
+              out.stride(0), out.stride(1), out.stride(2), out.stride(3),
+              Hkv,
+              M, N,
+              BLOCK_M=BLOCK_M,
+              BLOCK_N=BLOCK_N,
+              BLOCK_K=BLOCK_K,
+              GROUPS=groups,
+              IS_CAUSAL=causal,
+          )
+          return out
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT016
+      category: GPU Kernel to PyTorch API conversion
+      sub_category: Triton attention to PyTorch
+      difficulty: Hard
+      has_code: 'Yes'
+      baseline_result: Partially Solved
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        Solved
+        1. Functional Parity: Replicates the source algorithm's input/output behavior, head-mapping arithmetic, and masking semantics.
+        2. OpenXLA-Optimal Construction: Avoids dynamic Python loops, pointer logic, and uncompiled tensor copies; properly leverages HLO-friendly primitives (e.g., zero-copy broadcast, fused operations).
+        3. Precision & Numerical Safety: Matches source accumulator precision (e.g., FP32 accumulation during softmax) and applies the source's masking semantic correctly.
+        4. Evidence-Based Optimization Claims: All claimed optimizations (such as memory-saving broadcast paths) are actively wired into any wrapper modules, with zero dead or conflicting code.
+        5. Factual Documentation: Does not hallucinate capabilities (e.g., does not claim KV-cache decode support if position offsets are not implemented).
+
+        Partially Solved
+        1. Core Translation Present: Correctly maps grouped head dimensions ($H_q // H_{kv}$) and forward tensor dimensions without syntax errors.
+        2. Architectural Gaps: Provides disconnected or redundant logic.
+        3. Compiler / Precision Hazards: Retains patterns that risk instability under OpenXLA execution (e.g., omitting FP32 upcasting for attention logits).
+        4. Documentation Discrepancies: Makes false claims about features (e.g., claiming asymmetric sequence branching handles "decode cache" when the math lacks position offsets).
+        5. Inherited Source Flaws: Accurately reproduces upstream design limitations without introducing new breaking algorithmic bugs.
+
+        Stumped
+        1. Livelock / Timeout / Abort: The model enters an unrecoverable tool/terminal iteration loop, repeatedly attempts failing commands, or times out prior to producing a complete response.
+        2. Incorrect Algorithm: Misunderstands Grouped Query Attention (e.g., treats it as standard MHA/MQA, uses incorrect head strides or mapping modulo/division arithmetic).
+        3. Incompatible Primitives: Retains GPU-specific Triton or CUDA code (@triton.jit, tl.load, pointer arithmetic) instead of translating to pure PyTorch/XLA operations.
+        4. Non-Compilable Graph: Generates data-dependent Python control flow or unsupported dynamic shapes that break XLA graph compilation (e.g., causing graph compilation errors or graph-break stalls).
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        The conversion accurately mirrors the underlying mathematical operations and structural logic of the reference Triton kernel (including its sequence indexing limitations). However, it is only partially solved due to disconnected optimization code, inaccurate claims regarding decode support, precision regressions in the explicit fallback, and compiler-level stability hazards under OpenXLA.
+
+        1. Unsupported Optimization and Memory Claims
+                The Issue: The response writes an alternative routine (gqa_attention_explicit) and explicitly promises substantial OpenXLA memory optimizations via 5D tensor broadcasting:
+                        "Instead of materializing repeated K/V heads, this uses PyTorch broadcasting... The XLA compiler automatically fuses this into a single dot_general HLO op without allocating extra memory..."
+                The Flaw: The response provides no compiled HLO, buffer assignment, or target device profiling to establish that the broadcast operations become a single dot_general operation without allocating additional memory. The explicit routine also constructs full (B,Hkv,groups, M,N) score and attention weight tensors, so it does not reproduce the streaming memory behavior of the Triton kernel.
+                Why it degrades the score: The Zero copy and single operation lowering claims are presented as guarantees without supporting evidence. These unsupported performance claims make the response only partially correct even though the routine remains a valid functional alternative.
+
+        2. False Documentation / Hallucinated Capability
+                The Issue: The original Triton kernel only handles standard 0-indexed sequences and lacks position offset parameters needed for autoregressive decoding.
+                The Flaw: The translation introduces a specific claim in the comments:# When M != N (prefill/decode cache), an explicit upper-left triangular boolean mask is used...
+                Why it degrades the score: The code faithfully reproduced the Triton kernel's q_idx >= k_idx check, which cannot support ordinary KV-cache decoding without a query position offset. Claiming that this branch accommodates a "decode cache" is a hallucinated capability that misleads users attempting to integrate it into an inference pipeline.
+
+        3. Precision Regression in the Explicit Implementation
+                The Issue: The Triton kernel guarantees numerical stability by explicitly promoting Q to tl.float32 and maintaining the online softmax accumulators (m_i, l_i, acc) in FP32, casting only when storing to Out.
+                The Flaw: The fallback implementation (gqa_attention_explicit) does not explicitly preserve the source kernel's FP32 score and softmax accumulation behavior when the inputs use bfloat16 or float16
+                Why it degrades the score: Omitting explicit FP32 upcasting for attention logits and softmax computation can produce lower precision differences from the reference Triton implementation, so the claimed near exact numerical parity is unsupported.
+
+        4. Unsupported TPU Kernel Lowering Claim
+                The Issue: The response states that PyTorch/XLA recognizes F.scaled_dot_product_attention and lowers it either to specialized hardware kernels, such as Pallas/FlashAttention on Cloud TPUs, or to a fused composite HLO graph.
+                The Flaw: Automatic optimized SDPA selection is documented for CUDA, while PyTorch/XLA documents Pallas FlashAttention through a separate explicit custom kernel API.PyTorch/XLA's StableHLO documentation also states that ordinary F.scaled_dot_product_attention is decomposed into lower level operations unless it is separately preserved as a composite.
+                Why it degrades the score: The response presents a target specific performance path as automatic without authoritative support or compiled target evidence. The code may remain OpenXLA compatible, but the asserted TPU kernel lowering is not established.
+      weight: 0.5

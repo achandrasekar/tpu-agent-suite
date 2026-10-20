@@ -1,0 +1,12 @@
+{
+  "query": "Explain the gcloud command-line patterns for Cloud TPUs: the tpu-vm command surface, creating a TPU directly versus through queued resources, addressing one worker or every worker in a multi-host slice, running remote commands and copying files across workers, SSH reachability options, and creating TPU node pools on GKE. Emphasize the non-obvious invocation subtleties and the semantic differences between these paths.",
+  "authoring_request": "Cloud TPU/GKE: document the gcloud invocation patterns and their subtleties, which the concept pages deliberately omit",
+  "source_ids": [
+    "gcloud-tpu-vm",
+    "gcloud-tpu-vm-create",
+    "gcloud-tpu-vm-ssh",
+    "gcloud-tpu-vm-scp",
+    "gcloud-queued-resources-create",
+    "tpu-on-gke"
+  ]
+}

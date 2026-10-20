@@ -1,0 +1,1 @@
+Answer this question about `systolic-array`, grounded in the TPU documentation, passing it exactly as written: "What are the dimensions of the MXU systolic array on TPU v6e?" Answer clearly, citing any references you can for grounding. Drop a JSON at `/logs/artifacts/answer.json` with keys `answer` and `reference`, for scoring.

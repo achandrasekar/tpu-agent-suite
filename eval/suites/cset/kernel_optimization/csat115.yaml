@@ -1,0 +1,121 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT115 from the "Kernel optimization" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat115
+    prompt: |-
+      We serve a decoder model on TPU 7x and the rotary plus attention block is taking far more of the profile than it should. XLA is emitting it as several separate passes over the tensors and materializing large intermediate buffers, so we pay the HBM round trip on every one.
+
+      Can you rewrite the computation block below as a fused Pallas kernel for TPU 7x? Our workload shapes are B=2, H_q=64, H_kv=8, S=2048, D=128, using bf16 throughout while keeping the dot-product and softmax accumulations in f32. Because the input and output layouts are fixed by the surrounding serving stack, don't transpose the inputs outside the kernel, alter the head dimension, or move the reduction off the last axis. Make sure the output matches the reference within rtol=0.01 and atol=0.05.
+
+      # Imports
+      import jax
+      import jax.numpy as jnp
+
+      # Initialization
+      def get_inputs():
+          dtype = jnp.bfloat16
+          key = jax.random.key(0)
+          k1, k2, k3, k4 = jax.random.split(key, 4)
+          B, H_q, H_kv, S, D = 2, 64, 8, 2048, 128
+          q = jax.random.normal(k1, (B, H_q, S, D), dtype=dtype)
+          k = jax.random.normal(k2, (B, H_kv, S, D), dtype=dtype)
+          v = jax.random.normal(k3, (B, H_kv, S, D), dtype=dtype)
+          sinks = jax.random.normal(k4, (H_q,), dtype=dtype)
+          pos = jnp.arange(S, dtype=jnp.float32)
+          inv_freq = 1.0 / (150000.0 ** (jnp.arange(0, D, 2, dtype=jnp.float32) / D))
+          freqs = pos[:, None] * inv_freq[None, :]
+          cos = jnp.broadcast_to(jnp.cos(freqs)[None, :, :], (B, S, D // 2)).astype(dtype)
+          sin = jnp.broadcast_to(jnp.sin(freqs)[None, :, :], (B, S, D // 2)).astype(dtype)
+          dynamic_args = [q, k, v, cos, sin, sinks]
+          static_args = []
+          return dynamic_args, static_args
+
+      # Computation
+      def computation(q, k, v, cos, sin, sinks):
+          B, H_q, S, D = q.shape
+          H_kv = k.shape[1]
+          groups = H_q // H_kv
+          scaling = D ** -0.5
+          c = cos[:, None, :, :]
+          s = sin[:, None, :, :]
+          q1, q2 = jnp.split(q, 2, axis=-1)
+          q_embed = jnp.concatenate([q1 * c - q2 * s, q2 * c + q1 * s], axis=-1)
+          k1, k2 = jnp.split(k, 2, axis=-1)
+          k_embed = jnp.concatenate([k1 * c - k2 * s, k2 * c + k1 * s], axis=-1)
+          key_states = jnp.repeat(k_embed, groups, axis=1)
+          value_states = jnp.repeat(v, groups, axis=1)
+          attn_weights = (
+              jnp.matmul(
+                  q_embed.astype(jnp.float32),
+                  jnp.swapaxes(key_states.astype(jnp.float32), -2, -1),
+              )
+              * scaling
+          )
+          q_idx = jnp.arange(S)[:, None]
+          kv_idx = jnp.arange(S)[None, :]
+          mask = (kv_idx <= q_idx) & (kv_idx > q_idx - 128)
+          attn_weights = jnp.where(mask[None, None, :, :], attn_weights, -1e30)
+          sinks = jnp.broadcast_to(
+              sinks.astype(jnp.float32)[None, :, None, None], (B, H_q, S, 1)
+          )
+          combined_logits = jnp.concatenate([attn_weights, sinks], axis=-1)
+          combined_logits = combined_logits - jnp.max(combined_logits, axis=-1, keepdims=True)
+          probs = jax.nn.softmax(combined_logits, axis=-1)
+          scores = probs[..., :-1]
+          attn_output = jnp.matmul(scores, value_states.astype(jnp.float32)).astype(q.dtype)
+          return jnp.transpose(attn_output, (0, 2, 1, 3))
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT115
+      category: Kernel optimization
+      sub_category: Attention
+      difficulty: Hard
+      has_code: 'Yes'
+      baseline_result: Stumped
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        Stumped: The model manages to produce a kernel that fails to compile under Pallas TPU lowering, overflows VMEM capacity, drifts past the numerical tolerance gates, or cheats the layout constraints. It is an automatic fail if the model transposes the fixed [B, H_q, S, D] inputs outside the kernel, changes the head dimension, or moves the reduction from the last axis. It also falls here if it fuses the [B, S, H_q, D] output transpose using a single head block that violates the TPU's (8, 128) sublane and lane alignment rule on the second to last axis, configures the 1D bf16 dumps tensor with an unaligned single element VMEM block or extracts a 0D scalar before upcasting to f32, or applies dynamic slicing to loaded vector registers instead of slicing VMEM references. Finally, it will fail if the rtol=0.01 and atol=0.05 are not met.
+
+        Partially Solved: If the model produces a Pallas kernel that compiles while preserving the [B, H_q, S, D] input and [B, S, H_q, D] output layouts and passes the rtol=0.01 and atol=0.05 correctness checks, but also leaves significant hardware performance on the table, A solution lands here if it uses hardware-legal block shapes and slices VMEM references to fuse RoPE, 128-token sliding-window masking, and sink initialized f32 online softmax, and still stages the entire 2048-token key, value, and rotary buffers into VMEM on every grid step instead of just the two active 128-token sliding-window blocks.
+
+        Solved: The model needs to deliver a single-pass TPU 7x Pallas kernel that passes tolerances, keeps the [B, H_q, S, D] input and [B, S, H_q, D] output layouts without any unnecessary intermediate HBM round trips, and beats the XLA baseline by a decent margin. That means the model needs to produce a kernel that fuses the half split RoPE, 8-to-1 GQA, 128-token sliding-window masking, and attention sink online softmax into one pallas_call to avoid materializing the massive attention matrix in HBM. By mapping over the 8 KV heads and grouping their 8 shared query heads per tile, the kernel can reuse each KV block across all 8 query heads and write tiles straight into the output layout with clean (8, 128) VPU alignment. This loads the full sink vector slicing two 128 token KV windows in VMEM, while keeping the matmul and softmax accumulation in f32 and only casting back to bf16 on store.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        Output Block Shape unaligned: The model tried folding the final output transpose directly into the output block spec. This is found directly from the code inspection because the evaluation TPU run results filter out the internal JAX traceback. It attempted to write out a single query head at a time into a transposed layout, which effectively sliced that second to last dimension down to a size of 1. The problem is that it completely ignored the physical hardware constraints. On TPUs, Pallas dictates that the innermost two dimensions of any VMEM block must either represent the full tensor dimension or align perfectly with the 8x128 (sublane by lane) hardware register grid. By bringing that axis down to a single element, the model violated the 8 sublane alignment rule defined in the prompt, most likely being the reason of an immediate crash at compile time.
+
+        Invalid Block Specification: The model completely messed up the attention sinks block spec by trying to load a single, squeezed element into VMEM, and then attempted to reshape that 16-bit bf16 value into a 0D scalar before upcasting it to f32. This is again found through code inspection rather than a JAX traceback. The problem is that the TPU hardware rejects this. Pallas forbids arbitrary single element slicing of 1D arrays in VMEM, so the block either has to span the full vector or hit the 256-element packing boundary required for 16-bit types. On top of that, TPU vector registers only support extracting scalars from 32-bit values. Forcing a 16-bit element down to a scalar like this will also lead to a crash during lowering.
+
+        Dynamic Slicing: The model made a big error on how it handled the TPU memory hierarchy. Inside the kernel body, it dumped the entire sequence of keys, values, and RoPE tables from VMEM into the vector registers all at once, and then tried to dynamically slice out individual blocks using runtime loop indices. Pallas simply does not support dynamic slicing on values that are already sitting in vector registers, meaning this approach will instantly crash the compiler. On top of that, pulling the full sequence up front creates a large register pressure. A hardware optimized kernel needs to stream that data efficiently, loading it one tile at a time directly from VMEM.
+
+        Sliding WIndow Tiling: The module actually manages to tile the queries into 128 token blocks and Pallas needs this since it reuses the VMEM buffers for key, values and RoPE across all query steps without repeatedly fetching from HBM on each step. But it still fails the in-kernel tiling. Because of the 128 token sliding window, each query block ever only attends to at most two adjacent KV blocks. So, staging the full 2048 token sequences in VMEM and pulling all of them into vector registers on each step is basically unnecessary and bloats the VMEM usage. This create a heavy register pressure instead of streaming just the two tiles.
+      weight: 0.5

@@ -1,0 +1,142 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "sharding-result.json",
+  "title": "tpu-sharding Result",
+  "description": "Output deliverable for the tpu-sharding orchestrator agent.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "status",
+    "summary",
+    "state_artifact"
+  ],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": [
+        "completed",
+        "invalid_input",
+        "needs_input",
+        "failed"
+      ],
+      "description": "Outcome of the sharding study. Measurement and winning artifact fields are owed by 'completed' alone."
+    },
+    "summary": {
+      "type": "string",
+      "description": "Summary of findings, improvements achieved, and overall trajectory highlights."
+    },
+    "run_id": {
+      "type": "string",
+      "pattern": "^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}$",
+      "description": "Session run identifier namespace."
+    },
+    "total_runs": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Total number of experiment runs executed during the session."
+    },
+    "state_artifact": {
+      "type": "string",
+      "description": "Relative artifact path to state.json ledger (e.g., 'state.json')."
+    },
+    "best_run": {
+      "type": "object",
+      "description": "Details of the best performing run achieved. Omitted if all runs failed.",
+      "additionalProperties": false,
+      "required": [
+        "iteration",
+        "target_metric",
+        "recipe_path",
+        "report_path"
+      ],
+      "properties": {
+        "iteration": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Iteration index of the best run."
+        },
+        "target_metric": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "name",
+            "value",
+            "unit"
+          ],
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "value": {
+              "type": "number"
+            },
+            "unit": {
+              "type": "string",
+              "description": "Canonical unit ('s' for all time/latency metrics, '%' for percentages, 'GiB'/'GB' for memory, 'GiB/s'/'GB/s' for bandwidth, 'TFLOPS/s/device' for compute, throughput units, or '' for dimensionless/custom dimensions).",
+              "enum": [
+                "s",
+                "%",
+                "GiB",
+                "GB",
+                "GiB/s",
+                "GB/s",
+                "TFLOPS/s/device",
+                "tok/s/dev",
+                "tok/s",
+                "req/s",
+                "samples/s",
+                "steps/s",
+                ""
+              ]
+            }
+          }
+        },
+        "recipe_path": {
+          "type": "string",
+          "description": "Relative artifact path to winning recipe script/config."
+        },
+        "report_path": {
+          "type": "string",
+          "description": "Relative artifact path to winning run report."
+        }
+      }
+    },
+    "best_recipe_artifact": {
+      "type": "string",
+      "description": "Convenience path to the winning recipe artifact (e.g., '3/recipe_3.sh')."
+    },
+    "best_report_artifact": {
+      "type": "string",
+      "description": "Convenience path to the winning run report artifact (e.g., '3/report_3.md')."
+    },
+    "failure_reason": {
+      "type": "string",
+      "description": "Diagnostic reason or failure description when status is not 'completed'."
+    },
+    "error_message": {
+      "type": "string",
+      "description": "Detailed error diagnostic or stack trace when status is not 'completed'."
+    }
+  },
+  "examples": [
+    {
+      "status": "completed",
+      "summary": "Completed 5 optimization rounds. Best configuration at Run 3 achieved 45.2% MFU (up from 39.5% baseline) via ep=4, tp=4, and Splash attention.",
+      "run_id": "20260921T120000Z-abcdef012345",
+      "total_runs": 5,
+      "state_artifact": "state.json",
+      "best_run": {
+        "iteration": 3,
+        "target_metric": {
+          "name": "mfu",
+          "value": 45.2,
+          "unit": "%"
+        },
+        "recipe_path": "3/recipe_3.sh",
+        "report_path": "3/report_3.md"
+      },
+      "best_recipe_artifact": "3/recipe_3.sh",
+      "best_report_artifact": "3/report_3.md"
+    }
+  ]
+}

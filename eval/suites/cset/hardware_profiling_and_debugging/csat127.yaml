@@ -1,0 +1,220 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT127 from the "Hardware profiling and debugging" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat127
+    prompt: |-
+      The following code worked in colab T4s:
+
+      import subprocess
+      import time
+
+      import numpy as np
+
+      import jax
+      import jax.numpy as jnp
+
+      N = 256 * 127 * 4
+      B = 400
+
+      def _gpu_identity() -> str:
+          try:
+              result = subprocess.run(
+                  [
+                      "nvidia-smi",
+                      "--query-gpu=name,driver_version,vbios_version,power.limit,memory.total",
+                      "--format=csv,noheader",
+                  ],
+                  check=False,
+                  capture_output=True,
+                  text=True,
+              )
+              return result.stdout.strip() or "<no nvidia-smi output>"
+          except Exception as exc:  # pragma: no cover
+              return f"<nvidia-smi failed: {exc}>"
+
+      @jax.jit
+      def warmup_gemm(lhs: jax.Array, rhs: jax.Array) -> jax.Array:
+          out = jax.lax.dot_general(lhs, rhs, (((1,), (2,)), ((0,), (0,))))
+          return jnp.transpose(out, (0, 2, 1))
+
+      @jax.jit
+      def fused_gemm(lhs5: jax.Array, rhs: jax.Array) -> jax.Array:
+          lhs = jnp.reshape(jnp.transpose(lhs5, (0, 4, 1, 2, 3)), (lhs5.shape[0], 2, N))
+          out = jax.lax.dot_general(lhs, rhs, (((1,), (2,)), ((0,), (0,))))
+          return jnp.transpose(out, (0, 2, 1))
+
+      def main() -> None:
+          # Fixed input shape chosen to trigger the failure on the problematic host.
+          rng = np.random.default_rng(0)
+          lhs5_np = rng.standard_normal((B, 256, 127, 4, 2), dtype=np.float32)
+          rhs_np = rng.standard_normal((B, 4, 2), dtype=np.float32)
+
+          lhs5 = jnp.asarray(lhs5_np)
+          # Keep the warmup input construction in JAX to preserve the failing execution path.
+          lhs = jnp.reshape(jnp.transpose(lhs5, (0, 4, 1, 2, 3)), (B, 2, N))
+          rhs = jnp.asarray(rhs_np)
+
+          print("gpu_identity =", _gpu_identity())
+          print("jax_version =", jax.__version__)
+          print("devices =", jax.devices("cuda"))
+          print("shape_lhs5 =", lhs5.shape, "shape_rhs =", rhs.shape)
+
+          # This warmup run is intentional; it creates the state needed to reproduce the bug.
+          t0 = time.time()
+          y0 = warmup_gemm(lhs, rhs)
+          y0.block_until_ready()
+          t1 = time.time()
+          print(f"warmup_run_sec={t1 - t0:.3f} shape={y0.shape}")
+
+          # The failing compile is for this second JIT function after warmup.
+          t2 = time.time()
+          compiled = fused_gemm.lower(lhs5, rhs).compile()
+          t3 = time.time()
+          print(f"compile_sec={t3 - t2:.3f}")
+
+          t4 = time.time()
+          y1 = compiled(lhs5, rhs)
+          y1.block_until_ready()
+          t5 = time.time()
+          print(f"run_sec={t5 - t4:.3f} shape={y1.shape}")
+          print("status=OK")
+
+      if __name__ == "__main__":
+          main()
+
+      Running one JIT GEMM first (“warmup”) causes a second equivalent GEMM compile to fail in the same process with:
+        JaxRuntimeError: INTERNAL: Autotuning failed ... NOT_FOUND: No valid config found!.
+
+      Points:
+
+      Fails with default autotune behavior (equivalent to level 4 checks enabled).
+      If warmup is skipped, it passes.
+      If --xla_gpu_autotune_level=3 or --xla_gpu_deterministic_ops=true is used, it passes.
+      Verbose logs show all candidate configs rejected as WRONG RESULTS, including Triton and Cublas_fission, then No valid config found.
+
+      Error:
+      gpu_identity = NVIDIA GeForce RTX 4090, 570.124.04, 95.02.3C.40.B7, 450.00 W, 24564 MiB
+      jax_version = 0.9.0
+
+      devices = [CudaDevice(id=0)]
+      shape_lhs5 = (400, 256, 127, 4, 2) shape_rhs = (400, 4, 2)
+      warmup_run_sec=0.190 shape=(400, 4, 130048)
+      Traceback (most recent call last):
+
+      File "/root/.cache/bazel/_bazel_root/c6f23abe7349c03cc452f0032deaf22d/execroot/__main__/bazel-out/cloud-x86_64-opt/bin/ai/planner/ml/drl/xla_autotune_stateful_repro.runfiles/__main__/ai/planner/ml/drl/xla_autotune_stateful_repro.py", line 82, in <module>
+          main()
+        File "/root/.cache/bazel/_bazel_root/c6f23abe7349c03cc452f0032deaf22d/execroot/__main__/bazel-out/cloud-x86_64-opt/bin/ai/planner/ml/drl/xla_autotune_stateful_repro.runfiles/__main__/ai/planner/ml/drl/xla_autotune_stateful_repro.py", line 69, in main
+          compiled = fused_gemm.lower(lhs5, rhs).compile()
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        File "/root/.cache/bazel/_bazel_root/c6f23abe7349c03cc452f0032deaf22d/execroot/__main__/bazel-out/cloud-x86_64-opt/bin/ai/planner/ml/drl/xla_autotune_stateful_repro.runfiles/dd_py_deps_planner_ml_jax/site-packages/jax/_src/stages.py", line 599, in compile
+          self._lowering.compile(**kw),  # pytype: disable=wrong-keyword-args
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        File "/root/.cache/bazel/_bazel_root/c6f23abe7349c03cc452f0032deaf22d/execroot/__main__/bazel-out/cloud-x86_64-opt/bin/ai/planner/ml/drl/xla_autotune_stateful_repro.runfiles/dd_py_deps_planner_ml_jax/site-packages/jax/_src/interpreters/pxla.py", line 2510, in compile
+          executable = UnloadedMeshExecutable.from_hlo(
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        File "/root/.cache/bazel/_bazel_root/c6f23abe7349c03cc452f0032deaf22d/execroot/__main__/bazel-out/cloud-x86_64-opt/bin/ai/planner/ml/drl/xla_autotune_stateful_repro.runfiles/dd_py_deps_planner_ml_jax/site-packages/jax/_src/interpreters/pxla.py", line 3056, in from_hlo
+          xla_executable = _cached_compilation(
+                           ^^^^^^^^^^^^^^^^^^^^
+        File "/root/.cache/bazel/_bazel_root/c6f23abe7349c03cc452f0032deaf22d/execroot/__main__/bazel-out/cloud-x86_64-opt/bin/ai/planner/ml/drl/xla_autotune_stateful_repro.runfiles/dd_py_deps_planner_ml_jax/site-packages/jax/_src/interpreters/pxla.py", line 2837, in _cached_compilation
+          xla_executable = compiler.compile_or_get_cached(
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        File "/root/.cache/bazel/_bazel_root/c6f23abe7349c03cc452f0032deaf22d/execroot/__main__/bazel-out/cloud-x86_64-opt/bin/ai/planner/ml/drl/xla_autotune_stateful_repro.runfiles/dd_py_deps_planner_ml_jax/site-packages/jax/_src/compiler.py", line 478, in comp
+      ile_or_get_cached
+          return _compile_and_write_cache(
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^
+        File "/root/.cache/bazel/_bazel_root/c6f23abe7349c03cc452f0032deaf22d/execroot/__main__/bazel-out/cloud-x86_64-opt/bin/ai/planner/ml/drl/xla_autotune_stateful_repro.runfiles/dd_py_deps_planner_ml_jax/site-packages/jax/_src/compiler.py", line 746, in _compile_and_write_cache
+          executable = backend_compile_and_load(
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^
+        File "/root/.cache/bazel/_bazel_root/c6f23abe7349c03cc452f0032deaf22d/execroot/__main__/bazel-out/cloud-x86_64-opt/bin/ai/planner/ml/drl/xla_autotune_stateful_repro.runfiles/dd_py_deps_planner_ml_jax/site-packages/jax/_src/profiler.py", line 359, in wrapper
+          return func(*args, **kwargs)
+                 ^^^^^^^^^^^^^^^^^^^^^
+        File "/root/.cache/bazel/_bazel_root/c6f23abe7349c03cc452f0032deaf22d/execroot/__main__/bazel-out/cloud-x86_64-opt/bin/ai/planner/ml/drl/xla_autotune_stateful_repro.runfiles/dd_py_deps_planner_ml_jax/site-packages/jax/_src/compiler.py", line 372, in backend_compile_and_load
+          raise e
+        File "/root/.cache/bazel/_bazel_root/c6f23abe7349c03cc452f0032deaf22d/execroot/__main__/bazel-out/cloud-x86_64-opt/bin/ai/planner/ml/drl/xla_autotune_stateful_repro.runfiles/dd_py_deps_planner_ml_jax/site-packages/jax/_src/compiler.py", line 362, in back
+      end_compile_and_load
+          return backend.compile_and_load(
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^
+      jax.errors.JaxRuntimeError: INTERNAL: Autotuning failed for HLO: %gemm_fusion_dot = f32[400,4,130048]{2,1,0} fusion(%rhs.1, %lhs5.1), kind=kCustom, calls=%gemm_fusion_dot_computation, metadata={op_name="jit(fused_gemm)/transpose" stack_frame_id=6}, backend
+      _config={"operation_queue_id":"0","wait_on_operation_queues":[],"fusion_backend_config":{"kind":"__triton_gemm"},"force_earliest_schedule":false,"reification_cost":[],"device_type":"DEVICE_TYPE_INVALID"} with error: NOT_FOUND: No valid config found!
+
+      Construct an explanation for the stateful behavior. Identify what state survives between the 2 GEMM compilations, why autotune level 4 exposes the problem while level 3 does not, and determine whether the bug is in JAX, XLA GPU autotuning, Triton or the Nvidia backend
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT127
+      category: Hardware profiling and debugging
+      sub_category: Compilation cache and runtime failures
+      difficulty: Hard
+      has_code: 'Yes'
+      baseline_result: Partially Solved
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        1. Solved
+                Independent Memory Diagnosis: Correctly identifies the state that persists between calls—specifically the JAX/XLA BFC memory allocator pool retaining allocated buffers on the device, rather than OS-level leaks.
+
+                Precise Mechanism of Level 4 vs. Level 3: Accurately explains that Level 3 only benchmarks kernel execution timing, while Level 4 runs numerical comparison and buffer validation passes (detecting divergence/corrupted values).
+
+                Root Cause Neutrality & Multi-Hypothesis Rigor: Does not invent a definitive resolution. Accurately identifies that the evidence points to either:
+                        A subtle XLA autotuner software defect (e.g., input/scratch buffer aliasing or in-place corruption across sequential candidate evaluations in the BFC pool).
+                        Subtle hardware memory/driver instability (e.g., non-ECC GDDR6X silent data corruption).
+
+        Grounded Compiler Mechanics: Recognizes that OpenXLA autotune cache keys preserve full shape and layout minor-to-major orderings, and understands that autotuning uses patterned synthetic buffers (via RedzoneAllocator) rather than raw zeroed driver pages.
+
+        Accurate Architecture Lowering : Explains that Tesla T4 (Turing, sm_75) succeeds because Triton GEMM fusion requires Compute Capability >= 8.0, routing T4 to the legacy cuBLAS emitter pipeline, while RTX 4090 (sm_89) triggers Triton GEMM Autotuning.
+
+        2. Partially Solved
+                Correct Technical Mechanics with Flawed Deduction: Correctly describes JAX's BFC memory retention and the functional difference between Level 3 and Level 4 autotuning flags.
+
+                Premature or Hallucinated Closure: Falsely claims that the issue was definitively resolved in JAX #35515 as a specific hardware failure (e.g., defective VRAM/solder joints), or completely rules out XLA software bugs without sufficient evidence. The model rules out either possibility without sufficient telemetry data.
+
+                Unverified Physical Speculation: Introduces unsupported speculative details (e.g., thermal soaking of VRAM from a 190 ms run) or mistakes cache separation as a causal mechanism rather than a trigger condition.
+
+        3. Stumped
+                Superficial or Missed Diagnosis: Fails to explain what state survives between the two GEMM calls (missing the BFC allocator pool entirely).
+                Misunderstanding Autotune Flags: Cannot explain why Level 4 fails while Level 3 passes (e.g., claiming Level 4 is simply ""more strict"" or ""tries more kernels"" rather than explaining the numeric correctness/buffer comparator pass).
+                Generic or Irrelevant Troubleshooting: Recommends standard boilerplate fixes (e.g., ""reinstall CUDA"", ""update GPU drivers"", ""reduce batch size B"") without addressing the stateful nature of the reproduction or the underlying compiler mechanics.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        The response correctly identifies the software subsystem and compiler architecture, but still presents speculative implementation details as established historical facts.
+
+        What It Got Right
+        Targeted the Right Subsystem: Correctly attributed the issue to software state in the XLA GPU autotuner rather than generic Python errors, JAX frontend tracing, or high-level library bugs. (hallucinating physical hardware damage.)
+        Accurate T4 vs. RTX 4090 Analysis: Correctly identified that the Tesla T4 (sm_75, Turing) passes because Triton GEMM fusion requires Compute Capability >= 8.0 (Ampere+), routing T4 through the legacy cuBLAS pipeline, whereas RTX 4090 lowers fusion backend to triton GEMM and triggers TritonAutotuner.
+        Clear Autotune Flag Mechanics: Accurately detailed that Level 3 only profiles execution latency, while Level 4 runs numerical buffer comparisons against a reference.
+
+        Failures & Inaccuracies
+        Speculative AutotuneCache Collision: Asserts as verified fact that the cuBLAS reference runner hit an identical cache key from warmup_gemm with mismatched striding. In XLA, cache keys incorporate full multidimensional shapes, element types, and minor-to-major layout orderingsPresenting an algorithmic layout mismatch across fused and unfused graphs as settled fact is an ungrounded hallucination of compiler internals.
+
+        Flawed ""Zero-Page"" Argument: Claims fresh allocations pass by coincidence because virgin OS pages are zero-filled (0 * 0 = 0), masked with out-of-bounds padding reads, while post warmup memory contains dirty float data. In reality, XLA autotuning benchmark buffers (RedzoneAllocator) are explicitly populated with test patterns to prevent zero-masking passes. The discrepancy stems from allocator fragmentation and buffer reuse, not uninitialized driver memory.
+
+        Premature Closure: The model claims “the bug is in XLA GPU Autotuning … Not the Nvidia backend/hardware” which it cannot be certain of without testing. Since both Triton and cuBLAS fission candidates failed Level 4 Buffer validation with Wrong results, the evidence seen alone cannot distinguish between a software-level XLA buffer-aliasing defect and underlying hardware/driver instability, especially on consumer non-ECC GPUs under heavy load.
+      weight: 0.5

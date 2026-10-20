@@ -1,0 +1,58 @@
+"""Template for a --ref file.
+
+The harness needs three names at module scope. This is the same contract
+MultiKernelBench's `reference/<category>/<op>.py` files use, so any of those
+files can be passed to --ref unchanged.
+"""
+
+import torch
+import torch.nn as nn
+
+
+class Model(nn.Module):
+    """The computation being optimized, written the way you would normally write it.
+
+    Keep it idiomatic. This is the denominator of every speedup the harness
+    reports, so a Model that has been hand-tuned makes the generated kernel
+    look worse, and one that has been pessimized makes it look better. Neither
+    is informative.
+    """
+
+    def __init__(self, ...):
+        super().__init__()
+        # Parameters and buffers declared here are captured by the adapter and
+        # passed to the kernel as arguments. Plain scalar attributes (eps, a
+        # head count) become trace-time static arguments.
+        ...
+
+    def forward(self, x):
+        ...
+
+
+def get_init_inputs():
+    """Positional arguments for Model(...). Return [] if there are none.
+
+    May also return (args, kwargs).
+    """
+    return [...]
+
+
+def get_inputs():
+    """One set of forward() arguments. Called fresh for each correctness trial.
+
+    Shapes here define the problem. The harness never substitutes its own.
+    """
+    return [torch.randn(...)]
+
+
+def get_input_groups():
+    """Optional. Explicit input sets to check correctness over.
+
+    Define this when the kernel has edge cases worth naming -- a ragged tail, a
+    zero-length row, a non-divisible size, denormals. When absent the harness
+    calls get_inputs() repeatedly, which only samples the typical case.
+    """
+    return [
+        [torch.randn(...)],   # typical
+        [torch.zeros(...)],   # degenerate
+    ]

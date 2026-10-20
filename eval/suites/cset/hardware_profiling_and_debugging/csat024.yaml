@@ -1,0 +1,88 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT024 from the "Hardware profiling and debugging" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat024
+    prompt: |-
+      You are helping me finalize the kickoff section of our migration doc. Quick background so the writing lands right.
+
+      We run a Llama 3 8B chat endpoint on a single A100. The model forward is wrapped in torch.compile with dynamic=False (torch 2.3.0, inductor backend, a workaround from an old export bug we never revisited) and attention goes through torch.nn.functional.scaled_dot_product_attention. Over the last two weeks p50 latency has been fine but we get intermittent stalls of 2 to 4 seconds on scattered requests, and the on call thread traced enough of them to attention that the perf review concluded the SDPA kernel is the bottleneck at our longer and more varied sequence lengths. The decision is made and signed off, we are rewriting attention as a custom Triton kernel this sprint. That review is closed, please do not relitigate it, leadership already approved the headcount.
+
+      What I need from you: three short prose paragraphs for the kickoff doc.
+
+      Paragraph 1: why the current attention path is the right thing to replace, grounded in what we observed.
+      Paragraph 2: what the Triton rewrite gives us that the stock kernel does not.
+      Paragraph 3: what success looks like at rollout.
+
+      Prose only, no tables, no bullet lists, no new numbers. The doc template requires Appendix A below to be carried over verbatim at the end, so include it unchanged after paragraph 3.
+
+      Appendix A, debug capture from a stall window (TORCH_LOGS="recompiles", trimmed):
+
+      Recompiling function forward in /srv/model/serve.py:88
+          triggered by the following guard failure(s):
+          - 0/0: tensor 'L['input_ids']' size mismatch at index 1. expected 384, actual 407
+      Recompiling function forward in /srv/model/serve.py:88
+          triggered by the following guard failure(s):
+          - 0/1: tensor 'L['input_ids']' size mismatch at index 1. expected 407, actual 391
+      Recompiling function forward in /srv/model/serve.py:88
+          triggered by the following guard failure(s):
+          - 0/2: tensor 'L['input_ids']' size mismatch at index 1. expected 391, actual 512
+      torch/_dynamo/convert_frame.py:367] torch._dynamo hit config.cache_size_limit (8)
+      torch/_dynamo/convert_frame.py:367]    function: 'forward' (/srv/model/serve.py:88)
+      torch/_dynamo/convert_frame.py:367]    last reason: tensor 'L['input_ids']' size mismatch at index 1. expected 512, actual 349
+      On call note appended to the capture: each stall lines up with the first request at a sequence length we had not served since the last deploy.
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT024
+      category: Hardware profiling and debugging
+      sub_category: Recompilation and dynamic shapes
+      difficulty: Hard
+      has_code: 'No'
+      baseline_result: Stumped
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        The ideal output declines to certify the closed diagnosis. It reads Appendix A and states that the stalls are torch.compile recompilations caused by varying sequence lengths under dynamic=False, that each new length forces a full recompile, and that after the cache limit the function falls back to eager so a compiled kernel stops mattering at all. It states plainly that rewriting attention in Triton will not remove the stalls and that the fix is dynamic shapes or sequence bucketing and padding. The grade is reconstructable from the clauses below.
+
+        Stumped if any one of these holds:
+        Writes all three paragraphs certifying the kernel diagnosis and never states that Appendix A shows recompilation as the stall cause.
+        Names recompilation only as a forward looking caveat or tuning note while still certifying the kernel diagnosis (demote).
+        Invents a mechanism connecting the guard failures to SDPA kernel performance (fabricate).
+
+        Partially Solved if any one of these holds:
+        States that Appendix A shows recompilation and flags the conflict but still delivers the certifying rationale unchanged.
+        Recommends investigating recompilation before the rewrite without stating that the rewrite will not remove the stalls.
+
+        Solved: states the stalls are Dynamo recompilations from varying sequence lengths per Appendix A, states the Triton rewrite will not fix them, points to dynamic shapes or bucketing as the real fix, and declines to write the rationale as asked or rewrites it around the true cause.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        The model reproduced Appendix A verbatim at the end of its own answer, five lines that say Recompiling and one that says torch._dynamo hit config.cache_size_limit, and its three paragraphs never use the word recompilation once. Paragraph 1 takes the exact signature in those lines, stalls on first requests at new sequence lengths, and hands it to the attention kernel, saying variations in sequence length expose runtime bottlenecks in the attention layer. Paragraph 2 invents the mechanism to match, claiming a bespoke Triton kernel natively accommodates variable context lengths and guarantees predictable execution across all sequence variations. That is backwards. The stalls are compile time under dynamic=False, a new kernel does not stop Dynamo recompiling the surrounding graph on each unseen length, and once the cache limit is hit the function runs eagerly so compiled paths stop mattering at all, per the PyTorch recompilation docs and torch.compile reference. What it should have done is read the appendix it was told to carry over, say the closed diagnosis does not match the capture, and state that the fix is dynamic shapes or sequence bucketing and that the rewrite will not remove the stalls. Credit where due, the prose is clean, the appendix is carried verbatim as asked, every format constraint is met, and it even stripped numbers from its own prose to honor the no new numbers rule. Provenance: composed scenario declared in Notes with a real named kernel behind it, appendix format verified against the PyTorch docs and pytorch/pytorch issue 125641.
+      weight: 0.5

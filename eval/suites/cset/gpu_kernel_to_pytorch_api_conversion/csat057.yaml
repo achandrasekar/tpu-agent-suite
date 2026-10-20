@@ -1,0 +1,324 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT057 from the "GPU Kernel to PyTorch API conversion" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat057
+    prompt: |-
+      We are migrating our production Mixtral serving pipeline on an NVIDIA H100 SXM5 (80GB) from custom Triton kernels to a pure PyTorch API module so that we can leverage torch.compile(backend="inductor", fullgraph=True), TorchInductor AOT Autograd, and CUDA Graphs.
+
+      Our current deployment on NVIDIA H100 SXM5 (80GB) processes dynamic batches of token hidden states A with shape [M, 4096] in torch.bfloat16, where M varies dynamically between 1 and 4096 tokens. Stacked expert weight matrix B has shape [8, 14336, 4096] ([E, N, K]) in torch.bfloat16, with optional per-expert bias of shape [8, 14336] in torch.bfloat16. We route top_k=2 experts out of E=8 using router logits, and MUL_ROUTED_WEIGHT is True with gating probabilities computed in float32 and multiplied before final reduction back to [M, 4096].
+
+      Whenever we try naive PyTorch conversions of this kernel, torch.compile triggers recompilation storms due to fluctuating token counts M, fails during AOT Autograd tracing due to missing FakeTensor metadata on custom operators, or breaks full-graph capture because of expert dynamic masking and host syncs.
+
+      Rewrite this complete Triton Fused MoE routing, grouped GEMM projection, bias addition, and router weight accumulation into a clean, idiomatic PyTorch API module that compiles under torch.compile(backend="inductor", fullgraph=True) with dynamic sequence dimension support, deterministic accumulation, and zero eager fallbacks.
+
+      Our codebase currently runs this exact Triton fused_moe_kernel from vLLM:
+
+      @triton.jit
+      def fused_moe_kernel(
+          # Pointers to matrices
+          a_ptr,
+          b_ptr,
+          c_ptr,
+          b_bias_ptr,
+          a_scale_ptr,
+          b_scale_ptr,
+          topk_weights_ptr,
+          sorted_token_ids_ptr,
+          expert_ids_ptr,
+          num_tokens_post_padded_ptr,
+          # Matrix dimensions
+          N,
+          K,
+          EM,
+          num_valid_tokens,
+          # The stride variables represent how much to increase the ptr by when
+          # moving by 1 element in a particular dimension. E.g. 'stride_am' is
+          # how much to increase 'a_ptr' by to get the element one row down
+          # (A has M rows).
+          stride_am,
+          stride_ak,
+          stride_be,
+          stride_bk,
+          stride_bn,
+          stride_cm,
+          stride_cn,
+          stride_asm,
+          stride_ask,
+          stride_bse,
+          stride_bsk,
+          stride_bsn,
+          stride_bbe,  # bias expert stride
+          stride_bbn,  # bias N stride
+          # Block size for block-wise quantization
+          group_n: tl.constexpr,
+          group_k: tl.constexpr,
+          naive_block_assignment: tl.constexpr,
+          # Meta-parameters
+          BLOCK_SIZE_M: tl.constexpr,
+          BLOCK_SIZE_N: tl.constexpr,
+          BLOCK_SIZE_K: tl.constexpr,
+          GROUP_SIZE_M: tl.constexpr,
+          SPLIT_K: tl.constexpr,
+          MUL_ROUTED_WEIGHT: tl.constexpr,
+          top_k: tl.constexpr,
+          compute_type: tl.constexpr,
+          use_fp8_w8a8: tl.constexpr,
+          use_int8_w8a8: tl.constexpr,
+          use_int8_w8a16: tl.constexpr,
+          per_channel_quant: tl.constexpr,
+          HAS_BIAS: tl.constexpr,
+          SWAP_AB: tl.constexpr,
+          # Tensor-descriptor path for the A gather and B load in the K-loop.
+          USE_TD: tl.constexpr = False,
+      ):
+
+          pid = tl.program_id(axis=0)
+          num_pid_m = tl.cdiv(EM, BLOCK_SIZE_M)
+          num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
+          num_pid_in_group = GROUP_SIZE_M * num_pid_n
+          group_id = pid // num_pid_in_group
+          first_pid_m = group_id * GROUP_SIZE_M
+          group_size_m = min(num_pid_m - first_pid_m, GROUP_SIZE_M)
+          pid_m = first_pid_m + ((pid % num_pid_in_group) % group_size_m)
+          pid_n = (pid % num_pid_in_group) // group_size_m
+
+          offs = tl.arange(0, BLOCK_SIZE_M).to(tl.int64)
+          num_tokens_post_padded = tl.load(num_tokens_post_padded_ptr)
+          if pid_m * BLOCK_SIZE_M >= num_tokens_post_padded:
+              return
+          if not naive_block_assignment:
+              offs_token_id = pid_m * BLOCK_SIZE_M + offs
+              offs_token = tl.load(sorted_token_ids_ptr + offs_token_id)
+          else:
+              offs_token = tl.where(
+                  offs == 0,
+                  pid_m,  # first element = pid_m
+                  num_valid_tokens,  # remaining elements = constant
+              )
+
+          offs_token = offs_token.to(tl.int64)
+
+          token_mask = offs_token < num_valid_tokens
+
+          off_experts = tl.load(expert_ids_ptr + pid_m).to(tl.int64)
+          if off_experts == -1:
+
+              write_zeros_to_output(
+                  c_ptr,
+                  stride_cm,
+                  stride_cn,
+                  pid_n,
+                  N,
+                  offs_token,
+                  token_mask,
+                  BLOCK_SIZE_M,
+                  BLOCK_SIZE_N,
+                  compute_type,
+              )
+              return
+
+          offs_bn = (pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N).to(tl.int64)) % N
+          offs_k = tl.arange(0, BLOCK_SIZE_K)
+          tl.static_assert(not (USE_TD and SWAP_AB))
+          if USE_TD:
+              m_td = num_valid_tokens // top_k
+              a_desc = tl.make_tensor_descriptor(
+                  base=a_ptr,
+                  shape=(m_td, K),
+                  strides=(stride_am, stride_ak),
+                  block_shape=(1, BLOCK_SIZE_K),
+              )
+              b_desc = tl.make_tensor_descriptor(
+                  base=b_ptr + off_experts * stride_be,
+                  shape=(N, K),
+                  strides=(stride_bn, stride_bk),
+                  block_shape=(BLOCK_SIZE_N, BLOCK_SIZE_K),
+              )
+              gather_idx = (offs_token // top_k).to(tl.int32)
+          elif SWAP_AB:
+              a_ptrs = a_ptr + (
+                  offs_k[:, None] * stride_ak + offs_token[None, :] // top_k * stride_am
+              )
+              b_ptrs = (
+                  b_ptr
+                  + off_experts * stride_be
+                  + (offs_bn[:, None] * stride_bn + offs_k[None, :] * stride_bk)
+              )
+          else:
+              a_ptrs = a_ptr + (
+                  offs_token[:, None] // top_k * stride_am + offs_k[None, :] * stride_ak
+              )
+              b_ptrs = (
+                  b_ptr
+                  + off_experts * stride_be
+                  + (offs_k[:, None] * stride_bk + offs_bn[None, :] * stride_bn)
+              )
+          if use_int8_w8a16:
+              b_scale_ptrs = (
+                  b_scale_ptr + off_experts * stride_bse + offs_bn[None, :] * stride_bsn
+              )
+              b_scale = tl.load(b_scale_ptrs)
+
+          if use_fp8_w8a8 or use_int8_w8a8:
+              if group_k > 0 and group_n > 0:
+                  a_scale_ptrs = a_scale_ptr + (offs_token // top_k) * stride_asm
+                  offs_bsn = offs_bn // group_n
+                  b_scale_ptrs = (
+                      b_scale_ptr + off_experts * stride_bse + offs_bsn * stride_bsn
+                  )
+              elif per_channel_quant:
+                  b_scale_ptrs = (
+                      b_scale_ptr + off_experts * stride_bse + offs_bn[None, :] * stride_bsn
+                  )
+                  b_scale = tl.load(b_scale_ptrs)
+                  a_scale_ptrs = a_scale_ptr + (offs_token // top_k) * stride_asm
+                  a_scale = tl.load(a_scale_ptrs, mask=token_mask, other=0.0)[:, None]
+              else:
+                  a_scale = tl.load(a_scale_ptr)
+                  b_scale = tl.load(b_scale_ptr + off_experts)
+          if HAS_BIAS:
+              bias_ptrs = b_bias_ptr + off_experts * stride_bbe + offs_bn * stride_bbn
+              bias = tl.load(bias_ptrs, mask=(offs_bn < N), other=0.0)
+
+          if SWAP_AB:
+              accumulator = tl.zeros((BLOCK_SIZE_N, BLOCK_SIZE_M), dtype=tl.float32)
+          else:
+              accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
+          for k in range(0, tl.cdiv(K, BLOCK_SIZE_K)):
+
+              if USE_TD:
+                  a = a_desc.gather(gather_idx, k * BLOCK_SIZE_K)
+                  b = b_desc.load([pid_n * BLOCK_SIZE_N, k * BLOCK_SIZE_K]).T
+              elif SWAP_AB:
+                  a_mask = (offs_k[:, None] < K - k * BLOCK_SIZE_K) & token_mask[None, :]
+                  b_mask = offs_k[None, :] < K - k * BLOCK_SIZE_K
+                  a = tl.load(a_ptrs, mask=a_mask, other=0.0)
+                  b = tl.load(b_ptrs, mask=b_mask, other=0.0)
+              else:
+                  a = tl.load(
+                      a_ptrs,
+                      mask=token_mask[:, None] & (offs_k[None, :] < K - k * BLOCK_SIZE_K),
+                      other=0.0,
+                  )
+                  b = tl.load(b_ptrs, mask=offs_k[:, None] < K - k * BLOCK_SIZE_K, other=0.0)
+              if use_int8_w8a16:
+                  accumulator = tl.dot(a, b.to(compute_type), acc=accumulator)
+              elif use_fp8_w8a8 or use_int8_w8a8:
+                  if group_k > 0 and group_n > 0:
+                      k_start = k * BLOCK_SIZE_K
+                      offs_ks = k_start // group_k
+                      a_scale = tl.load(
+                          a_scale_ptrs + offs_ks * stride_ask, mask=token_mask, other=0.0
+                      )
+                      b_scale = tl.load(b_scale_ptrs + offs_ks * stride_bsk)
+                      if SWAP_AB:
+                          accumulator += tl.dot(b, a) * b_scale[:, None] * a_scale[None, :]
+                      else:
+                          accumulator += tl.dot(a, b) * a_scale[:, None] * b_scale[None, :]
+                  else:
+                      if use_fp8_w8a8:
+                          if SWAP_AB:
+                              accumulator = tl.dot(b, a, acc=accumulator)
+                          else:
+                              accumulator = tl.dot(a, b, acc=accumulator)
+                      else:
+                          accumulator += tl.dot(a, b)
+              else:
+                  accumulator += tl.dot(a, b)
+              if not USE_TD:
+                  # Advance the ptrs to the next K block.
+                  a_ptrs += BLOCK_SIZE_K * stride_ak
+                  b_ptrs += BLOCK_SIZE_K * stride_bk
+
+          if SWAP_AB:
+              accumulator = tl.trans(accumulator, (1, 0))
+
+          if use_int8_w8a16:
+              accumulator = accumulator * b_scale
+          elif (use_fp8_w8a8 or use_int8_w8a8) and not (group_k > 0 and group_n > 0):
+              accumulator = accumulator * a_scale * b_scale
+
+          if HAS_BIAS:
+              accumulator += bias[None, :]
+
+          if MUL_ROUTED_WEIGHT:
+              moe_weight = tl.load(
+                  topk_weights_ptr + offs_token,
+                  mask=token_mask,
+                  other=0,
+              )
+              accumulator *= moe_weight[:, None]
+
+          accumulator = accumulator.to(compute_type)
+
+          offs_cn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
+          c_ptrs = c_ptr + stride_cm * offs_token[:, None] + stride_cn * offs_cn[None, :]
+          c_mask = token_mask[:, None] & (offs_cn[None, :] < N)
+          tl.store(c_ptrs, accumulator, mask=c_mask)
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT057
+      category: GPU Kernel to PyTorch API conversion
+      sub_category: Triton matmul to PyTorch
+      difficulty: Hard
+      has_code: 'Yes'
+      baseline_result: Partially Solved
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        Solved:
+
+        Mathematically Equivalent Solution: The model output should be the exact mathematical representation of VLLM’s fused_moe_kernel, projecting tokens through assigned experts, adding the per-expert bias, and scaling by normalized routing weights before reduction. It should also apply gating weights exactly once at the block output and ensure the math is strictly respected. If the model writes an end to end FFN block, it should also maintain expert isolation across the non-linear activation and must not sum token representations across experts prior to non-linear gating step.
+
+        Memory Efficient: The model should never execute an all-expert dense broadcast which causes a massive increase in redundant FLOPs. It must route and compute GEMMs strictly for the M x top_k active assignments. The memory footprint for intermediate buffers must scale with [top_k, M, N] = 2 * 4096 * 14336 = ~235MB compared to massive blowout of [E, M, N] = 8  * 4096 * 14336 = ~1 GB.
+
+        Deterministic Accumulation: The code must avoid naive loops or global atomic emulation. It must accumulate routed projections back into final destination tensor [M, N] using in-place deterministic scattering. Expert indexing and gathering must run entirely on the GPU. The implementation must not use .item(), .tolist(), CPU pointer transfers, or host synchronizations that disrupt AOT Autograd tracing or CUDA stream pipelines.
+
+        Dynamic Shape Handling: The implementation should be able to handle variable batch sequence without triggering a recompilation storm meaning it should avoid using data dependent boolean masking since they generate dynamic shapes break compilation. The model should either supply dynamic = True into torch.compile or explicitly attach torch._dynamo.mark_dynamic to input tensors through the warmup trace.
+
+        CUDA Graph: The model should recognize that CUDA graphs need static workflow, meaning dynamic sequence lengths cannot be captured naively. It should turn off triton.cudagraphs using False flag when dealing with dynamic shapes rather than hallucinating memory layouts as static.
+
+        Hardware Tuning: The model should also enforce strict numerical stability. Softmax and top-k probability must be computed in FP32 to prevent numerical shift then cast to bf16 for downstream projections.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        The model managed to eliminate the TorchDynamo graph breaks by avoiding data dependent boolean masking like hidden_states[mask] and maintained the FP32 precision for router softmax, it failed on execution items and introduced mathematical bugs in SwiGLU logic, dynamic shape hinting.
+
+        Detached Dynamic Shape Hinting: The model ran torch._dynami.mark_dynamic on dummy input tensor which was immediately discarded and was never passed to compiled model. Since, this was never registered with the live inputs, the TorchInductor has to retrace and recompile the graph on every new batch size which causes massive latency spikes.
+
+        Invalid CUDA Graph: The model enabled the triton cudagraphs flag to True while still cycling through dynamic batch sizes without any form of shape bucketing, and falsey claimed that the memory footprint remained static. CUDA graphs do not record changing tensor shapes so turning triton cudagraphs to True on unpadded, and dynamic shapes causes CUDA stream aborts. Should be disabled unless batch inputs are padded.
+
+        Bad SwiGLU Math: In the MixtralSparseMoeBlock, the model collapsed the expert dimension with .sum(dim = 0) before SwiGLU non-linearity kicked in. This pushed the mixing of independent expert activations together and propagated the compounded routing weight across the gate, up and down projects.
+
+        Memory Explosion: The model expanded the inputs across all 8 experts via a dense broadcasting rather than computing only the active top_k = 2 pairs which creates a massive redundant FLOPs and allocates around ~1GB of transient tensor memory project with M = 4096. This is very counterproductive because the dense broadcast wastes HBM and tensor core cycles, which pretty much negates the compute savings of MoE routing and risks OOM errors.
+
+        Ignored Idiomatic Scatter Accumulation: The model bypassed the torch.Tensor.scatter_add_ which is the standard deterministic PyTorch implementation pattern for sparse to dense token accumulation.
+      weight: 0.5

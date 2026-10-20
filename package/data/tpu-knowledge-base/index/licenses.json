@@ -1,0 +1,24 @@
+{
+  "_comment": [
+    "Which licences a shipped entry may carry. SPDX identifiers.",
+    "",
+    "Empty `allowed` means the gate WARNS and does not fail: nobody has ruled",
+    "on the policy yet, and a gate that blocks on an empty list would block",
+    "every row. Put identifiers in the list and it starts enforcing, with no",
+    "code change. That is deliberate -- the list is the decision, and this file",
+    "is where the decision goes.",
+    "",
+    "`unknown` is not an allowed value and never should be. A row whose licence",
+    "nobody has established is a row nobody has checked, which is the state the",
+    "design doc's hygiene stage exists to end.",
+    "",
+    "TPU_AGENT_SUITE_KNOWLEDGE_BASE_ALLOW_UNLICENSED=1 bypasses the gate for a local run. It does",
+    "not silence it: the rows are still listed."
+  ],
+  "allowed": [],
+  "seen": {
+    "Apache-2.0": "github.com repositories, and the torch_tpu docs notebooks",
+    "CC-BY-4.0": "docs.cloud.google.com, stated in the page footer",
+    "unknown": "docs.jax.dev, docs.pytorch.org, arxiv.org, huggingface.co, triton-lang.org -- none state a licence inline; each needs establishing by hand"
+  }
+}

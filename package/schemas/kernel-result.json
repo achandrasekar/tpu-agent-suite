@@ -1,0 +1,217 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "kernel-result.json",
+  "title": "Kernel optimization result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "status",
+    "run_id"
+  ],
+  "status_requires": {
+    "optimized": [
+      "best_kernel_artifact",
+      "best_latency_ms",
+      "speedup_factor",
+      "iterations_run",
+      "artifacts"
+    ]
+  },
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": [
+        "optimized",
+        "invalid_input",
+        "needs_input",
+        "failed"
+      ],
+      "description": "What the loop ended up with. 'optimized' means it kept a kernel that compiled and passed its tests; 'invalid_input' and 'failed' are the ways it can end with nothing to hand back. 'needs_input' means the loop stopped before its first iteration for a setting only the user can give -- a `gke_job` profile with no `staging_bucket`, say, which cannot bring profile traces back -- and `summary` carries the question and the setup command. Only the fields a given outcome can actually produce are required -- the measurements are owed by 'optimized' alone, declared in `status_requires` and enforced by the runtime, because this validator has no conditional keywords."
+    },
+    "run_id": {
+      "type": "string",
+      "pattern": "^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}$"
+    },
+    "slot": {
+      "type": "string",
+      "pattern": "^k[0-9]{2,}$",
+      "description": "The slot this kernel's artifacts live in, `artifacts/tpu-kernel-development/<slot>`. Returned by every result after the loop resolved a slot, so a caller continuing the same kernel passes it back as the request's `slot` instead of relying on matching the path and op again."
+    },
+    "same_file_slots": {
+      "type": "array",
+      "description": "The session's other slots that are the same file as this result's kernel -- the same `base_kernel_path`, or the same resolved real path, which catches one file reached through a symlink -- each with its `target_op`; omitted when there are none. Two kernels can live in one file, so the loop opens a new slot rather than refusing; but a caller that renamed the op, or re-spelled the path, of a kernel it meant to continue sees here that it started over, and can delegate again with that kernel's `slot`.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "slot",
+          "target_op"
+        ],
+        "properties": {
+          "slot": {
+            "type": "string",
+            "pattern": "^k[0-9]{2,}$"
+          },
+          "target_op": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "summary": {
+      "type": "string",
+      "description": "Short prose for the caller. Not the deliverable: the numbers belong in the typed fields and the code in an artifact."
+    },
+    "artifacts": {
+      "type": "array",
+      "description": "Durable artifact paths produced under the run's artifacts directory.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "best_kernel_artifact": {
+      "type": "string",
+      "description": "Path to the fastest kernel the loop kept. Owed by an 'optimized' result."
+    },
+    "baseline_latency_ms": {
+      "type": "number",
+      "minimum": 0,
+      "description": "What the incoming kernel measured, so the speedup below can be checked rather than taken on trust."
+    },
+    "best_latency_ms": {
+      "type": "number",
+      "minimum": 0,
+      "description": "What the best kernel measured. Owed by an 'optimized' result."
+    },
+    "speedup_factor": {
+      "type": "number",
+      "minimum": 0,
+      "description": "baseline_latency_ms / best_latency_ms. Owed by an 'optimized' result."
+    },
+    "iterations_run": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "How many iterations actually ran. Owed by an 'optimized' result; it can be lower than the requested budget only if the loop stopped early, which is a fault worth seeing."
+    },
+    "iterations": {
+      "type": "array",
+      "description": "Per-iteration record -- the table the loop already reports at the end, returned as data rather than as prose.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "iteration",
+          "compile_ok",
+          "test_ok"
+        ],
+        "properties": {
+          "iteration": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "compile_ok": {
+            "type": "boolean"
+          },
+          "test_ok": {
+            "type": "boolean"
+          },
+          "latency_ms": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Absent when the iteration never got far enough to be timed."
+          },
+          "speedup": {
+            "type": "number",
+            "minimum": 0,
+            "description": "This iteration's measured speedup over the baseline, from the harness's paired base-vs-optimized timing in a single process. Reported per iteration rather than only at the end because the next iteration's planner branches on it: above 1.0 it builds on this kernel, at or below 1.0 it restarts from the baseline. Absent when correctness failed and the harness printed no timing line."
+          },
+          "base_choice": {
+            "type": "string",
+            "description": "Which source this iteration was built from -- `base`, `iter<k>`, or `unknown` when the plan did not say. Makes the loop's trajectory readable: three iterations in a row choosing `base` means each attempt was abandoned, which a column of latencies alone does not show."
+          },
+          "profile_summary": {
+            "type": "string",
+            "description": "Path to the iteration's profile report. Absent -- not null -- when the iteration did not compile or failed its tests, because there was nothing worth profiling."
+          }
+        }
+      }
+    },
+    "input_language": {
+      "type": "string",
+      "enum": [
+        "jax",
+        "pytorch"
+      ],
+      "description": "What the primary input was, after classification. `specification` is absent on purpose: an approved synthesized baseline becomes one of these two before any iteration runs, so reporting it here would describe how the run started rather than what it measured. `cuda` is absent because CUDA is never a primary -- it reaches a run only through `reference_paths`, and what it contributed is reported in `reference_trust` instead."
+    },
+    "baseline_verified": {
+      "type": [
+        "boolean",
+        "null"
+      ],
+      "description": "Whether the JAX baseline every number below is measured against was checked against values captured from the caller's own source. Null means no such check was possible -- a jax primary (where the baseline IS the caller's code), or a degraded capture. A speedup against an unverified port and one against a gated port are not the same claim, and a caller reading only `speedup_factor` has no way to tell them apart."
+    },
+    "reference_trust": {
+      "type": "string",
+      "enum": [
+        "aligned",
+        "partial",
+        "divergent",
+        "rejected"
+      ],
+      "description": "How closely a supplied reference kernel matched the primary computation. Absent when no reference was supplied, which is the common case. `rejected` means the reference computed something else and contributed nothing -- a normal outcome, not a failure."
+    },
+    "error_message": {
+      "type": "string",
+      "description": "Why the stage did not reach 'optimized'. The unhappy case belongs in the contract, not only in the summary prose."
+    },
+    "failure_reason": {
+      "type": "string",
+      "enum": [
+        "compilation_error",
+        "test_failure",
+        "timeout",
+        "no_device",
+        "cancelled"
+      ],
+      "description": "The cause, on the axis the status enum deliberately does not cover. The same vocabulary the stage results use, so a failure that propagates up from a stage keeps its reason."
+    }
+  },
+  "examples": [
+    {
+      "status": "optimized",
+      "run_id": "20260914T120000Z-000000000000",
+      "summary": "Kept iteration 3: block-wise softmax with a fused epilogue, 2.31x over the baseline.",
+      "best_latency_ms": 1.83,
+      "baseline_latency_ms": 4.22,
+      "speedup_factor": 2.31,
+      "iterations_run": 3,
+      "iterations": [
+        {
+          "iteration": 1,
+          "compile_ok": false,
+          "test_ok": false
+        },
+        {
+          "iteration": 2,
+          "compile_ok": true,
+          "test_ok": true,
+          "latency_ms": 2.95
+        },
+        {
+          "iteration": 3,
+          "compile_ok": true,
+          "test_ok": true,
+          "latency_ms": 1.83
+        }
+      ],
+      "best_kernel_artifact": "artifacts/kernel_opt.py",
+      "artifacts": [
+        "artifacts/kernel_opt.py"
+      ]
+    }
+  ]
+}

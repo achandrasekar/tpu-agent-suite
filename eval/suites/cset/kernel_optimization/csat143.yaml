@@ -1,0 +1,95 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT143 from the "Kernel optimization" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat143
+    prompt: |-
+      I'm tuning Kimi K2 inference on TPU7x and need a faster Pallas implementation of the MoE unpermute and weighted combine below. The inputs are intermediate: (8192,7168), bfloat16; sorted_selected_experts:(8192,), int32; and weights: (1024,8), float32. Keep the existing function signature, input layouts, and behavior, and match the reference with rtol=0.01 and atol=0.01.
+      import jax
+      import jax.numpy as jnp
+      def get_inputs():
+      k1, k2 = jax.random.split(jax.random.key(42))
+      intermediate = jax.random.normal(k1, (8192,7168), dtype=jnp.bfloat16)
+      scores = jax.nn.sigmoid(jax.random.normal(k2, (1024,384), dtype=jnp.float32))
+      weights, expert_ids = jax.lax.top_k(scores, 8)
+      weights = weights/jnp.sum(weights, axis=-1, keepdims=True) * 2.827
+      sorted_selected_experts = jnp.argsort(expert_ids.reshape(-1), stable=True)
+      dynamic_args = [intermediate,sorted_selected_experts,weights]
+      static_args = []
+      return dynamic_args, static_args
+      def computation(intermediate,sorted_selected_experts,weights):
+      top_k = 8
+      expected_tokens = weights.shape[0] * top_k
+      argsort_indices = (
+      jnp.zeros(expected_tokens, dtype=jnp.int32)
+      .at[sorted_selected_experts]
+      .set(jnp.arange(expected_tokens, dtype=jnp.int32))
+      )
+      weights_fp32 = weights.astype(jnp.float32)
+      if weights.shape[0] <= 256:
+      unsort_intermediate = jnp.take(intermediate, indices=argsort_indices, axis=0)
+      reshaped_intermediate = jnp.reshape(
+      unsort_intermediate,
+      (weights.shape[0], top_k, -1),
+      )
+      output = jnp.einsum(
+      "BKE,BK -> BE",
+      reshaped_intermediate.astype(jnp.float32),
+      weights_fp32,
+      )
+      else:
+      grouped_indices = jnp.reshape(argsort_indices, (weights.shape[0], top_k))
+      output = None
+      for k in range(top_k):
+      contribution = (
+      jnp.take(intermediate, indices=grouped_indices[:, k], axis=0).astype(
+      jnp.float32
+      )
+      * weights_fp32[:, k, None]
+      )
+      output = contribution if output is None else output + contribution
+      final_output = output.astype(jnp.bfloat16)
+      return final_output
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT143
+      category: Kernel optimization
+      difficulty: Hard
+      has_code: 'Yes'
+      baseline_result: Stumped
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        The expected TPU7x Pallas implementation fuses indexed row loading, weighting, and reduction across eight expert contributions, keeping FP32 partial sums on-chip and writing each output tile once. It handles the inverse permutation efficiently and reuses routing indices and weights, with channel tiling and pipelining chosen to reduce gather overhead and register pressure. It preserves the exact token and expert slot mapping, uses the supplied weights unchanged, and maintains the function signature and input layouts while returning BF16 output of shape (1024, 7168). The implementation compiles and executes on TPU7x, matches the reference within rtol=0.01 and atol=0.01, and delivers a meaningful speedup over the supplied JAX reference.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        The model's optimization fails to compile on TPU7x. At line 16 of optimized.py, inter_ref[idx,:] attempts a dynamic row load from a tiled bfloat16 buffer. Mosaic raises E2003 because it cannot prove that idx is a multiple of 8, as required for this memory access. The model's optimized kernel therefore never runs, so correctness and speedup could not be checked.
+      weight: 0.5

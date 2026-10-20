@@ -1,0 +1,55 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT045 from the "TPU Knowledge Q&A" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat045
+    prompt: I am stuck on the KV layout for GQA decode. The model has 64 query heads,
+      2 KV heads, a decode batch of 16, and a 128k cached context, and it runs as
+      one 64-chip model-parallel replica on a TPU v6e 8x8 slice. I cannot replicate
+      any KV entries. What exact KV, query, and output sharding and per-layer communication
+      would use all 64 chips with the least additional attention traffic while remaining
+      numerically equivalent to unsharded causal attention.
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT045
+      category: TPU Knowledge Q&A
+      sub_category: Inference concerns
+      difficulty: Hard
+      has_code: 'No'
+      baseline_result: Partially Solved
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        A correct answer should keep one model replica with its weights sharded across all 64 chips. The KV cache should be divided as 2 KV heads x 16 batch items x 2 sequence halves, so each chip stores K and V for one batch item, one KV head, and 65536 positions without KV replication. Q requires a global AllToAll from the 64-way model-head layout into the batch/KV layout, followed by a 2-way AllGather across the sequence halves. The two halves must combine their local maximum, softmax sum, and weighted value sum using a numerically stable online-softmax reduction. A reverse global AllToAll returns the result to the 64-way model-head layout before the sharded W_O calculation and 64-chip AllReduce.  New K/V entries go only to their single owner. Exact byte totals cannot be given without the missing dimensions and data types.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        The response correctly finds the 16x2x2 KV layout and correctly explains how to combine softmax results from two sequence shards. However, it violates the prompt's fixed requirement that the deployment remain one 64-chip model-parallel replica, thereby answering a different deployment question from the one asked. It divides the slice into sixteen separate 2x2 groups and shards W_Q, W_O, and the MLP across only four chips in each group. This repeats the model weights across the sixteen groups and effectively creates sixteen 4-chip model replicas. Because of this change, the response leaves out two required global AlltoAll operations: one to move Q from the 64-way model-head layout into the batch/KV layout before attention, and one to move the attention output back afterward.  Its reported total of 56.16 KiB therefore does not include all required communication. That total also assumes a head size of 128, a hidden size of 8192, and BF16 communication, although the question does not provide those values.
+      weight: 0.5

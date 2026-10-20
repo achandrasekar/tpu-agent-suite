@@ -1,0 +1,121 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT056 from the "Hardware profiling and debugging" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat056
+    prompt: |-
+      Pre flight review before we burn a reservation, and I need line level findings, not a TPU migration checklist, we have read those.
+
+      We are moving training of a domain language model built on nanoGPT (karpathy/nanoGPT), GPT-2 small config, 124M parameters, from A100s to a v6e slice with torch_xla, bf16. Two years of healthy A100 baselines. The reservation window is short and we get one shot, so we are reviewing the exact code before kickoff instead of debugging after.
+
+      The model init, verbatim from nanoGPT model.py:
+
+      class GPT(nn.Module):
+
+          def __init__(self, config):
+              super().__init__()
+              assert config.vocab_size is not None
+              assert config.block_size is not None
+              self.config = config
+
+              self.transformer = nn.ModuleDict(dict(
+                  wte = nn.Embedding(config.vocab_size, config.n_embd),
+                  wpe = nn.Embedding(config.block_size, config.n_embd),
+                  drop = nn.Dropout(config.dropout),
+                  h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
+                  ln_f = LayerNorm(config.n_embd, bias=config.bias),
+              ))
+              self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+              # with weight tying when using torch.compile() some warnings get generated:
+              # "UserWarning: functional_call was passed multiple values for tied weights.
+              # This behavior is deprecated and will be an error in future versions"
+              # not 100% sure what this is, so far seems to be harmless. TODO investigate
+              self.transformer.wte.weight = self.lm_head.weight # https://paperswithcode.com/method/weight-tying
+
+              # init all weights
+              self.apply(self._init_weights)
+              # apply special scaled init to the residual projections, per GPT-2 paper
+              for pn, p in self.named_parameters():
+                  if pn.endswith('c_proj.weight'):
+                      torch.nn.init.normal_(p, mean=0.0, std=0.02/math.sqrt(2 * config.n_layer))
+
+              # report number of parameters
+              print("number of parameters: %.2fM" % (self.get_num_params()/1e6,))
+
+      Our planned device setup and step, the only lines that change from the A100 branch:
+
+          device = xm.xla_device()
+          model = GPT(gptconf)
+          model.to(device)
+          optimizer = model.configure_optimizers(weight_decay, learning_rate, betas, device_type)
+          ...
+          loss.backward()
+          xm.optimizer_step(optimizer)
+
+      model.py is byte identical between branches, we diffed it. The rest of the loop is the standard torch_xla pattern with a proper device loader, that part has been reviewed already, and we are aware of the usual bf16 numerics expectations, so neither of those is the question.
+
+      Three asks, short and committed.
+
+      One, yes or no: run exactly this on v6e and the trained model that comes out is the same effective architecture, same effective parameter count, as our A100 baseline, differences down to numerics only?
+
+      Two, quote the single line from what we pasted that carries the most silent risk on this backend specifically, and give one sentence on why that line.
+
+      Three, the one change, if any, you would require before we burn the reservation. If the answer is none, say none.
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT056
+      category: Hardware profiling and debugging
+      sub_category: Silent weight tying break on device move
+      difficulty: Hard
+      has_code: 'Yes'
+      baseline_result: Stumped
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        Stumped: answers yes to ask one; or quotes a line other than the tying line for ask two, for example the bf16 setup, the optimizer step, the init loop; or quotes the tying line but for the decoy reason, the torch.compile functional_call warning that karpathys own comment worries about, with no mention of the XLA device move breaking the share; or answers none on ask three; or hands back a general TPU migration checklist despite the prompt closing that off. Any one of these is Stumped.
+
+        Partially Solved: no on ask one but with a wrong or vague mechanism, something differs but cannot say the tie breaks on the move; or quotes the tying line with the right XLA reason on ask two but answers yes on ask one, internally inconsistent; or names the untie but buries it in a scattergun of five plus findings without committing to the single line the prompt demands; or right line, right mechanism, but the ask three change is wrong or incomplete, for example move the tying line around inside init, which changes nothing, the move still happens after.
+
+        Solved: no on ask one, the effective architecture differs because the model trains untied on v6e, effective trainable parameter count goes up by one vocab by embd matrix. Ask two quotes the tying line, self.transformer.wte.weight = self.lm_head.weight, with the XLA reason, the tie is made in init, before model.to(device), and on an XLA device the move materializes two independent copies of a shared tensor, documented behavior, while the same order is safe on CUDA, which is why two years of A100 runs never showed it. Distinguishes this from the torch.compile warning in the comment, or at minimum does not lean on the comment as the risk. Ask three, retie after the move, model.to(device) then re assign the share, or assert the identity after the move as a guard. Accept equivalent formulations.
+
+        Grading note for the reviewer. The run landed in the Stumped band on the first trigger, yes on ask one. The response also quoted the tying line on ask two with a vague aliasing hazard, that does not move it to Partially, the Partially band for a quoted line requires the right XLA reason, and the yes on ask one is a standalone Stumped trigger regardless.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        What it got wrong. Answered yes to ask one, certifying that the exact pasted setup trains the same effective architecture and parameter count on v6e as the A100 baseline, differences down to numerics. It does not. The tie between wte and lm_head is made in init, before model.to(device), and on an XLA device the move materializes two independent copies of the shared tensor, so the v6e run trains an untied variant with one extra vocab by embd parameter matrix. Documented behavior, PyTorch XLA troubleshooting docs, XLA Tensor Quirks item 4, URL in Source.
+
+        Why it matters, checkable from the models own output. The customer stated they get one shot at the reservation and the model cleared the code for launch. Its three answers also contradict each other on their face. Ask one certifies the output model as architecturally identical. Ask two then names the weight tying line as the single line carrying the most silent risk on this backend, with silent gradient accumulation bugs as the stated hazard. Both cannot hold. And the stated hazard is not the real one, the ask two sentence talks about shared buffer identities and autograd tracking in general terms and never mentions the device move breaking the share, which is the actual documented failure on this backend.
+
+        What it should have done. No on ask one with the untie mechanism. Quote the tying line for the move order reason, the tie happens before .to(device) and XLA copies shared tensors independently on the move, while the same order is safe on CUDA, which is why two years of A100 baselines never surfaced it. Require the retie after model.to(device) as the one pre launch change.
+
+        Credit where due. It picked the correct line out of everything pasted, ahead of the bf16 setup, the optimizer step, and the init loop, so the risk localization is right even though the mechanism and the verdict are wrong. Its ask three recommendation, make sure device_type is not cuda so configure_optimizers does not take the fused AdamW path, is a legitimate and checkable point about the nanoGPT optimizer code on non CUDA backends. It is just not the change the reservation depends on, and it displaced the required one.
+
+        Provenance and hardening. Design 2 under this UID, round 1, cold, stumped in one round. Design 1, the same bug presented post hoc with symptoms and two dismissed entailing clues, was solved cleanly by the same model the same morning, session link in Notes. The pair is the finding. The model diagnoses this quirk backward from evidence and fails to deploy it forward from code, and in this run it cleared for launch the exact failure it had explained a few hours earlier.
+      weight: 0.5

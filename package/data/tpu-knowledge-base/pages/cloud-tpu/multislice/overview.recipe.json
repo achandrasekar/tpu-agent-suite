@@ -1,0 +1,7 @@
+{
+  "query": "Explain Cloud TPU Multislice: slices versus pods, ICI versus DCN, parallelism placement, coordinated training and failure recovery. Keep this conceptual rather than a command walkthrough.",
+  "authoring_request": "Cloud TPU/GKE: simple queries based on GCP pages for content that will not change often",
+  "source_ids": [
+    "cloud-tpu-multislice"
+  ]
+}

@@ -1,0 +1,1 @@
+Answer this question about `decode-memory-roofline`, grounded in the TPU documentation, passing it exactly as written: "By how much does an FP8 KV cache cut KV cache bandwidth compared with BF16?" Answer clearly, citing any references you can for grounding. Drop a JSON at `/logs/artifacts/answer.json` with keys `answer` and `reference`, for scoring.

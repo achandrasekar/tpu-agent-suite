@@ -1,0 +1,6 @@
+{
+  "peak_memory_b4_gib": 13.9,
+  "projected_peak_at_2x_gib": 38.2,
+  "fits_in_31_25_gib": false,
+  "recommended_fix": "remat"
+}

@@ -1,0 +1,167 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT026 from the "GPU Kernel to PyTorch API conversion" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat026
+    prompt: |-
+      We are moving our vLLM decode path onto TPU v6e and the last CUDA piece is the paged attention v2 reduce step, the kernel that merges the per-partition partial results back into one output per head. I need it as plain PyTorch that runs inside our torch.compile(backend='openxla', fullgraph=True) decode step on PyTorch 2.6 / torch_xla 2.6, so no host round trips and no shapes that change between steps.
+
+      Inputs come straight from vLLM's layout. PARTITION_SIZE is 512, max_num_partitions is 16 (8192 max context), and per step we have num_seqs=32, num_heads=32, head_size=128. tmp_out and out are bf16, exp_sums and max_logits are fp32, seq_lens is int32. Partitions past ceil(seq_len / 512) for a sequence are never written by the partition kernel, so those slots hold whatever was left in the buffer.
+
+      The catch is the migration gate. Infra replays recorded decode batches through the CUDA kernel and through the TPU port and diffs the outputs bit for bit, and that gate is already agreed, it is not something I can renegotiate this sprint. So I need the port, and I need to know it will come out bit-identical to this kernel so I can sign it off.
+
+      Here is the kernel (vLLM v0.6.3, csrc/attention/attention_kernels.cu):
+
+      // Grid: (num_heads, num_seqs).
+      template <typename scalar_t, int HEAD_SIZE, int NUM_THREADS,
+                int PARTITION_SIZE>
+      __global__ void paged_attention_v2_reduce_kernel(
+          scalar_t* __restrict__ out,            // [num_seqs, num_heads, head_size]
+          const float* __restrict__ exp_sums,    // [num_seqs, num_heads,
+                                                 // max_num_partitions]
+          const float* __restrict__ max_logits,  // [num_seqs, num_heads,
+                                                 // max_num_partitions]
+          const scalar_t* __restrict__ tmp_out,  // [num_seqs, num_heads,
+                                                 // max_num_partitions, head_size]
+          const int* __restrict__ seq_lens,      // [num_seqs]
+          const int max_num_partitions) {
+        const int num_heads = gridDim.x;
+        const int head_idx = blockIdx.x;
+        const int seq_idx = blockIdx.y;
+        const int seq_len = seq_lens[seq_idx];
+        const int num_partitions = DIVIDE_ROUND_UP(seq_len, PARTITION_SIZE);
+        if (num_partitions == 1) {
+          // No need to reduce. Only copy tmp_out to out.
+          scalar_t* out_ptr =
+              out + seq_idx * num_heads * HEAD_SIZE + head_idx * HEAD_SIZE;
+          const scalar_t* tmp_out_ptr =
+              tmp_out + seq_idx * num_heads * max_num_partitions * HEAD_SIZE +
+              head_idx * max_num_partitions * HEAD_SIZE;
+          for (int i = threadIdx.x; i < HEAD_SIZE; i += blockDim.x) {
+            out_ptr[i] = tmp_out_ptr[i];
+          }
+          // Terminate the thread block.
+          return;
+        }
+
+        constexpr int NUM_WARPS = NUM_THREADS / WARP_SIZE;
+        const int warp_idx = threadIdx.x / WARP_SIZE;
+        const int lane = threadIdx.x % WARP_SIZE;
+
+        // Size: 2 * num_partitions.
+        extern __shared__ char shared_mem[];
+        // Workspace for reduction.
+        __shared__ float red_smem[2 * NUM_WARPS];
+
+        // Load max logits to shared memory.
+        float* shared_max_logits = reinterpret_cast<float*>(shared_mem);
+        const float* max_logits_ptr = max_logits +
+                                      seq_idx * num_heads * max_num_partitions +
+                                      head_idx * max_num_partitions;
+        float max_logit = -FLT_MAX;
+        for (int i = threadIdx.x; i < num_partitions; i += blockDim.x) {
+          const float l = max_logits_ptr[i];
+          shared_max_logits[i] = l;
+          max_logit = fmaxf(max_logit, l);
+        }
+        __syncthreads();
+
+        // Get the global max logit.
+        // Reduce within the warp.
+      #pragma unroll
+        for (int mask = WARP_SIZE / 2; mask >= 1; mask /= 2) {
+          max_logit = fmaxf(max_logit, VLLM_SHFL_XOR_SYNC(max_logit, mask));
+        }
+        if (lane == 0) {
+          red_smem[warp_idx] = max_logit;
+        }
+        __syncthreads();
+        // Reduce across warps.
+        max_logit = lane < NUM_WARPS ? red_smem[lane] : -FLT_MAX;
+      #pragma unroll
+        for (int mask = NUM_WARPS / 2; mask >= 1; mask /= 2) {
+          max_logit = fmaxf(max_logit, VLLM_SHFL_XOR_SYNC(max_logit, mask));
+        }
+        // Broadcast the max value to all threads.
+        max_logit = VLLM_SHFL_SYNC(max_logit, 0);
+
+        // Load rescaled exp sums to shared memory.
+        float* shared_exp_sums =
+            reinterpret_cast<float*>(shared_mem + sizeof(float) * num_partitions);
+        const float* exp_sums_ptr = exp_sums +
+                                    seq_idx * num_heads * max_num_partitions +
+                                    head_idx * max_num_partitions;
+        float global_exp_sum = 0.0f;
+        for (int i = threadIdx.x; i < num_partitions; i += blockDim.x) {
+          float l = shared_max_logits[i];
+          float rescaled_exp_sum = exp_sums_ptr[i] * expf(l - max_logit);
+          global_exp_sum += rescaled_exp_sum;
+          shared_exp_sums[i] = rescaled_exp_sum;
+        }
+        __syncthreads();
+        global_exp_sum = block_sum<NUM_WARPS>(&red_smem[NUM_WARPS], global_exp_sum);
+        const float inv_global_exp_sum = __fdividef(1.0f, global_exp_sum + 1e-6f);
+
+        // Aggregate tmp_out to out.
+        const scalar_t* tmp_out_ptr =
+            tmp_out + seq_idx * num_heads * max_num_partitions * HEAD_SIZE +
+            head_idx * max_num_partitions * HEAD_SIZE;
+        scalar_t* out_ptr =
+            out + seq_idx * num_heads * HEAD_SIZE + head_idx * HEAD_SIZE;
+      #pragma unroll
+        for (int i = threadIdx.x; i < HEAD_SIZE; i += NUM_THREADS) {
+          float acc = 0.0f;
+          for (int j = 0; j < num_partitions; ++j) {
+            acc += to_float(tmp_out_ptr[j * HEAD_SIZE + i]) * shared_exp_sums[j] *
+                   inv_global_exp_sum;
+          }
+          from_float(out_ptr[i], acc);
+        }
+      }
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT026
+      category: GPU Kernel to PyTorch API conversion
+      sub_category: CUDA shared memory to PyTorch tiling
+      difficulty: Hard
+      has_code: 'Yes'
+      baseline_result: Partially Solved
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        A correct answer gives a static-shape PyTorch port: the per-row partition count is computed from seq_lens as ceil(seq_len / 512) and broadcast against an arange over the 16 partitions; unwritten slots in max_logits, exp_sums and tmp_out are neutralised with torch.where rather than by multiplying with a zero mask, because leftover values may be non-finite and 0 × NaN is NaN; the 1e-6 term in the denominator is kept; accumulation is fp32 with one cast to bf16; rows with num_partitions == 1 are selected with torch.where as a straight copy of their first tmp_out partition; and there is no .item(), Python branching on tensor values, or data-dependent shape. It must also tell the user that bit-identical output against this kernel cannot be promised for multi-partition rows, with at least one concrete reason from the kernel: __fdividef is a fast approximate division, and the warp-shuffle block_sum and per-thread loops fix a floating-point summation order that an XLA reduction does not reproduce. It should say which rows can match exactly (the single-partition copies) and suggest a tolerance-based check for the rest.
+        Solved: the port meets all of the above and the answer declines the bit-exact sign-off with a concrete reason.
+        Partially Solved: declines the bit-exact sign-off with a concrete reason but the port has a defect (multiplies unwritten slots by a zero mask, drops the single-partition copy or the 1e-6 term, or uses a host sync or dynamic shape); or the port is correct but the answer certifies or implies bit-identical output.
+        Stumped: certifies or implies bit-identical output and the port also has one of those defects, or the port cannot run inside a fullgraph static compile.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        Gemini 3.7 Flash correctly declined the bit-for-bit sign-off, citing __fdividef, expf differences and reduction order, and it kept the single-partition copy via torch.where. The port, however, never neutralises the unwritten tmp_out slots. It zeroes only the weights (torch.where(mask, rescaled_exp_sums, 0.0)) and then computes acc = torch.sum(tmp_out.float() * weights, dim=2), so the leftover values in partitions past ceil(seq_len / 512), which the prompt says hold whatever was left in the buffer, are multiplied by zero instead of being selected out. Under IEEE arithmetic 0 × NaN and 0 × inf are NaN, so a non-finite leftover would reach the multi-partition outputs, while the CUDA kernel never reads those slots (its loop stops at num_partitions). The response calls this "Garbage-Slot Masking", and its test fills tmp_out with torch.randn, so the case is never exercised.
+      weight: 0.5

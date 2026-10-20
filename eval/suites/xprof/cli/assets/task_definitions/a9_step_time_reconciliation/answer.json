@@ -1,0 +1,10 @@
+{
+  "overview_step_time_ms": 233.8,
+  "avg_step_time_tool_ms": 48.8823,
+  "avg_step_time_tool_step_count": 38,
+  "host_boundness_step_count": 2,
+  "step_times_are_numerically_equal": false,
+  "avg_step_time_counts": "xla_module_executions",
+  "training_step_time_ms": 233.8,
+  "core_count": 4
+}

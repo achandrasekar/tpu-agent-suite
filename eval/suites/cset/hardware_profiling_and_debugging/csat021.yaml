@@ -1,0 +1,87 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT021 from the "Hardware profiling and debugging" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat021
+    prompt: |-
+      I've been chasing silently wrong numbers in a preprocessing kernel on v6e and I've cut it down to this minimal repro. It de-interleaves a small block: reshape, take the first element of each pair, broadcast back out. With interpret=True I get exactly what I expect. With interpret=False on the TPU the values come out wrong. Same code, same input.
+
+      import jax
+      import jax.numpy as jnp
+      from jax.experimental import pallas as pl
+
+      def f_kernel(in_ptr0, out_ptr0):
+          # in_ptr0 == [[1.0, 2.0, 3.0, 4.0]], shape (1, 4)
+          reshaped = in_ptr0.reshape(1, 2, 2)      # [[[1., 2.], [3., 4.]]]
+          indexed = reshaped[:, :, 0]              # [[1., 3.]]
+          expanded = jnp.expand_dims(indexed, -1)  # [[[1.], [3.]]]
+          result = jnp.broadcast_to(expanded, (1, 2, 2))  # [[[1., 1.], [3., 3.]]]
+          out_ptr0[...] = result
+
+      def f(x):
+          return pl.pallas_call(
+              f_kernel,
+              out_shape=jax.ShapeDtypeStruct((1, 2, 2), x.dtype),
+              grid=(1,),
+              in_specs=[pl.BlockSpec(x.shape, lambda i: (0, 0))],
+              out_specs=pl.BlockSpec((1, 2, 2), lambda i: (0, 0, 0)),
+          )(x)
+
+      x = jnp.array([[1.0, 2.0, 3.0, 4.0]], dtype=jnp.float32)
+      print(f(x))   # expect [[[1., 1.], [3., 3.]]], TPU run doesn't match
+
+      What am I doing wrong here?
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT021
+      category: Hardware profiling and debugging
+      sub_category: Numerical and dtype errors
+      difficulty: Hard
+      has_code: 'Yes'
+      baseline_result: Stumped
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        The correct answer is that the user is doing nothing semantically wrong. The kernel logic is valid, the commented intermediate values are all correct, and interpret mode agreeing with the expectation confirms the intent. When semantically valid code diverges between compiled and interpret mode, that points at the compiler, and this exact case is documented: jax-ml/jax issue 36287, same reshape index broadcast pattern, labeled bug, assigned to the Pallas maintainer. The documented TPU output is [[[1., 1.], [0., 0.]]], second row silently zeroed, against the expected [[[1., 1.], [3., 3.]]].
+
+        A good answer gets to "this is likely a compiler or lowering bug, not your code", naming the issue isn't required, and then gives the practical path: hoist the reshape and selection outside the kernel or load with [...] first as a workaround, verify against interpret mode, check or upgrade the JAX version, and report or reference the issue. Offering the load first workaround is fine. Presenting it as the fix for a user error is not.
+
+        Partial: suspects a lowering or compiler problem, or uses the interpret mode result as evidence, but still frames the rewrite as correcting a user mistake, or hedges without committing to a diagnosis.
+
+        Stumped: asserts a specific user error and rewrites the kernel as the fix, treating the TPU result as the code's fault, especially with confident mechanistic explanations that don't come from any documented source.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        It picked a user error and committed to it, on a repro that the JAX maintainers themselves label as a bug (jax-ml/jax issue 36287, assigned to the Pallas lead). Its diagnosis was that I operated on the Ref directly, reshape and index before loading with [...], and that this creates corrupt strided views. It backed that with a mechanism it made up, "incorrect memory address offsets", presented as hardware fact. Then it rewrote the kernel, load first, same reshape and index on the loaded value, and printed the fixed TPU output as if it had run it. It has no way to run anything.
+
+        What it never did: treat the interpret versus compiled disagreement as evidence pointing at the compiler, consider a lowering bug at all, suggest checking the JAX version or the issue tracker, or note that silent corruption is not acceptable behavior even for a discouraged usage pattern.
+
+        The tricky part, and worth the reviewer's attention: the workaround itself probably works. Load then manipulate is good Pallas practice and likely dodges the bad lowering path. I scored it Stumped anyway because this category tests diagnosis, and the diagnosis is contradicted by the documented ground truth. A customer following this answer fixes their symptom, wrongly concludes they made a mistake, and never reports the bug. A useful answer built on a confident wrong explanation is exactly the failure this row is meant to catch.
+      weight: 0.5

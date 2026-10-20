@@ -1,0 +1,110 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT060 from the "Hardware profiling and debugging" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat060
+    prompt: |-
+      I am writing a custom Pallas kernel for a TPU v3-8. I have a simple vector
+      addition kernel operating on f32 tensors of shape (1024, 1024). The official JAX
+      Pallas documentation claims that automatic differentiation of Pallas kernels
+      works out-of-the-box, albeit slower. However, when I try to run jax.grad on my
+      pallas_call, I get a deep JAX internal AssertionError during linearization.
+
+      Because the error happens in ad.linearize, I suspect the JAX AD tracer is
+      crashing because my kernel does an in-place mutation (o_ref[...] = x + y), which
+      standard JAX AD usually rejects. Do I need to rewrite the kernel to avoid
+      in-place updates, or do I need to wrap the pallas_call in jax.pure_callback so
+      the gradient tracer ignores the mutation?
+
+      Here is my code: import jax from jax.experimental import pallas as pl import
+      jax.numpy as jnp
+
+      def add_vectors_kernel(x_ref, y_ref, o_ref): x, y = x_ref[...], y_ref[...]
+      o_ref[...] = x + y def pallas_call(x,y): return
+      pl.pallas_call(add_vectors_kernel, out_shape=jax.ShapeDtypeStruct(x.shape,
+      x.dtype) )(x, y)
+
+      grad_pallas_call = jax.grad(pallas_call)
+
+      x=jax.random.normal(jax.random.key(0), (1024, 1024))
+      y=jax.random.normal(jax.random.key(0), (1024, 1024))
+      pallas_output=pallas_call(x,y) print(pallas_output.sum())
+      pallas_grad_output=grad_pallas_call(x,y)
+
+      This fails with: Traceback (most recent call last): File
+      "/kaggle/working/pallas_bug_test.py", line 26, in
+      pallas_grad_output=grad_pallas_call(x,y) File
+      "/usr/local/lib/python3.10/site-packages/jax/_src/traceback_util.py", line 179,
+      in reraise_with_filtered_traceback return fun(*args, **kwargs) File
+      "/usr/local/lib/python3.10/site-packages/jax/_src/api.py", line 621, in grad_f
+      _, g = value_and_grad_f(*args, **kwargs) File
+      "/usr/local/lib/python3.10/site-packages/jax/_src/traceback_util.py", line 179,
+      in reraise_with_filtered_traceback return fun(*args, **kwargs) File
+      "/usr/local/lib/python3.10/site-packages/jax/_src/api.py", line 691, in
+      value_and_grad_f ans, vjp_py = _vjp(f_partial, *dyn_args) File
+      "/usr/local/lib/python3.10/site-packages/jax/_src/api.py", line 2176, in _vjp
+      out_primals, vjp = ad.vjp(flat_fun, primals_flat) File
+      "/usr/local/lib/python3.10/site-packages/jax/_src/interpreters/ad.py", line 143,
+      in vjp out_primals, pvals, jaxpr, consts = linearize(traceable, *primals) File
+      "/usr/local/lib/python3.10/site-packages/jax/_src/interpreters/ad.py", line 134,
+      in linearize assert all(out_primal_pval.is_known() for out_primal_pval in
+      out_primals_pvals) AssertionError
+
+      What is the true cause of this AssertionError, and what is the exact code fix?
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT060
+      category: Hardware profiling and debugging
+      sub_category: Compilation Cache and runtime failures
+      difficulty: Moderate
+      has_code: 'Yes'
+      baseline_result: Partially Solved
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        The ideal response should provide the following items and if only a part of them are solved then the response is partially solved. If it fails on a major error, it will be marked in failure notes as major violation and model output would be rated as stumped:
+
+        Identification of Autodiff Bug: The response should explain that the AssertionError in ad.linearize stems from an open bug in JAX's internal Pallas autodiff path (JAX Issue #22197), where the linearizer fails to retain known values for output references. It should clarify that Pallas does have differentiation machinery and a registered JVP rule, but the tracer fails to lower this specific configuration cleanly.
+
+        Rejects my red herrings:
+
+        In-place buffer mutation: The model must state that imperative writes to output references (o_ref[...] = x + y) are standard in Pallas's design and are not the cause of the linearization assertion.
+        jax.pure_callback wrapper: The model must clarify that jax.pure_callback does not supply reverse-mode derivative rules and is inappropriate for accelerator kernel differentiation.
+
+        Mathematical Clarification on jax.grad Contract: The response should say that jax.grad is mathematically defined only for scalar outputs. For a kernel returning a matrix of shape (1024, 1024), the user must either define a scalar loss (e.g., .sum()) or use vector-Jacobian products directly.
+
+        Fix using @jax.custom_vjp: Because the upstream compiler path is bugged, the model must provide a practical workaround by using reverse-mode autodiff with @jax.custom_vjp, defining the forward pass and providing the analytical cotangent propagations.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        JVP Rule Hallucination: The model hallucinated that Pallas primitives lack JVP rules in JAX's differentiation table and that Pallas cannot be differentiated out-of-the-box by design. In fact, pallas_call_p has an explicit JVP rule registered (_pallas_call_jvp_rule in jax/_src/pallas/pallas_call.py). The true cause of the failure is an unpatched upstream tracer bug in ad.linearize (JAX Issue #22197) that fails to propagate known primal values.
+
+        PRNG management (Minor): The model hardcoded distinct root keys (key(0) and key(1)) for tensor generation rather than utilizing standard JAX key splitting (jax.random.split(key)).
+      weight: 0.5

@@ -1,0 +1,1 @@
+Answer this question about `tpu7x`, grounded in the TPU documentation, passing it exactly as written: "By what factor did Google's TPU supercomputer performance increase from TPU v2 to Ironwood?" Answer clearly, citing any references you can for grounding. Drop a JSON at `/logs/artifacts/answer.json` with keys `answer` and `reference`, for scoring.

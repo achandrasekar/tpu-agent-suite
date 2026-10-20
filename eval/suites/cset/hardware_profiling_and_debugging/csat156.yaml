@@ -1,0 +1,74 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT156 from the "Hardware profiling and debugging" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat156
+    prompt: |-
+      I'm running the kernel below on TPU using Helion's Pallas backend, but it fails to compile. What causes this error, and how can I fix it while keeping the same loop configuration and packed tensor layout?
+      @helion.kernel(backend="pallas", static_shapes=True)
+      def ragged_add1(x: torch.Tensor, cu_seqlens: torch.Tensor) -> torch.Tensor:
+      n_seq = cu_seqlens.size(0) - 1
+      out = torch.empty_like(x)
+      for s in hl.grid(n_seq):
+      start = cu_seqlens[s]
+      end = cu_seqlens[s + 1]
+      for tile in hl.tile(start, end):
+      out[tile, :, :] = x[tile, :, :] + 1.0
+      return out
+      cu = torch.tensor([0, 1, 8, 12, 25], dtype=torch.int32, device=DEVICE)
+          total = int(cu[-1].item())
+          x = torch.randn(total, 8, 128, device=DEVICE, dtype=torch.float32)
+          code, result = code_and_output(
+              ragged_add1,
+              (x, cu),
+              block_sizes=[32],
+              pallas_loop_type="fori_loop",
+          )
+      ValueError: Invalid shape for swap. Ref shape: (32, 8, 128). Expected shape: (32, 8, 128). Value
+      shape: (25, 8, 128). Transforms: (NDIndexer(indices=(Slice(start=0, size=32, stride=1), Slice(start=0,
+      size=8, stride=1), Slice(start=0, size=128, stride=1)), shape=(32, 8, 128), int_indexer_shape=(),
+      validate=False),).
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT156
+      category: Hardware profiling and debugging
+      sub_category: Shape and tiling violations
+      difficulty: Hard
+      has_code: 'Yes'
+      baseline_result: Stumped
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        The answer should identify a bug in Helion's Pallas fori_loop store lowering and explain why a 25-row value reaches a 32-row scratch destination. The correction should preserve the full block shaped value when storing into that scratch buffer, while retaining value slicing for destinations that genuinely require it. The output DMA must then copy only the current sequence's valid rows, using min(block_size,end - offset) with matching source and destination reference slices. This prevents writes from crossing sequence boundaries while preserving the packed layout and loop configuration. The corrected example should compile and return a float32 tensor of shape (25,8,128), equal to x+1.0.  A response would count as partially solved if it identified a Helion lowering bug rather than a TPU alignment requirement, even without completing the store and writeback fixes.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        The response correctly identifies the 25-row  value and 32-row reference and preserves the loop settings. However, it incorrectly presents padding as necessary to satisfy TPU tile allocation. The destination already has 32 rows; Helion's lowering incorrectly slices the computed value to 25 rows. Merged PR #2804, linked, fixes this by preserving the full value for the scratch store and limiting output transfers to each sequence's valid rows. Padding the overall tensor may bypass the mismatch, but it leaves full block transfers that can cross sequence boundaries. Keeping cu_seqlens unchanged does not prevent those writes.
+      weight: 0.5

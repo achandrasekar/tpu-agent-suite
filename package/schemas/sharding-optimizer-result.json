@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "sharding-optimizer-result.json",
+  "title": "tpu-sharding Optimizer Result",
+  "description": "Deliverable from tpu-sharding-optimizer to orchestrator.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "run_id",
+    "iteration",
+    "action",
+    "status"
+  ],
+  "properties": {
+    "run_id": {
+      "type": "string",
+      "pattern": "^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}$",
+      "description": "Session run identifier namespace."
+    },
+    "iteration": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Zero-based iteration index operated on."
+    },
+    "action": {
+      "type": "string",
+      "enum": [
+        "propose",
+        "evaluate"
+      ],
+      "description": "Action completed by the optimizer."
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "completed",
+        "invalid_input",
+        "needs_input",
+        "failed"
+      ],
+      "description": "Outcome of optimizer processing."
+    },
+    "hypothesis": {
+      "type": "string",
+      "description": "Proposed configuration change description (populated when action is 'propose' and status is 'completed')."
+    },
+    "justification": {
+      "type": "string",
+      "description": "Engineering rationale for the hypothesis (populated when action is 'propose' and status is 'completed')."
+    },
+    "branched_from": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Iteration index from which this proposal branched (populated when action is 'propose' and status is 'completed')."
+    },
+    "recipe_artifact": {
+      "type": "string",
+      "description": "Relative artifact path to generated recipe file (e.g., '1/recipe_1.sh')."
+    },
+    "takeaways": {
+      "type": "string",
+      "description": "Empirical takeaways and lessons learned (populated when action is 'evaluate' and status is 'completed')."
+    },
+    "failure_reason": {
+      "type": "string",
+      "description": "High-level reason category if status is not 'completed'."
+    },
+    "error_message": {
+      "type": "string",
+      "description": "Diagnostic details if status is not 'completed'."
+    }
+  },
+  "examples": [
+    {
+      "run_id": "20260921T120000Z-abcdef012345",
+      "iteration": 1,
+      "action": "propose",
+      "status": "completed",
+      "hypothesis": "Increase expert parallelism from ep=4 to ep=8 to reduce per-chip AllToAll communication volume.",
+      "justification": "XProf analysis of baseline Run 0 revealed 35% time spent in collective communication; ep=8 aligns better with 2x2x1 slice topology.",
+      "branched_from": 0,
+      "recipe_artifact": "1/recipe_1.sh"
+    }
+  ]
+}

@@ -1,0 +1,122 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+version: "1.0"
+name: tpu-knowledge-qa
+environment:
+  base_image: python:3.12-slim
+  apt_packages: []
+  pip_packages:
+    # Needed by vertex_ai judge model
+    - google-auth
+  workspace_files: []
+  cpus: 2
+  memory_mb: 4096
+  storage_mb: 10240
+  workdir: /workspace
+
+evaluation:
+  judge_model: vertex_ai/gemini-3.6-flash
+  cases:
+    - name: csat006-vllm-kvcache-block-size
+      prompt: |
+        I am serving a model with the vLLM TPU backend on TPU v6e.
+
+        I set the KV cache memory budget to 24 GB.
+
+        With a KV cache block size of 256, the process uses about 24 GB for the cache. Most of my requests are short, around 80 to 180 tokens.
+
+        I changed the block size from 256 to 64 because I expected the smaller blocks to waste less memory.
+
+        After the change, the KV cache still uses about 24 GB of HBM. The number of cache blocks is about 4 times larger, and I can fit more short requests before the cache fills up. But decode latency is worse.
+
+        If the smaller blocks are saving memory, why does my HBM usage stay the same? Where is the memory saving actually showing up?
+
+        Also, does TPU v6e have a hardware block size I should match, or should I choose the KV cache block size another way?
+      expectations:
+        - criterion: "Explains that the ~24 GB is a static pre-allocated memory pool reserved upfront by vLLM on HBM based on gpu_memory_utilization, so changing the block size does not alter the total physical memory allocated for the KV cache pool."
+          weight: 1.0
+        - criterion: "Explains that smaller block sizes reduce internal fragmentation (less memory wasted on unused token slots per sequence, particularly on shorter sequences), allowing more total tokens and concurrent requests to fit into the same pre-allocated memory pool."
+          weight: 1.0
+        - criterion: "Identifies that smaller block sizes increase the total number of blocks per sequence, leading to increased metadata and block-table paging overhead, smaller XLA kernel launch efficiencies, and memory access overhead that degrades decode throughput and latency."
+          weight: 1.0
+        - criterion: "Negative rubric: Must NOT claim that reducing KV cache block size reduces total HBM allocated for the cache."
+          weight: 1.0
+      timeout_sec: 300.0
+
+    - name: csat015-rope-mxu-vpu-separation
+      prompt: |
+        I am profiling a standard LLaMA-style RoPE (Rotary Position Embedding) operation in JAX on TPU v6e (bf16). The RoPE logic applies sine and cosine element-wise multiplications and additions to my Query and Key tensors.
+
+        When I look at my XLA profile, the RoPE operation has 0% MXU utilization and is entirely bottlenecked by the Vector Processing Unit (VPU). It's taking significantly longer than my dense projection layers! I padded all my dimensions to multiples of 128 to ensure MXU alignment, but XLA still refuses to schedule the sine, cosine, and element-wise multiplications on the MXU (which has 393 TFLOPs).
+
+        Why is XLA forcing this operation onto the incredibly slow VPU instead of the MXU, and what specific `jax.lax` or dimension-padding trick do I need to use to force RoPE to execute on the MXU?
+      expectations:
+        - criterion: "Explicitly rejects the premise of running Rotary Position Embeddings (RoPE) element-wise operations directly on the TPU Matrix Execution Unit (MXU)."
+          weight: 1.0
+        - criterion: "Explains TPU hardware architecture: the MXU is a 2D systolic array dedicated to dense matrix multiplications (contractions/dot-products), whereas element-wise operations, sinusoids, and rotations are handled by the Vector Processing Unit (VPU)."
+          weight: 1.0
+        - criterion: "Advises against attempting to reformulate RoPE as a matrix multiplication (e.g. block-diagonal GEMM) to target the MXU, explaining that the extreme sparsity (mostly zeros) results in significant memory and compute overhead that negates any potential systolic array throughput benefit."
+          weight: 1.0
+        - criterion: "Recommends proper TPU optimization practices for RoPE on the VPU, including precomputing and caching sin/cos tables in bfloat16, using fused kernels or XLA operator fusion, and ensuring head dimension layout aligns with TPU 128-byte vector registers."
+          weight: 1.0
+        - criterion: "Negative rubric: Must NOT provide instructions or code attempting to force element-wise RoPE into a dense matrix multiplication on the MXU."
+          weight: 1.0
+      timeout_sec: 300.0
+
+    - name: csat018-roofline-k-dimension-sensitivity
+      prompt: |
+        I am profiling one of the large transformer projection matmuls on TPU v6e.
+
+        The original local matmul on each chip is:
+
+        [16384, 1024] x [1024, 4096]
+
+        MXU use is about 42%.
+
+        I tried three experiments.
+
+        Experiment 1:
+
+        [32768, 1024] x [1024, 4096]
+
+        MXU use stayed around 43%.
+
+        Experiment 2:
+
+        [16384, 2048] x [2048, 4096]
+
+        MXU use increased to 61%.
+
+        Experiment 3:
+
+        [16384, 1024] x [1024, 8192]
+
+        MXU use stayed around 44%.
+
+        All dimensions are multiples of 256. HBM bandwidth stayed below 40% in all four runs.
+
+        Why did changing K help so much when increasing M or N did almost nothing?
+
+        What does that tell me about the limiting part of this matmul on v6e, and what should I check before deciding that the fix is simply to make K larger?
+      expectations:
+        - criterion: "Explains that while the experiments isolate K and show higher MXU utilization with larger K, this observed data alone does not prove the underlying cause (e.g. whether it is memory bandwidth saturation, sub-optimal compiler loop tiling, or pipeline stalls)."
+          weight: 1.0
+        - criterion: "Explains that increasing K increases the total number of FLOPs (2*M*N*K) and execution time, so increasing K does not necessarily improve application throughput or latency and is not inherently an optimization."
+          weight: 1.0
+        - criterion: "Identifies specific diagnostic data needed to verify the bottleneck: op-level roofline analysis (comparing operational intensity against the v6e ridge point), HBM and VMEM memory bandwidth utilization/stalls, and compiler tiling/vectorization schedules."
+          weight: 1.0
+        - criterion: "Negative rubric: Must NOT conclude that VMEM bandwidth is definitively the bottleneck or that K=1024 is inherently too small without verifying tiling and stall profiles."
+          weight: 1.0
+      timeout_sec: 300.0

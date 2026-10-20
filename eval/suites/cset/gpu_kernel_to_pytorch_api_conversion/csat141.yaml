@@ -1,0 +1,143 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT141 from the "GPU Kernel to PyTorch API conversion" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat141
+    prompt: |-
+      Hey everyone, we are currently refactoring a legacy vision backbone on our A100 (80GB) inference fleet. The main goal is to finally rip out our custom C++/CUDA ATen extensions so we can ship a clean, pure-Python wheel and fully leverage torch.compile(mode="reduce-overhead", fullgraph=True) alongside CUDA graphs.
+
+      Right now, the main bottleneck is our custom CUDA im2col extraction kernel (shown below). It works by mapping thread blocks across channels and sliding receptive fields, using direct pointer hopping to unpack the patches straight into a column layout.
+
+      template <typename dt>
+      C10_LAUNCH_BOUNDS_1(1024)
+      __global__ void im2col_kernel(
+          const int64_t n,
+          const dt* data_im,
+          const int64_t height,
+          const int64_t width,
+          const int64_t kernel_height,
+          const int64_t kernel_width,
+          const int64_t pad_height,
+          const int64_t pad_width,
+          const int64_t stride_height,
+          const int64_t stride_width,
+          const int64_t dilation_height,
+          const int64_t dilation_width,
+          const int64_t height_col,
+          const int64_t width_col,
+          dt* data_col) {
+        CUDA_KERNEL_LOOP_TYPE(index, n, int64_t) {
+          int64_t w_out = index % width_col;
+
+          int64_t idx = index / width_col;
+
+          int64_t h_out = idx % height_col;
+          int64_t channel_in = idx / height_col;
+          int64_t channel_out = channel_in * kernel_height * kernel_width;
+          int64_t h_in = h_out * stride_height - pad_height;
+          int64_t w_in = w_out * stride_width - pad_width;
+
+          dt* col = data_col + (channel_out * height_col + h_out) * width_col + w_out;
+          const dt* im = data_im + (channel_in * height + h_in) * width + w_in;
+
+          for (int64_t i = 0; i < kernel_height; ++i) {
+            for (int64_t j = 0; j < kernel_width; ++j) {
+              int64_t h = h_in + i * dilation_height;
+              int64_t w = w_in + j * dilation_width;
+              *col = (h >= 0 && w >= 0 && h < height && w < width)
+                  ? im[i * dilation_height * width + j * dilation_width]
+                  : static_cast<dt>(0);
+              col += height_col * width_col;
+            }
+          }
+        }
+      }
+
+      Our production input tensor is torch.float16 with shape [32, 128, 256, 256]. We extract patches of size 8x8 with stride 4, dilation 1, and no padding (valid windows).
+
+      Two engineer tried two different approaches:
+      Engineer 1 tried precalculating spatial offset coordinates with torch.meshgrid and pulling the elements via torch.gather. The issue they ran into was at the batch size, the index tensor alone bloated to over 16 GB, hitting a hard Out-Of-Memory (OOM) crash right during the warmup phase.
+
+      Engineer 2 tried wrapping F.unfold inside standard slicing loops. This backfired because it forces a massive intermediate copy of the activations straight into HBM. Not only does that completely wreck memory coalescing, but the dynamic intermediate states also trigger CUDA graph capture failures in TorchDynamo.
+
+      How do we convert this thread-level pointer-hopping CUDA kernel into a true efficient production-grade, pure PyTorch API implementation that achieves true zero-copy execution and compiles seamlessly under torch.compile(fullgraph = True)?
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT141
+      category: GPU Kernel to PyTorch API conversion
+      sub_category: CUDA thread-level to PyTorch
+      difficulty: Hard
+      has_code: 'Yes'
+      baseline_result: Partially Solved
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        Stumped:
+
+        The model fails to recognize that F.unfold is an eager C++/CUDA wrapper that allocates a contiguous buffer in HBM, and suggests wrapping F.unfold in Python slicing loops.
+        It recommends index-gathering tricks (ex: torch.gather) that bloat intermediate index tensors past 16 GB, guaranteeing an Out-Of-Memory crash. (Model output fails here).
+        The model breaks the compiler by introducing Python control flow, dynamic shapes, or CPU-GPU syncs that immediately trigger graph breaks when using torch.compile(fullgraph=True). (Model output fails here).
+        The model recommends writing another custom C++/CUDA extension code, that is contrary to our implementation need in PyTorch API.
+
+        Partially Solved: The model fell in this category since it managed to diagnose the failure of gather and F.unfold accurately and identified strided views. It failed on overlapping reshape allocations, dilation handling and compiler boundary mechanics.
+
+        It correctly diagnoses why gather and F.unfold fail in production code.
+        The model identifies that strided view manipulation such as Tensor.unfold or torch.as_strided creates zero-copy sliding windows without allocating immediate memory.
+        The model claims that calling reshape() on overlapping views is zero-copy, overlooking the contiguous buffer copy triggered at graph boundaries.
+        It returns the materialized tensor in its production deployment code instead of fusing the downstream consumer inside the compiled graph.
+
+        Solved:
+        The model manages to identify the fastest zero-copy strided representation (torch.as_strided or Tensor.unfold) that compiles cleanly under TorchInductor.
+        It also manages to accurately address general kernel parameters, including dilation and spatial padding via F.pad.
+        The model clearly explains why overlapping views cannot be reshaped without a contiguous copy, and avoids flattening by fusing patch extraction directly with downstream projection using torch.einsum
+        Validates zero-copy execution by checking if the underlying memory addresses point to the exact same block.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        False Zero-Copy Hallucination:
+
+        What the model got wrong: The model applied .permute().rshape() to flatten the extracted patches and claimed that this move allocated 0 bytes of physical memory and 0 bytes of intermediate memory. When working with tensors that have overlapping strides, multiple logical indices point to the exact same block of physical memory and this is mathematically impossible to flatten these overlapping dimensions into a single contiguous layout without duplicating the data. So, calling reshape in PyTorch or at TorchInductor graph boundaries, the framework will actually trigger a contiguous memory copy silently. To put it in scale, our input tensor [32, 128, 256, 256] will generate 63 x 63 patches per batch giving us 32 * 128 * 63 * 63 * 8 * 8 = 1040449536 in float16 elements, which is 2.08 GB allocation in HBM.
+
+        What it should have done: The model should have recommended to never flatten overlapping strided views directly into global memory.
+
+        Bad Production Code:
+
+        What model got wrong: The model noted that torch.einsum or F.conv2d avoids materializing column matrices, the actual code it produced violated this design. Because tokens is the final output of the compiled module, TorchInductor can't fuse it with downstream operations outside the FX graph boundary. As a result, it's forced to write the entire 2.08 GB buffer straight to HBM on every single forward pass. This completely hammers the A100’s memory controllers and defeats the whole purpose of the kernel refactor.
+
+        What it should have done: The model should have ran the contraction on the 6D strided view using torch.einsum(‘b c y x h w, o c h w -> b o y x’, patches, weight) so the TorchInductor can fuse the patch extraction and projection into a single Triton GEMM kernel, saving us from massive memory overhead of materializing unrolled patches.
+
+        Missing Dilation Parameter Support:
+
+        What model got wrong: The model implemented patch extraction using chained x.unfold(..).unfold(..), without any support for dilation which was explicitly handled in CUDA kernel. Trying to use this implementation leads to hitting a wall, since unfold API only takes window size and step and lacks the ability to take dilation into account.
+
+        If we try to replace it with PyTorch's native torch.Tensor.unfold(dimension, size, step), we hit a wall. The unfold API only takes window size and step—it completely lacks an argument for dilation. Unfold is quick and works cleanly when dilation is 1, but a generalizable implementation must support dilation like im2col.cuh did. If we try to use unfold to handle the dilated receptive fields, we will be stuck finding awkward workarounds like prior strided slicing or custom fallback code.
+
+        What it should have done: The model, at the least, should have noted and warned us about the limitation of using Tensor.unfold and provided an implementation using torch.as_strided, where dilation is integrated by scaling the spatial stride.
+      weight: 0.5

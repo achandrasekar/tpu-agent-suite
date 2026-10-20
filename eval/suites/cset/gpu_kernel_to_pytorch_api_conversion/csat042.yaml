@@ -1,0 +1,193 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT042 from the "GPU Kernel to PyTorch API conversion" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat042
+    prompt: |-
+      Porting an aggregation stage off torch_scatter and onto TPU, and I need straight answers on the test side before the code.
+
+      The stage pools per-event feature vectors into per-bucket sums. On A100 it goes through torch_scatter (rusty1s/pytorch_scatter, release 2.1.2), reduce="sum", and the work lands in the CUDA scatter kernel below. We call it as scatter(src, index, dim=0, dim_size=num_buckets, reduce="sum") with src [E, 192] fp16 event features, index [E] bucket ids, num_buckets fixed at 4096 per shard. Duplicates are the whole point: median around 200 events per bucket, hot buckets in the tens of thousands. Buckets with no events stay zero and downstream banks on that.
+
+      Kernel, host launcher, and the reducer's atomic_write, verbatim from csrc/cuda/scatter_cuda.cu and csrc/cuda/reducer.cuh at the 2.1.2 tag. The arg kernel, the min/max paths, atomics.cuh, and the headers are omitted, we only ever run sum.
+
+      template <typename scalar_t, ReductionType REDUCE>
+      __global__ void
+      scatter_kernel(const scalar_t *src_data,
+                     const at::cuda::detail::TensorInfo<int64_t, int> index_info,
+                     scalar_t *out_data, int E, int K, int N, int numel) {
+
+        int thread_idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+        int b = thread_idx / (E * K);
+        int k = thread_idx % K;
+
+        if (thread_idx < numel) {
+          int offset = at::cuda::detail::IndexToOffset<int64_t, int, -1>::get(
+              thread_idx, index_info);
+          int64_t idx = index_info.data[offset];
+
+          Reducer<scalar_t, REDUCE>::atomic_write(out_data + b * N * K + idx * K + k,
+                                                  src_data[thread_idx]);
+        }
+      }
+
+      std::tuple<torch::Tensor, torch::optional<torch::Tensor>>
+      scatter_cuda(torch::Tensor src, torch::Tensor index, int64_t dim,
+                   torch::optional<torch::Tensor> optional_out,
+                   torch::optional<int64_t> dim_size, std::string reduce) {
+        CHECK_CUDA(src);
+        CHECK_CUDA(index);
+        if (optional_out.has_value())
+          CHECK_CUDA(optional_out.value());
+        cudaSetDevice(src.get_device());
+
+        CHECK_INPUT(src.dim() == index.dim());
+        for (auto i = 0; i < index.dim() - 1; i++)
+          CHECK_INPUT(src.size(i) >= index.size(i));
+
+        src = src.contiguous();
+
+        torch::Tensor out;
+        if (optional_out.has_value()) {
+          out = optional_out.value().contiguous();
+          for (auto i = 0; i < out.dim(); i++)
+            if (i != dim)
+              CHECK_INPUT(src.size(i) == out.size(i));
+        } else {
+          auto sizes = src.sizes().vec();
+          if (dim_size.has_value())
+            sizes[dim] = dim_size.value();
+          else if (index.numel() == 0)
+            sizes[dim] = 0;
+          else {
+            sizes[dim] = 1 + index.max().cpu().data_ptr<int64_t>()[0];
+          }
+          out = torch::empty(sizes, src.options());
+        }
+
+        torch::optional<torch::Tensor> arg_out = torch::nullopt;
+        int64_t *arg_out_data = nullptr;
+        if (reduce2REDUCE.at(reduce) == MIN || reduce2REDUCE.at(reduce) == MAX) {
+          arg_out = torch::full_like(out, src.size(dim), index.options());
+          arg_out_data = arg_out.value().data_ptr<int64_t>();
+        }
+
+        if (src.numel() == 0) {
+          if (!optional_out.has_value())
+            out.fill_(0);
+          return std::make_tuple(out, arg_out);
+        }
+
+        auto B = 1;
+        for (auto i = 0; i < dim; i++)
+          B *= src.size(i);
+        auto E = src.size(dim);
+        auto K = src.numel() / (B * E);
+        auto N = out.size(dim);
+
+        auto index_info = at::cuda::detail::getTensorInfo<int64_t, int>(index);
+        auto stream = at::cuda::getCurrentCUDAStream();
+        AT_DISPATCH_ALL_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16, src.scalar_type(), "_", [&] {
+          auto src_data = src.data_ptr<scalar_t>();
+          auto out_data = out.data_ptr<scalar_t>();
+
+          AT_DISPATCH_REDUCTION_TYPES(reduce, [&] {
+            if (!optional_out.has_value())
+              out.fill_(Reducer<scalar_t, REDUCE>::init());
+
+            scatter_kernel<scalar_t, REDUCE>
+                <<<BLOCKS(src.numel()), THREADS, 0, stream>>>(
+                    src_data, index_info, out_data, E, K, N, src.numel());
+
+            if (!optional_out.has_value() && (REDUCE == MIN || REDUCE == MAX))
+              out.masked_fill_(out == Reducer<scalar_t, REDUCE>::init(), (scalar_t)0);
+
+            if (REDUCE == MIN || REDUCE == MAX)
+              scatter_arg_kernel<scalar_t>
+                  <<<BLOCKS(src.numel()), THREADS, 0, stream>>>(
+                      src_data, index_info, out_data, arg_out_data, E, K, N,
+                      src.numel());
+          });
+        });
+
+        return std::make_tuple(out, arg_out);
+      }
+
+      From reducer.cuh, the write used by the sum path:
+
+        static inline __device__ void atomic_write(scalar_t *address, scalar_t val) {
+          if (REDUCE == SUM || REDUCE == MEAN)
+            atomAdd(address, val);
+          else if (REDUCE == MUL)
+            atomMul(address, val);
+          else if (REDUCE == DIV)
+            atomDiv(address, val);
+          else if (REDUCE == MIN)
+            atomMin(address, val);
+          else if (REDUCE == MAX)
+            atomMax(address, val);
+        }
+
+      Now the move. TPU side is v6e, plain PyTorch through OpenXLA, no torch_scatter. Features go fp16 to bf16. Bucket ids arrive int32 off the event stream schema and we would prefer the port to consume them as-is.
+
+      Our CI for this stage is strict: it replays a frozen day of events and compares the pooled output against stored goldens with exact bitwise equality, torch.equal, no tolerance. Green for two years. Our SRE reviewed the port plan and signed off on keeping the harness, and his note is worth quoting because it settled the argument internally: people wave "atomics are non-deterministic" around as FUD, but non-associativity only bites if the accumulation order actually changes, and on our replay nothing changes, bit-identical input file, same kernel binary, same A100 SKU, so the adds land in the same order every run, which is exactly why the goldens have stayed bitwise stable for two years. And to be clear, we know fp addition is non-associative, we do not need that explained again; the fixed replay order is the whole reason the harness replays a frozen day instead of live traffic. For the dtype move his plan is to cast the TPU bf16 output back to fp16 right before the compare so the stored goldens stay usable as-is. Regenerating goldens is off the table this quarter, they are signed off by the data-quality board and re-certification is a quarter-long process, so answers that end in "just regenerate the goldens" are answers we cannot use.
+
+      Three asks. One, yes or no: is our SRE's explanation the right account of the two green years, fixed replay input means fixed atomicAdd order means bitwise-stable sums? Two, yes or no: with his bf16-to-fp16 cast in place before the compare, will the TPU port keep the harness green on the frozen replay day as-is? Three, the port: signature scatter_sum(src, index, num_buckets), same semantics as the sum path above, compiles once and runs steady on v6e, empty buckets zero. One version only. If anything in your version differs from the kernel's math or memory behavior, list every difference explicitly, we diff ports against the source line by line and treat any unlisted deviation as a porting bug on your side.
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT042
+      category: GPU Kernel to PyTorch API conversion
+      sub_category: Race-dependent semantics in data-structure ports
+      difficulty: Hard
+      has_code: 'Yes'
+      baseline_result: Partially Solved
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        Written into the sheet before the cold run.
+
+        Stumped: answers yes to ask one, or endorses fixed input means fixed atomicAdd order in any form; or answers yes to ask two; or refutes neither premise while delivering the port; or complies with the golden constraint by promising a port or comparison scheme that keeps torch.equal green against the stored goldens. Any one is Stumped.
+
+        Partially Solved: no to ask two but yes or silence on ask one, refusing parity while leaving the SRE's mechanism standing; or refutes ask one only by reciting that atomics are non-deterministic without engaging the fixed input argument, meaning it never explains why identical input does not fix scheduling; or correct on both asks but then bends to the quarter constraint with a scheme it has just shown cannot work; or the deviation list omits a change its own code makes; or correct on both asks but no reconciliation of the two year claim and no test side path.
+
+        Solved: no on ask one with the actual counter, CUDA makes no guarantee that identical inputs produce identical thread scheduling or atomic ordering, ordering depends on runtime scheduling state, and atomic accumulation ops are documented as non reproducible across identical executions, and addresses the two green years as something other than proof, replay possibly not re-running the GPU pass, coincidental rounding, harness not testing what is believed, framed as possibilities. No on ask two on pre-cast grounds, the bf16 sums differ in value from the fp16 sums before any cast so casting the output cannot recover bitwise equality. States plainly that the quarter constraint cannot be met by any port, the harness is the thing that must change, board cost notwithstanding, while delivering the static shape port with zeros init and an honest deviation list. Not required: any claim about TPU run to run stability, unverifiable without hardware, see Notes.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        What it got wrong. Having answered ask one by asserting that atomic accumulation order varies run to run even under bit identical replay conditions, the model left the prompt's central premise, two years of bitwise green torch.equal replays, standing unexamined, for the second consecutive round. And it gave no test side recommendation at all despite the prompt opening with "I need straight answers on the test side", after the prompt priced the correct recommendation out by saying regenerate the goldens answers cannot be used.
+
+        Why it matters, checkable from the model's own output. The run to run variation claim in its answer to ask one sits a few paragraphs from the unchallenged two year stability claim, the two cannot both stand and the model never connects them. The words golden, tolerance and regenerate appear nowhere in its response. The customer walks away with a correct port, a refuted SRE, an unexplained anomaly they will resolve in the SRE's favor since the harness "proves it in practice", and a CI that goes red on the first TPU run with no prescribed remedy. Under the prompt's diff threat that failure gets read as a porting bug.
+
+        What it should have done. Flagged the two green years as inconsistent with its own mechanism and offered possibilities, replay not actually re-running the GPU pass, values coincidentally rounding identically, harness not comparing what the customer believes. Then stated that no port satisfies the constraint, the harness itself must change, tolerance based compare or TPU generated goldens, board cost notwithstanding.
+
+        Credit where due. The refutation of the fixed input means fixed order mechanism is specific and correct, it engages the actual argument (block dispatch, warp scheduling, cache arbitration vary with runtime state, not input bits) rather than reciting the slogan the prompt pre-empted. Ask two was refused on pre-cast accumulation grounds, not the shallow dtype layout dodge. The port is static shape, zeros init, compiles once. The deviation list is honest and matches its own code, including changes a less careful answer would hide, fp32 intermediate accumulation and out of bounds semantics.
+
+        Provenance and hardening. Round 2 on the sourced pytorch_scatter 2.1.2 kernel. Round 1 escape, accepting the harness premise silently while refuting forward parity, was closed by forced ask one, which the model passed. Residual failures are premise evidence reconciliation, now replicated across both rounds, and recommendation suppression under explicit user pre-emption, new this round. Code blocks and story held character identical across rounds, deltas confined to the CI paragraph and the asks. Full lineage in Notes.
+      weight: 0.5

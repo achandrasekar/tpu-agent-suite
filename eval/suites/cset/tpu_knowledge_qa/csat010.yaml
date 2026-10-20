@@ -1,0 +1,56 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT010 from the "TPU Knowledge Q&A" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat010
+    prompt: 'I am reconciling the compute budget for two training runs of the same
+      64-layer decoder: d_model = 8192. SwiGLU hidden size 28672, 64 query heads,
+      8 KV heads, and full block rematerialization. One run uses sequence length 4096
+      and the other 8192; I halve the global batch for the longer run so both process
+      2,097,152 tokens per step. Ignoring embeddings and logits, what transforrmer
+      block training FLOP ratio should I expect for the 8192 token run versus the
+      4096 token run?'
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT010
+      category: TPU Knowledge Q&A
+      sub_category: Transformer cost modelling
+      difficulty: Moderate
+      has_code: 'No'
+      baseline_result: Partially Solved
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        The expected transformer block training ratio is 59/55, which is approximately 1.0727, or a 7.27% increase; causal masking does not halve dense attention mstmul FLOPs.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        The model correctly derived the fixed token projection and SWiGLU costs, accounted for GQA's reduced K/V projection width, and recognized that the layer and rematerialization multipliers cancel. It also stated the correct dense attention ratio, 59/55 = 1.0727, as an alternative. However, it selected 55/53 = 1.0377 as its final answer by assuming that causal halves the executed QK^T and AV matmul FLOPs. Under the scaling book's standard dense-matmul accounting, the causal mask does not eliminate the upper triangular matmul work. Therefore the correct and final expected transformer-block training FLOP ratio is 59/55, approximately a 7.27% increase and not the model's given final answer.
+      weight: 0.5

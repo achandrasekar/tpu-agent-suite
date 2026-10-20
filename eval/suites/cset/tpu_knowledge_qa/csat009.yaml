@@ -1,0 +1,70 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT009 from the "TPU Knowledge Q&A" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat009
+    prompt: For my JAX code, how should I choose the sharding mode to make the code
+      achieve the best performance? My code will run on a TPU cluster.
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT009
+      category: TPU Knowledge Q&A
+      sub_category: Sharding and parallelism
+      difficulty: Moderate
+      has_code: 'No'
+      baseline_result: Stumped
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        A good answer names the three JAX sharding modes, auto, explicit and manual, and
+           says how to choose between them for a TPU cluster. Auto lets XLA/GSPMD infer
+           sharding from constraints and is the default for standard training and inference.
+           Explicit makes the sharding part of the type so propagation is visible at trace
+           time and resharding is not silently inserted. Manual gives per-device local control
+           for custom collectives. It should tie the choice to the workload rather than
+           listing all three, and may note that mode and parallelism strategy are separate
+           decisions.
+
+           Solved: names all three modes and gives a basis for choosing between them.
+
+           Partial: names some of the modes, or describes the auto versus explicit distinction
+           without using the terms, but mixes it with the API and strategy answer.
+
+           Stumped: never names the modes and answers only which API and which parallelism
+           strategy to use, as the recorded run did.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        The prompt asks how to choose a sharding mode. JAX has three named sharding modes:
+         auto, explicit and manual. The response never names any of them. It answers a
+           different question instead, which API to use (jax.jit with NamedSharding,
+           shard_map, PositionalSharding, pmap) and which parallelism strategy to pick (DP,
+           FSDP, TP, SP, EP), and presents that as the answer to the mode question.
+      weight: 0.5

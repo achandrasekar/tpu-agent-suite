@@ -1,0 +1,61 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT040 from the "TPU Knowledge Q&A" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat040
+    prompt: I need help before I sign off on a hardware request I do not believe in.
+      We serve a 70B dense model in bf16 for a latency product, short prompts around
+      a thousand tokens, batch of four, decode step time is the whole game. We run
+      tensor parallel over ICI on v6e and we benchmarked three slice sizes. Eight
+      chips gives 11.1ms a step, sixteen gives 6.1ms, thirty two gives 4.3ms. Our
+      SLA is 2.5ms. My lead looked at the numbers, said each doubling buys us thirty
+      to forty five percent, extrapolated sixty four chips to about 3ms and one twenty
+      eight to about 2.2ms, and wrote up a request for a v6e-128 reservation. Something
+      about flattening curve bothers me but I cannot make the argument with numbers
+      and he can. Before this goes to finance, does his extrapolation hold, what do
+      we actually get at sixty four and one twenty eight, and if he is wrong what
+      is the honest way to hit 2.5ms?
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT040
+      category: TPU Knowledge Q&A
+      sub_category: Cost and hardware selection
+      difficulty: Moderate
+      has_code: 'No'
+      baseline_result: Partially Solved
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        A good answer splits step time into a weight read that shrinks with chip count and a latency bound collective term that grows with it, fits both from the three measurements, about 85ms over N plus roughly 0.05ms per chip, and finds the curve bottoms out near forty chips at about 4.1ms. So 64 comes back slightly worse than 32, 128 lands near 7ms, and no chip count reaches 2.5ms in bf16. The honest fix is shrinking the terms, int4 weights clear the SLA around twenty to thirty chips, int8 still misses at about 2.9ms, speculative decoding also gets there.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        The model found the mechanism but never applied it. It named the latency bound collective growth and the 160 all reduces per step, rejected the reservation, yet projected a monotonic plateau of 3.5 to 3.8ms at 64 and 128 chips, where the model fitted to the three measurements says 64 comes back worse than 32 at about 4.5ms and 128 lands near 7ms. Because it missed this, it claims int8 on 32 chips hits the SLA when the fit gives about 2.9ms, still short.
+      weight: 0.5

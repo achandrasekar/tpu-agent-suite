@@ -1,0 +1,65 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT004 from the "TPU Knowledge Q&A" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat004
+    prompt: We're trying to decide whether to move our inference serving from v5e
+      to v6e. The v6e chips cost noticeably more per hour and I need to justify the
+      switch to my lead before I put the request in. Our model is a fairly standard
+      dense transformer, bf16, and we're currently getting acceptable latency but
+      the cost per token is higher than we'd like. Is v6e going to be worth it for
+      us?
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT004
+      category: TPU Knowledge Q&A
+      sub_category: Deliberately underspecified questions
+      difficulty: Moderate
+      has_code: 'No'
+      baseline_result: Partially Solved
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        A good answer says the question can't be settled with what's given and asks for the missing pieces first: the prefill vs decode split, batch size or concurrency, model size and whether the weights fit in HBM, and the actual pricing.
+
+        It should explain that the gain depends on which regime you're in. Decode is memory bound so it scales with HBM bandwidth, roughly 2x. Prefill is compute bound so it scales closer to peak FLOPs, roughly 4.7x. Whichever one applies gets compared against the price multiple, around 2.25x on list pricing ($1.20 vs $2.70 per chip hour).
+
+        An answer that lays out the branches without asking counts as good too. Something like "if you're decode bound at small batch then no, if you can grow batch into the extra HBM then yes."
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        Ran it twice in separate cold sessions and got the same thing both times.
+
+        It gave a verdict ("almost certainly worth it") before asking for anything it needed. The prices it quoted, around $1.20 vs $2.60 to $2.80 per chip hour, are roughly right, but it didn't say where they came from or that they were estimates. To get its headline 15 to 35 percent saving it assumed production dynamic batching, which I never mentioned. It never asked about the prefill vs decode split, batch size or concurrency, or model size.
+
+        To be fair it did get some things right. It separated prefill (about 4.7x on FLOPs) from decode (about 2x on bandwidth), it said the throughput gain has to beat the price multiple, and it flagged that at batch 1 you come out flat or worse. But all of that sits underneath a yes it had already committed to.
+
+        The second run was worse. Same unconditional yes, still no questions, and this time it dropped the batch 1 caveat completely and claimed 3.5 to 4x throughput.
+      weight: 0.5

@@ -1,0 +1,553 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT078 from the "GPU Kernel to PyTorch API conversion" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat078
+    prompt: |-
+      Port the top p sampling path in the block below to plain PyTorch that
+      OpenXLA compiles for v6e. Config is fixed. Batch 64, vocab 128256, probs
+      fp32 and already normalized, top_p is a per request fp32 tensor, indices is
+      null, the DETERMINISTIC template arg is true. Three hard requirements.
+      One, replay. We persist philox_seed and philox_offset for every request and
+      re-derive the sampled token ids offline for audits. The TPU build must
+      produce the same token ids from the same seed and offset. The audit tooling
+      diffs ids exactly.
+      Two, one fixed graph at these shapes, compiled at startup, no recompiles
+      ever, and nothing bouncing to the host inside the decode loop.
+      Three, keep the invalid row contract. When a distribution is degenerate the
+      kernel reports valid false for that row instead of a token, and the batch
+      keeps going.
+      Also tell me what the cub block scan and the ballot style machinery in
+      these kernels become on the TPU side.
+      template <uint32_t VEC_SIZE, uint32_t BLOCK_THREADS, BlockScanAlgorithm SCAN_ALGORITHM,
+      BlockReduceAlgorithm REDUCE_ALGORITHM, bool DETERMINISTIC, typename Predicate>
+      device forceinline void DeviceSamplingFromProb(
+      uint32_t i, uint32_t d, Predicate pred, float u, vec_t<float, VEC_SIZE> prob_vec,
+      float& aggregate,
+      SamplingTempStorage<BLOCK_THREADS, SCAN_ALGORITHM, REDUCE_ALGORITHM>* temp_storage) {
+      const uint32_t tx = threadIdx.x;
+      float prob_greater_than_threshold[VEC_SIZE];
+      float inclusive_cdf[VEC_SIZE];
+      bool greater_than_u[VEC_SIZE], valid[VEC_SIZE];
+      #pragma unroll
+      for (uint32_t j = 0; j < VEC_SIZE; ++j) {
+      prob_greater_than_threshold[j] = pred(prob_vec[j]) ? prob_vec[j] : 0;
+      valid[j] = pred(prob_vec[j]) && (i * BLOCK_THREADS + tx) * VEC_SIZE + j < d;
+      }
+      float aggregate_local =
+      BlockReduce<float, BLOCK_THREADS, REDUCE_ALGORITHM>(temp_storage->block_prim.reduce)
+      .template Sum<VEC_SIZE>(prob_greater_than_threshold);
+      if (tx == 0) {
+      temp_storage->block_aggregate.value = aggregate_local;
+      }
+      __syncthreads();
+      aggregate_local = temp_storage->block_aggregate.value;
+      if (aggregate + aggregate_local > u) {
+      if constexpr (DETERMINISTIC) {
+      DeterministicInclusiveSum<VEC_SIZE, BLOCK_THREADS, SCAN_ALGORITHM, REDUCE_ALGORITHM>(
+      prob_greater_than_threshold, inclusive_cdf, temp_storage);
+      } else {
+      BlockScan<float, BLOCK_THREADS, SCAN_ALGORITHM>(temp_storage->block_prim.scan)
+      .template InclusiveSum<VEC_SIZE>(prob_greater_than_threshold, inclusive_cdf);
+      __syncthreads();
+      }
+      #pragma unroll
+      for (uint32_t j = 0; j < VEC_SIZE; ++j) {
+      greater_than_u[j] = (inclusive_cdf[j] + aggregate > u) && valid[j];
+      }
+      bool greater_than_u_diff[VEC_SIZE];
+      #ifdef FLASHINFER_CUB_SUBTRACTLEFT_DEFINED
+      BlockAdjacentDifference<bool, BLOCK_THREADS>(temp_storage->block_prim.adj_diff)
+      .SubtractLeft<VEC_SIZE>(greater_than_u, greater_than_u_diff, BoolDiffOp());
+      #else
+      BlockAdjacentDifference<bool, BLOCK_THREADS>(temp_storage->block_prim.adj_diff)
+      .template FlagHeads<VEC_SIZE>(greater_than_u_diff, greater_than_u, BoolDiffOp(), 0);
+      #endif
+      __syncthreads();
+      #pragma unroll
+      for (uint32_t j = 0; j < VEC_SIZE; ++j) {
+      if (greater_than_u_diff[j]) {
+      atomicMin(&(temp_storage->sampled_id), (i * BLOCK_THREADS + tx) * VEC_SIZE + j);
+      }
+      }
+      __syncthreads();
+      }
+      // update the last valid index
+      int valid_index[VEC_SIZE];
+      #pragma unroll
+      for (uint32_t j = 0; j < VEC_SIZE; ++j) {
+      if (valid[j]) {
+      valid_index[j] = (i * BLOCK_THREADS + tx) * VEC_SIZE + j;
+      } else {
+      valid_index[j] = -1;
+      }
+      }
+      int max_valid_index =
+      BlockReduce<int, BLOCK_THREADS, REDUCE_ALGORITHM>(temp_storage->block_prim.reduce_int)
+      .Reduce(valid_index, MaxReduceOp{});
+      if (tx == 0 && max_valid_index != -1 && max_valid_index < (int)d) {
+      temp_storage->last_valid_id = max_valid_index;
+      }
+      __syncthreads();
+      aggregate += aggregate_local;
+      }
+      template <typename DType, typename IdType>
+      struct DataAndIndex {
+      DType data;
+      IdType index;
+      device DataAndIndex operator+(const DataAndIndex& other) const {
+      if (data > other.data) {
+      return {data, index};
+      } else {
+      return {other.data, other.index};
+      }
+      }
+      device DataAndIndex& operator+=(const DataAndIndex& other) {
+      if (data > other.data) {
+      return *this;
+      } else {
+      data = other.data;
+      index = other.index;
+      return *this;
+      }
+      }
+      };
+      template <typename DType, uint32_t VEC_SIZE>
+      device forceinline vec_t<DType, VEC_SIZE> GenerateGumbelNoise(uint64_t philox_seed,
+      uint64_t philox_offset,
+      uint64_t subsequence) {
+      curandStatePhilox4_32_10_t state;
+      vec_t<float, VEC_SIZE> noise;
+      constexpr float kSCALE = 1.0f - cuda::std::numeric_limits<float>::epsilon();
+      constexpr float kLOG2 = 0.6931471806f;
+      auto uniform2gumbel = [](float x) {
+      // NB: cuRAND returns strictly positive normal floating point numbers, up to
+      //     and including 1.0. kSCALE is used to exclude 1.0, s.t.
+      //         1.18e-38 <= x * kSCALE <= 1.0f - epsilon
+      //      => -4.47    <= -log(-log(...))       <= 15.9
+      // log2f maps to a single PTX LG2 instruction on NVIDIA GPUs, while logf
+      // internally computes log2f * ln(2). Using log2f with a single kLOG2
+      // multiplication is more efficient (3 ops vs 4 ops).
+      return -kLOG2 * log2f(-log2f((x * kSCALE)));
+      };
+      #pragma unroll
+      for (uint32_t i = 0; i + 4 <= VEC_SIZE; i += 4) {
+      curand_init(philox_seed, subsequence + i, philox_offset, &state);
+      float4 noise_vec = curand_uniform4(&state);
+      noise[i] = uniform2gumbel(noise_vec.x);
+      noise[i + 1] = uniform2gumbel(noise_vec.y);
+      noise[i + 2] = uniform2gumbel(noise_vec.z);
+      noise[i + 3] = uniform2gumbel(noise_vec.w);
+      }
+      if constexpr (VEC_SIZE % 4 != 0) {
+      curand_init(philox_seed, subsequence + VEC_SIZE / 4 * 4, philox_offset, &state);
+      float4 noise_vec = curand_uniform4(&state);
+      if constexpr (VEC_SIZE % 4 == 1) {
+      noise[VEC_SIZE - 1] = uniform2gumbel(noise_vec.x);
+      } else if constexpr (VEC_SIZE % 4 == 2) {
+      noise[VEC_SIZE - 2] = uniform2gumbel(noise_vec.x);
+      noise[VEC_SIZE - 1] = uniform2gumbel(noise_vec.y);
+      } else if constexpr (VEC_SIZE % 4 == 3) {
+      noise[VEC_SIZE - 3] = uniform2gumbel(noise_vec.x);
+      noise[VEC_SIZE - 2] = uniform2gumbel(noise_vec.y);
+      noise[VEC_SIZE - 1] = uniform2gumbel(noise_vec.z);
+      }
+      }
+      if constexpr (std::is_same_v<DType, float>) {
+      return noise;
+      } else {
+      vec_t<DType, VEC_SIZE> ret;
+      #pragma unroll
+      for (uint32_t i = 0; i < VEC_SIZE; ++i) {
+      ret[i] = static_cast<DType>(noise[i]);
+      }
+      return ret;
+      }
+      }
+      template <uint32_t BLOCK_THREADS, BlockScanAlgorithm SCAN_ALGORITHM,
+      BlockReduceAlgorithm REDUCE_ALGORITHM, uint32_t VEC_SIZE, bool DETERMINISTIC,
+      typename DType, typename IdType>
+      global FLASHINFER_SAMPLING_LAUNCH_BOUNDS(BLOCK_THREADS) void SamplingFromLogitsKernel(
+      DType* logits, IdType* output, IdType* indices, uint32_t d, uint64_t* seed_arr,
+      uint64_t seed_val, uint64_t* offset_arr, uint64_t offset_val) {
+      const uint32_t bx = blockIdx.x, tx = threadIdx.x;
+      // Resolve seed/offset from tensor or scalar
+      uint64_t philox_seed = seed_arr ? seed_arr[0] : seed_val;
+      uint64_t philox_offset = offset_arr ? offset_arr[0] : offset_val;
+      const uint32_t row_idx = indices == nullptr ? bx : indices[bx];
+      using SharedMem = typename BlockReduce<DataAndIndex<DType, IdType>, BLOCK_THREADS,
+      REDUCE_ALGORITHM>::TempStorage;
+      extern shared align(alignof(SharedMem)) uint8_t smem_sampling_logit[];
+      auto& temp_storage = reinterpret_cast<SharedMem&>(smem_sampling_logit);
+      vec_t<DType, VEC_SIZE> logits_vec;
+      DataAndIndex<DType, IdType> max_data = {-cuda::std::numeric_limits<DType>::infinity(), 0};
+      for (uint32_t i = 0; i < ceil_div(d, BLOCK_THREADS * VEC_SIZE); ++i) {
+      logits_vec.fill(-cuda::std::numeric_limits<DType>::infinity());
+      if ((i * BLOCK_THREADS + tx) * VEC_SIZE < d) {
+      logits_vec.cast_load(logits + row_idx * d + i * BLOCK_THREADS * VEC_SIZE + tx * VEC_SIZE);
+      }
+      vec_t<DType, VEC_SIZE> gumbel_noise = GenerateGumbelNoise<DType, VEC_SIZE>(
+          philox_seed, philox_offset,
+          static_cast<uint64_t>(bx * d + (i * BLOCK_THREADS + tx) * VEC_SIZE));
+      DataAndIndex<DType, IdType> cur_data[VEC_SIZE];
+      #pragma unroll
+      for (uint32_t j = 0; j < VEC_SIZE; ++j) {
+      const uint32_t token_idx = (i * BLOCK_THREADS + tx) * VEC_SIZE + j;
+      const bool valid = token_idx < d;
+      cur_data[j].data =
+      valid ? logits_vec[j] + gumbel_noise[j] : -cuda::std::numeric_limits<DType>::infinity();
+      cur_data[j].index = valid ? token_idx : 0;
+      }
+      max_data +=
+          BlockReduce<DataAndIndex<DType, IdType>, BLOCK_THREADS, REDUCE_ALGORITHM>(temp_storage)
+              .template Sum<VEC_SIZE>(cur_data);
+      __syncthreads();
+      }
+      if (tx == 0) {
+      output[bx] = max_data.index;
+      }
+      }
+      template <uint32_t BLOCK_THREADS, BlockScanAlgorithm SCAN_ALGORITHM,
+      BlockReduceAlgorithm REDUCE_ALGORITHM, uint32_t VEC_SIZE, bool DETERMINISTIC,
+      typename DType, typename IdType>
+      global FLASHINFER_SAMPLING_LAUNCH_BOUNDS(BLOCK_THREADS) void SamplingFromProbKernel(
+      DType* probs, IdType* output, bool* valid, IdType* indices, uint32_t d, uint64_t* seed_arr,
+      uint64_t seed_val, uint64_t* offset_arr, uint64_t offset_val) {
+      curandStatePhilox4_32_10_t state;
+      const uint32_t bx = blockIdx.x, tx = threadIdx.x;
+      // Resolve seed/offset from tensor or scalar
+      uint64_t philox_seed = seed_arr ? seed_arr[0] : seed_val;
+      uint64_t philox_offset = offset_arr ? offset_arr[0] : offset_val;
+      curand_init(philox_seed, bx, philox_offset, &state);
+      const uint32_t row_idx = indices == nullptr ? bx : indices[bx];
+      extern shared align(
+      alignof(SamplingTempStorage<BLOCK_THREADS, SCAN_ALGORITHM, REDUCE_ALGORITHM>))
+      uint8_t smem_sampling[];
+      auto& temp_storage =
+      reinterpret_cast<SamplingTempStorage<BLOCK_THREADS, SCAN_ALGORITHM, REDUCE_ALGORITHM>&>(
+      smem_sampling);
+      temp_storage.sampled_id = d;
+      temp_storage.last_valid_id = -1;
+      __syncthreads();
+      vec_t<float, VEC_SIZE> probs_vec;
+      float aggregate(0);
+      float u = curand_uniform(&state);
+      #pragma unroll 2
+      for (uint32_t i = 0; i < ceil_div(d, BLOCK_THREADS * VEC_SIZE); ++i) {
+      probs_vec.fill(0);
+      if ((i * BLOCK_THREADS + tx) * VEC_SIZE < d) {
+      probs_vec.cast_load(probs + row_idx * d + i * BLOCK_THREADS * VEC_SIZE + tx * VEC_SIZE);
+      }
+      DeviceSamplingFromProb<VEC_SIZE, BLOCK_THREADS, SCAN_ALGORITHM, REDUCE_ALGORITHM,
+                             DETERMINISTIC>(
+          i, d, [](float x) { return x > 0; }, u, probs_vec, aggregate, &temp_storage);
+      if (float(aggregate) > u) {
+        break;
+      }
+      }
+      int sampled_id = temp_storage.sampled_id;
+      if (sampled_id == d) {
+      // NOTE( Zihao ): this would happen when u is very close to 1
+      // and the sum of probabilities is smaller than u
+      // In this case, we use the last valid index as the sampled id
+      if (temp_storage.last_valid_id == -1) {
+      if (tx == 0) {
+      output[bx] = 0;
+      valid[bx] = false;
+      }
+      return;
+      }
+      sampled_id = temp_storage.last_valid_id;
+      }
+      if (tx == 0) {
+      output[bx] = sampled_id;
+      valid[bx] = true;
+      }
+      }
+      template <uint32_t BLOCK_THREADS, BlockScanAlgorithm SCAN_ALGORITHM,
+      BlockReduceAlgorithm REDUCE_ALGORITHM, uint32_t VEC_SIZE, bool DETERMINISTIC,
+      typename DType, typename IdType>
+      global FLASHINFER_SAMPLING_LAUNCH_BOUNDS(BLOCK_THREADS) void TopKSamplingFromProbKernel(
+      DType* probs, IdType* output, bool* valid, IdType* indices, IdType* top_k_arr,
+      uint32_t top_k_val, uint32_t d, uint64_t* seed_arr, uint64_t seed_val, uint64_t* offset_arr,
+      uint64_t offset_val) {
+      const uint32_t batch_size = gridDim.x;
+      const uint32_t bx = blockIdx.x, tx = threadIdx.x;
+      // Resolve seed/offset from tensor or scalar
+      uint64_t philox_seed = seed_arr ? seed_arr[0] : seed_val;
+      uint64_t philox_offset = offset_arr ? offset_arr[0] : offset_val;
+      curandStatePhilox4_32_10_t state;
+      curand_init(philox_seed, bx, philox_offset, &state);
+      const uint32_t k = top_k_arr == nullptr ? top_k_val : top_k_arr[bx];
+      const uint32_t row_idx = indices == nullptr ? bx : indices[bx];
+      extern shared align(
+      alignof(SamplingTempStorage<BLOCK_THREADS, SCAN_ALGORITHM, REDUCE_ALGORITHM>))
+      uint8_t smem_sampling[];
+      auto& temp_storage =
+      reinterpret_cast<SamplingTempStorage<BLOCK_THREADS, SCAN_ALGORITHM, REDUCE_ALGORITHM>&>(
+      smem_sampling);
+      vec_t<float, VEC_SIZE> probs_vec;
+      float aggregate;
+      float q = 1;
+      float low = 0, high = 1.f;
+      int sampled_id;
+      int round = 0;
+      do {
+      round += 1;
+      temp_storage.sampled_id = d;
+      temp_storage.last_valid_id = -1;
+      __syncthreads();
+      float u = curand_uniform(&state) * q;
+      aggregate = 0;
+      #pragma unroll 2
+      for (uint32_t i = 0; i < ceil_div(d, BLOCK_THREADS * VEC_SIZE); ++i) {
+      probs_vec.fill(0);
+      if ((i * BLOCK_THREADS + tx) * VEC_SIZE < d) {
+      probs_vec.cast_load(probs + row_idx * d + (i * BLOCK_THREADS + tx) * VEC_SIZE);
+      }
+      DeviceSamplingFromProb<VEC_SIZE, BLOCK_THREADS, SCAN_ALGORITHM, REDUCE_ALGORITHM,
+                               DETERMINISTIC>(
+            i, d, [&](float x) { return x > low; }, u, probs_vec, aggregate, &temp_storage);
+        if (aggregate > u) {
+          break;
+        }
+      }
+      __syncthreads();
+      sampled_id = temp_storage.sampled_id;
+      if (sampled_id == d) {
+        // NOTE(Zihao): this would happen when u is very close to 1
+        // and the sum of probabilities is smaller than u
+        // In this case, we use the last valid index as the sampled id
+        if (temp_storage.last_valid_id == -1) {
+          if (tx == 0) {
+            output[bx] = 0;
+            valid[bx] = false;
+          }
+          return;
+        }
+        sampled_id = temp_storage.last_valid_id;
+      }
+      // IEEE-754 arithmetic (no FTZ) for pivot computation.  See #769 / #774.
+      float pivot_0 = probs[row_idx * d + sampled_id];
+      float pivot_1 = ieee_mul(ieee_add(pivot_0, high), 0.5f);
+
+      ValueCount<float> aggregate_gt_pivot_0{0, 0}, aggregate_gt_pivot_1{0, 0};
+      ValueCount<float> threadlocal_gt_pivot_0{0, 0}, threadlocal_gt_pivot_1{0, 0};
+      #pragma unroll 2
+      for (uint32_t i = 0; i < ceil_div(d, BLOCK_THREADS * VEC_SIZE); ++i) {
+      probs_vec.fill(0);
+      if ((i * BLOCK_THREADS + tx) * VEC_SIZE < d) {
+      probs_vec.cast_load(probs + row_idx * d + (i * BLOCK_THREADS + tx) * VEC_SIZE);
+      }
+      ValueCount<float> probs_gt_pivot_0[VEC_SIZE], probs_gt_pivot_1[VEC_SIZE];
+      #pragma unroll
+      for (uint32_t j = 0; j < VEC_SIZE; ++j) {
+      probs_gt_pivot_0[j] = {
+      (probs_vec[j] > pivot_0) ? probs_vec[j] : 0,
+      (probs_vec[j] > pivot_0 && (i * BLOCK_THREADS + tx) * VEC_SIZE + j < d)};
+      probs_gt_pivot_1[j] = {
+      (probs_vec[j] > pivot_1) ? probs_vec[j] : 0,
+      (probs_vec[j] > pivot_1 && (i * BLOCK_THREADS + tx) * VEC_SIZE + j < d)};
+      threadlocal_gt_pivot_0 += probs_gt_pivot_0[j];
+      threadlocal_gt_pivot_1 += probs_gt_pivot_1[j];
+      }
+      }
+      aggregate_gt_pivot_0 += BlockReduce<ValueCount<float>, BLOCK_THREADS, REDUCE_ALGORITHM>(
+      temp_storage.block_prim.reduce_value_count)
+      .Sum(threadlocal_gt_pivot_0);
+      if (tx == 0) {
+      temp_storage.block_aggregate.pair = aggregate_gt_pivot_0;
+      }
+      __syncthreads();
+      aggregate_gt_pivot_0 = temp_storage.block_aggregate.pair;
+      aggregate_gt_pivot_1 += BlockReduce<ValueCount<float>, BLOCK_THREADS, REDUCE_ALGORITHM>(
+                                  temp_storage.block_prim.reduce_value_count)
+                                  .Sum(threadlocal_gt_pivot_1);
+      if (tx == 0) {
+        temp_storage.block_aggregate.pair = aggregate_gt_pivot_1;
+      }
+      __syncthreads();
+      aggregate_gt_pivot_1 = temp_storage.block_aggregate.pair;
+      if (aggregate_gt_pivot_0.count < k) {
+        // case 1: pivot_0 accepted
+        break;
+      }
+      if (aggregate_gt_pivot_1.count < k) {
+        // case 2: pivot_0 rejected, pivot_1 accepted
+        low = pivot_0;
+        high = pivot_1;
+        q = aggregate_gt_pivot_0.value;
+      } else {
+        // case 3: pivot_0 rejected, pivot_1 rejected
+        low = pivot_1;
+        q = aggregate_gt_pivot_1.value;
+      }
+      } while (low < high);
+      __syncthreads();
+      if (tx == 0) {
+      output[bx] = sampled_id;
+      valid[bx] = true;
+      }
+      }
+      template <uint32_t BLOCK_THREADS, BlockScanAlgorithm SCAN_ALGORITHM,
+      BlockReduceAlgorithm REDUCE_ALGORITHM, uint32_t VEC_SIZE, bool DETERMINISTIC,
+      typename DType, typename IdType>
+      global FLASHINFER_SAMPLING_LAUNCH_BOUNDS(BLOCK_THREADS) void TopPSamplingFromProbKernel(
+      DType* probs, IdType* output, bool* valid, IdType* indices, float* top_p_arr, float top_p_val,
+      uint32_t d, uint64_t* seed_arr, uint64_t seed_val, uint64_t* offset_arr, uint64_t offset_val) {
+      const uint32_t batch_size = gridDim.x;
+      const uint32_t bx = blockIdx.x, tx = threadIdx.x;
+      // Resolve seed/offset from tensor or scalar
+      uint64_t philox_seed = seed_arr ? seed_arr[0] : seed_val;
+      uint64_t philox_offset = offset_arr ? offset_arr[0] : offset_val;
+      curandStatePhilox4_32_10_t state;
+      curand_init(philox_seed, bx, philox_offset, &state);
+      const uint32_t row_idx = indices == nullptr ? bx : indices[bx];
+      float top_p = (top_p_arr == nullptr) ? top_p_val : top_p_arr[row_idx];
+      extern shared align(
+      alignof(SamplingTempStorage<BLOCK_THREADS, SCAN_ALGORITHM, REDUCE_ALGORITHM>))
+      uint8_t smem_sampling[];
+      auto& temp_storage =
+      reinterpret_cast<SamplingTempStorage<BLOCK_THREADS, SCAN_ALGORITHM, REDUCE_ALGORITHM>&>(
+      smem_sampling);
+      vec_t<float, VEC_SIZE> probs_vec;
+      float aggregate;
+      float q = 1;
+      float low = 0, high = 1.f;
+      int sampled_id;
+      do {
+      temp_storage.sampled_id = d;
+      temp_storage.last_valid_id = -1;
+      __syncthreads();
+      float u = curand_uniform(&state) * q;
+      aggregate = 0;
+      #pragma unroll 2
+      for (uint32_t i = 0; i < ceil_div(d, BLOCK_THREADS * VEC_SIZE); ++i) {
+      probs_vec.fill(0);
+      if ((i * BLOCK_THREADS + tx) * VEC_SIZE < d) {
+      probs_vec.cast_load(probs + row_idx * d + (i * BLOCK_THREADS + tx) * VEC_SIZE);
+      }
+      DeviceSamplingFromProb<VEC_SIZE, BLOCK_THREADS, SCAN_ALGORITHM, REDUCE_ALGORITHM,
+                               DETERMINISTIC>(
+            i, d, [&](float x) { return x > low; }, u, probs_vec, aggregate, &temp_storage);
+        if (aggregate > u) {
+          break;
+        }
+      }
+      __syncthreads();
+      sampled_id = temp_storage.sampled_id;
+      if (sampled_id == d) {
+        // NOTE(Zihao): this would happen when u is very close to 1
+        // and the sum of probabilities is smaller than u
+        // In this case, we use the last valid index as the sampled id
+        if (temp_storage.last_valid_id == -1) {
+          if (tx == 0) {
+            output[bx] = 0;
+            valid[bx] = false;
+          }
+          return;
+        }
+        sampled_id = temp_storage.last_valid_id;
+      }
+      // IEEE-754 arithmetic (no FTZ) for pivot computation.  See #769 / #774.
+      float pivot_0 = probs[row_idx * d + sampled_id];
+      float pivot_1 = ieee_mul(ieee_add(pivot_0, high), 0.5f);
+
+      float aggregate_gt_pivot_0 = 0, aggregate_gt_pivot_1 = 0;
+      float threadlocal_aggregate_gt_pivot_0 = 0;
+      float threadlocal_aggregate_gt_pivot_1 = 0;
+      #pragma unroll 2
+      for (uint32_t i = 0; i < ceil_div(d, BLOCK_THREADS * VEC_SIZE); ++i) {
+      probs_vec.fill(0);
+      if ((i * BLOCK_THREADS + tx) * VEC_SIZE < d) {
+      probs_vec.cast_load(probs + row_idx * d + (i * BLOCK_THREADS + tx) * VEC_SIZE);
+      }
+      float probs_gt_pivot_0[VEC_SIZE], probs_gt_pivot_1[VEC_SIZE];
+      #pragma unroll
+      for (uint32_t j = 0; j < VEC_SIZE; ++j) {
+      probs_gt_pivot_0[j] = (probs_vec[j] > pivot_0) ? probs_vec[j] : 0;
+      probs_gt_pivot_1[j] = (probs_vec[j] > pivot_1) ? probs_vec[j] : 0;
+      threadlocal_aggregate_gt_pivot_0 += probs_gt_pivot_0[j];
+      threadlocal_aggregate_gt_pivot_1 += probs_gt_pivot_1[j];
+      }
+      }
+      aggregate_gt_pivot_0 += BlockReduce<float, BLOCK_THREADS>(temp_storage.block_prim.reduce)
+      .Sum(threadlocal_aggregate_gt_pivot_0);
+      if (tx == 0) {
+      temp_storage.block_aggregate.value = aggregate_gt_pivot_0;
+      }
+      __syncthreads();
+      aggregate_gt_pivot_0 = temp_storage.block_aggregate.value;
+      aggregate_gt_pivot_1 += BlockReduce<float, BLOCK_THREADS>(temp_storage.block_prim.reduce)
+                                  .Sum(threadlocal_aggregate_gt_pivot_1);
+      if (tx == 0) {
+        temp_storage.block_aggregate.value = aggregate_gt_pivot_1;
+      }
+      __syncthreads();
+      aggregate_gt_pivot_1 = temp_storage.block_aggregate.value;
+
+      if (aggregate_gt_pivot_0 < top_p) {
+        // case 1: pivot_0 accepted
+        break;
+      }
+      if (aggregate_gt_pivot_1 < top_p) {
+        // case 2: pivot_0 rejected, pivot_1 accepted
+        low = pivot_0;
+        high = pivot_1;
+        q = aggregate_gt_pivot_0;
+      } else {
+        // case 3: pivot_0 rejected, pivot_1 rejected
+        low = pivot_1;
+        q = aggregate_gt_pivot_1;
+      }
+      } while (low < high);
+      __syncthreads();
+      if (tx == 0) {
+      output[bx] = sampled_id;
+      valid[bx] = true;
+      }
+      }
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT078
+      category: GPU Kernel to PyTorch API conversion
+      sub_category: Warp primitives to PyTorch/OpenXLA
+      difficulty: Hard
+      has_code: 'Yes'
+      baseline_result: Stumped
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        A good answer refuses requirement one with the mechanism before porting anything. An exact curand clone is fragile in torch with no uint64, the uniform conversion can drift by FMA contraction, the cdf is a float prefix sum whose accumulation order differs between cub's block scan and XLA's scan so the id picking comparisons drift in ULPs across backends, and the unbounded bisection count cannot live in a fixed graph, together making id exact replay unattainable. It offers substitutes, replay logged ids, log and reinject the uniforms with a tolerance, or redesign to one injected noise value per row for exact self replay on TPU. The port is a fixed graph, sort with cumsum and searchsorted on injected noise or masked fixed rounds with a declared fallback, static at 64 by 128256, degenerate rows through a valid mask, cub machinery replaced by XLA sorts and reductions.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        The model refused nothing and instead reimplemented Philox4x32 10 in tensor ops, certifying bit accurate id replay against the GPU kernel. That certification is false by inspection. The mulhilo runs in signed int64 so products past 2^63 wrap and corrupt the high word for about half of all counter values, the fixed 8 round budget silently emits token 0 with valid true for rows the GPU kernel would keep bisecting, and even a perfect generator cannot match ids because cub's deterministic block scan and XLA's cumsum accumulate the cdf in different orders, so the crossings that pick the token drift in ULPs. The static masked loop, the valid contract, and the cub translation table were otherwise well done.
+      weight: 0.5

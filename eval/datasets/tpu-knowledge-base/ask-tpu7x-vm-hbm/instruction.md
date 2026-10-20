@@ -1,0 +1,1 @@
+Answer this question about `tpu7x`, grounded in the TPU documentation, passing it exactly as written: "How much HBM does one 4-chip TPU7x VM have in total, in GiB?" Answer clearly, citing any references you can for grounding. Drop a JSON at `/logs/artifacts/answer.json` with keys `answer` and `reference`, for scoring.

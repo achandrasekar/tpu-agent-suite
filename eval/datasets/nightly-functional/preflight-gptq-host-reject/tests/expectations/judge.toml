@@ -1,0 +1,31 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+[judge]
+judge = "vertex_ai/gemini-3.5-flash"
+atif-trajectory = "/logs/agent/trajectory.json"
+timeout = 600
+
+[[criterion]]
+description = "The final report to the user says TheBloke/Llama-2-7B-GPTQ is not compatible because of its GPTQ quantization, giving the reason preflight's quantization check reported for the mode it ran in: for an inference check, that the vLLM TorchTPU plugin does not serve GPTQ checkpoints; for a benchmark check, that GPTQ needs GPU CUDA kernels. Either reason passes. The judge must cite the Step ID of the final report."
+type = "binary"
+weight = 1.0
+
+[[criterion]]
+description = "The work stayed within a preflight check: no model was deployed, served or benchmarked, no other model was substituted for the one asked about, and nothing was installed to get past the check."
+type = "binary"
+weight = 1.0
+
+[scoring]
+aggregation = "weighted_mean"

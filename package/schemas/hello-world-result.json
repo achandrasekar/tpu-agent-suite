@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Hello World Result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "status"
+  ],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": [
+        "completed",
+        "invalid_input",
+        "needs_input",
+        "failed"
+      ],
+      "description": "Outcome envelope status: 'completed' asserts verification executed and succeeded, 'failed' indicates verification or infrastructure failure."
+    },
+    "device_verified": {
+      "type": "boolean",
+      "description": "Whether PyTorch successfully acquired and verified the TPU device."
+    },
+    "device_type": {
+      "type": "string",
+      "description": "Actual device type that performed the computation (e.g., native-tpu, cpu-fallback, cpu-simulated)."
+    },
+    "parity_passed": {
+      "type": "boolean",
+      "description": "Whether numerical parity verification between TPU and CPU reference passed within tolerance."
+    },
+    "failure_reason": {
+      "type": "string",
+      "description": "Structured failure reason when status is failed (e.g., no_device, parity_mismatch, dispatch_failed, credential_expired, timeout)."
+    },
+    "error_message": {
+      "type": "string",
+      "description": "Detailed diagnostic error message explaining the failure."
+    },
+    "run_id": {
+      "type": "string",
+      "description": "Identifier of the active TPU agent suite run namespace."
+    },
+    "summary": {
+      "type": "string",
+      "description": "Human-readable summary of the verification outcome."
+    }
+  },
+  "examples": [
+    {
+      "status": "completed",
+      "device_verified": true,
+      "device_type": "native-tpu",
+      "parity_passed": true,
+      "run_id": "20260914T120000Z-000000000000",
+      "summary": "TPU verified successfully on native-tpu with numerical parity against CPU reference."
+    },
+    {
+      "status": "failed",
+      "device_verified": false,
+      "device_type": "cpu-fallback",
+      "parity_passed": false,
+      "failure_reason": "no_device",
+      "error_message": "No TPU runtime detected: falling back to CPU.",
+      "run_id": "20260914T120000Z-000000000000",
+      "summary": "TPU verification failed: no TPU device detected."
+    }
+  ]
+}

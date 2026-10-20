@@ -1,0 +1,13 @@
+{
+  "query": "Write a grounded memory and buffer sizing wiki page specifically for TPU v6e. Cover usable scoped VMEM limits in exact KiB, bytes and derived MiB, distinguish these from physical capacity and configured limits, explain tile residency and padding, and describe XProf static versus runtime memory inspection, DMA utilization and trace-buffer overflow. Include SparseCore details only if the supplied sources explicitly establish them for v6e; otherwise state the gap. Do not discuss or compare other chip generations. Cite supplied GitHub sources with their source IDs in standard Markdown footnotes. Label calculations as derived and do not invent capacities.",
+  "authoring_request": "Make pages for older chips. No reason not to. v5 generation and up",
+  "source_ids": [
+    "xla-scoped-vmem",
+    "xprof-memory-viewer",
+    "xprof-memory-profile",
+    "openxla-tiled-layout",
+    "openxla-sparsecore",
+    "xprof-utilization-viewer",
+    "xprof-custom-call"
+  ]
+}

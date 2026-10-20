@@ -1,0 +1,199 @@
+---
+title: "Kernel-Optimization Index — the knowledge MAP + load mandate for optimizing any Pallas/Mosaic kernel"
+type: concept
+tags: [tpu-kernel-development, kernel-optimization, pallas, llo, hypothesis-generation, router, load-mandate]
+created: 2026-07-09
+updated: 2026-10-07
+sources: 0
+human_reviewed: false
+---
+
+> **Purpose.** This file is the **router**, not the knowledge. It (a) names every kernel-knowledge source in this wiki and what each is for, and (b) **mandates — non-negotiable — exactly which sources an agent must load for a given kernel category** (see [Load mandate](#load-mandate-non-negotiable)). Its own body is a *thin, transferable decision procedure* (which class, which order, which category) — a derived synthesis, not the deep knowledge, which lives in the pages it points at.
+>
+> **Value.** It guarantees an agent never writes a kernel from the model prior. The deep knowledge (Pallas mechanics, mechanism classes, the earned traps) is pulled by category rather than recalled. The tpu-kernel-development subagents — `plan-kernel`, `implement-kernel`, `fix-kernel-compilation` — read this file first and follow its [Load mandate](#load-mandate-non-negotiable) to decide what else to open.
+>
+> **Derived.** Everything here is *derived* from the wiki's source pages — throw it away and rebuild it from them whenever the sources change. Nothing original lives here. (Contrast [`briefs.md`](briefs.md) (`index.py get briefs`) — the *earned rules*, which are NOT derived and accrete one hard-won lesson at a time. This index routes to BRIEFS; it does not restate it.)
+
+The body below is the transferable decision procedure — the mental model + the ordering for a *new* kernel. It carries **no deep knowledge of its own**: *how to measure* the signals → [`pallas-validation-and-xprof.md`](pallas-validation-and-xprof.md) (`index.py get pallas-validation-and-xprof`); *the SIMD execution & memory architecture mental model* → [`pallas-core-mental-model.md`](pallas-core-mental-model.md) (`index.py get pallas-core-mental-model`); *how to write a TPU Pallas kernel without fighting the compiler* (memory model, the (8,128) rule, scalar prefetch, the compile gotchas) → [`pallas-kernel.md`](pallas-kernel.md) (`index.py get pallas-kernel`); *the earned parity/measurement/portability rules* → [`briefs.md`](briefs.md) (`index.py get briefs`). The [Load mandate](#load-mandate-non-negotiable) says which of these to load for which kernel.
+
+
+## Read order for a new run
+
+[`pallas-core-mental-model`](pallas-core-mental-model.md) (`index.py get pallas-core-mental-model`) (SIMD execution & memory hierarchy) → [design-class catalog](design-class-catalog.md) (`index.py get design-class-catalog`) (mechanism classes + applicability tests) → [BRIEFS](briefs.md) (`index.py get briefs`) (the earned rules: measurement, bound diagnosis, author discipline, parity/oracles, evidence, platform gotchas, lever catalog) → back to this index for anything not covered.
+
+## Cardinal rule
+
+Only material that helps generate a falsifiable kernel hypothesis for an arbitrary kernel: a principle, the profile signal that triggers it, its expected direction of effect, or a refuted pattern that saves you from writing a doomed candidate.
+
+---
+
+## The core thesis
+
+**A Pallas kernel earns its keep by changing the *memory traffic*, *materialization*, or *work-grouping* that the compiler cannot avoid on its own — not by doing the same arithmetic "faster."** XLA already lowers dense arithmetic near-optimally. So the question is never "can I write a faster matmul?" — it is "**what is the naive form forced to move through HBM (or serialize) that a kernel could avoid?**" If the answer is "nothing" — the compiler is already fusion-complete and near its roofline (roofline analysis (`index.py get xprof-roofline-model`)) — then no kernel can win, and the honest verdict is *refute*.
+
+Corollary: **profile the bound before you hypothesize.** A kernel targeting the wrong bound is wasted effort even if it compiles and is correct.
+
+## Generation scope (what transfers, what to re-derive)
+
+The reasoning in this page is **hardware-invariant**: the core thesis, the three sinks, the intervention-class decision, the ordering, the dispatch floor, and the parity/measurement discipline apply on any TPU generation (v5p, v6e, v7/Ironwood, …) and mostly transfer to GPU/Triton too. What is **generation-specific and must be re-derived per target**: the MXU tile edge (128 on ≤v5p, 256 on v6e+ — sets block alignment and the small-block crossover), the **number of MXUs per TensorCore** (multi-MXU generations want tiles sized to feed all of them; see [megacore](megacore.md) (`index.py get megacore`) for v4/v5p dual TensorCore sharing vs v6e single-core vs TPU7x dual chiplets), the VMEM budget and its OOM wall and any scoped-VMEM flag knee, the VMEM:HBM bandwidth ratio (sets how much streaming lowers the required intensity), the functional-unit issue-slot counts (the utilization denominators), the HBM bandwidth (the memory-bound roofline), the available profiling signals (v7/Ironwood adds runtime perf-counter sampling that v6e lacks — v6e is static-LLO only), and **every measured block size and speedup below — all v6e**. Prefer *querying* these over hardcoding: `pltpu.get_tpu_info_for_chip` returns the per-generation constants programmatically (see [`pallas-tpu-reference`](pallas-tpu-reference.md) (`index.py get pallas-tpu-reference`)). Treat the numbers as calibration for the *shape* of the answer, not as targets; re-measure on the target hardware.
+
+## Load mandate (non-negotiable)
+
+**This is the index's primary job.** An agent working a kernel must open the sources below, and **SECTIONS, not whole files** — the router/meta/evidence material only balloons and dilutes the working context. What gets loaded is not discretionary; it is mandated by the kernel's category.
+
+**Always load, no exceptions:**
+1. **This index's decision procedure — these sections only:** *The core thesis · Generation scope · The three sinks · THE WORKFLOW · Pick the intervention class · Kernel categories → strategy · Tiling theory · The dispatch/orchestration floor · Reading the profile: bound → lever* (+ the one-line Parity-&-measurement → BRIEFS pointer). **Not part of the working set:** the header, this Load-mandate section, the **Hardware envelope** (a utilization-*reading* table for analysis; the functional-unit mechanics needed to write a kernel are already in `pallas-kernel.md`), Operational gotchas, the Kernel catalog, or Sources.
+2. [`pallas-kernel.md`](pallas-kernel.md) (`index.py get pallas-kernel`) **through `## Debugging`** — the authoring mechanics (annotated kernel skeleton, memory spaces, the (8,128) rule, scalar prefetch, functional units, the compile-error gotcha table). NOT its `## See also` / `## Sources` / `connect:auto` repo-link tail.
+3. [`briefs.md`](briefs.md) (`index.py get briefs`) — the earned rules, whole (the canonical `bench()` timing helper is its §1).
+4. The kernel's **class page** from the routing table (the `index.py get` keyword next to its link) + its **category doc distillation(s)** from the map below.
+
+The **canonical category slugs** (see the routing table in [Kernel categories](#kernel-categories--the-routing-table-which-class-page-an-author-loads)): `attention` · `gemm-conv-epilogue` · `streaming-reduction` · `grouped-ragged-indirection` · `state-carry-scan` · `dense-near-roofline` · `cross-chip-collective`. If Pallas grid/BlockSpec semantics are unfamiliar, also load pallas-grid-blockspec (`index.py get grid-blockspec`).
+
+**When the catalog has a match** — load 1–2 exemplar kernel pages from the [catalog](#kernel-catalog--reuse-before-you-write-unless-authorship-is-the-point) matching the category as *structure* examples, not answers.
+
+**Never load wholesale:** the raw docs tree or past experiment pages — link them; the transferable lesson is already distilled into the pages above. What transfers across kernels is class-keyed only — BRIEFS, the class page, this index.
+
+| Doc distillation | Teaches | Load for these categories |
+|---|---|---|
+| [`pallas-tpu-reference`](pallas-tpu-reference.md) (`index.py get pallas-tpu-reference`) | TPU lowering rules: tiling/layout constraints, dimension semantics, unsupported ops | **always**, before authoring |
+| [`pallas-core-mental-model`](pallas-core-mental-model.md) (`index.py get pallas-core-mental-model`) + pallas-grid-blockspec (`index.py get grid-blockspec`) | `pallas_call`/Ref semantics; the grid + BlockSpec `index_map` contract | model's first Pallas contact; any nontrivial `index_map` |
+| [`attention-pallas-data-management`](attention-pallas-data-management.md) (`index.py get attention-pallas-data-management`) (+ pipelining (`index.py get pallas-pipelining`), compute-communication-overlap (`index.py get concept-compute-communication-overlap`)) | asynchronous DMA copies (`make_async_copy`), double-buffering limits, dynamic block shapes | streaming-reduction & attention kernels; DMA-starved profiles |
+| matmul (`index.py get pallas-matmul`) + [`matmul-pallas-architectures`](matmul-pallas-architectures.md) (`index.py get matmul-pallas-architectures`) (+ [padding](padding.md) (`index.py get padding`)) | canonical block matmul + MXU 32-bit accumulator, VPU-to-MXU casting rules & MXU 128/256 padding | dense-compute kernels; accumulator patterns |
+| [`attention-pallas-data-management`](attention-pallas-data-management.md) (`index.py get attention-pallas-data-management`) | paged KV cache tables, asynchronous block fetching, scalar prefetch | grouped / ragged / paged / indirection kernels |
+| tpu-hardware (`index.py get hw-tpu-v6e`) (+ mxu (`index.py get concept-mxu`), [vpu](vpu.md) (`index.py get vpu`), vmem (`index.py get concept-vmem`)) | TPU architecture background (MXU/VPU/VMEM, chip topology) | the model has no TPU background |
+| [`kernel-cross-chip-collective`](kernel-cross-chip-collective.md) (`index.py get kernel-class-cross-chip-collective`) | RDMA, DMA semaphores, collective kernel patterns | cross-chip kernels (ring attention, in-kernel collectives) |
+
+## The three sinks of lost time (and their canonical fixes)
+
+Almost every kernel win removes one of three things. Classify which one the naive form suffers, and the fix follows:
+
+1. **Materialized intermediates** — the naive computes a large temporary and round-trips it through HBM (a score matrix, a normalization buffer, a logits tensor). **Fix: keep it in VMEM via a streaming/online algorithm** — compute-and-consume in tiles so the intermediate never lands in HBM (online-softmax, single-pass reductions, chunked accumulation). This is the highest-yield kernel move and usually the memory-bound case. *Why it's such a large lever*: VMEM bandwidth exceeds HBM bandwidth by an order of magnitude+ (~22× on v5e — generation-specific ratio, re-derive per target), so an op that stays in VMEM needs ~that-factor less arithmetic intensity to be compute-bound — even a low-intensity elementwise epilogue streams at near-peak once it never leaves VMEM (compute-communication overlap (`index.py get concept-compute-communication-overlap`), scaling book ch.2 (`index.py get scaling-book-tpus`)).
+2. **Redundant reads** — the naive materializes a broadcast/repeat/concat before the real compute, reading the same bytes many times (a group-expansion feeding matmuls, a padded concatenation). **Fix is usually *not* a kernel** — an *algebraic restructuring* that folds the expansion into the contraction lets XLA emit minimal traffic, bit-exact and cheap. A kernel only helps here if it also changes the traffic pattern.
+3. **Dispatch / orchestration overhead** — the work is fragmented into many tiny ops or DMAs, or the per-call work sits below the kernel dispatch floor. **Fix: coarsen** — block/group so each program does substantial work with large DMAs; if the op is fundamentally fine-grained (per-element gather, single-token decode), a hand kernel will *lose* to XLA's fused path — see [the dispatch floor](#the-dispatch--orchestration-floor).
+
+---
+
+## THE WORKFLOW (and why the order is the order)
+
+Order matters because each step assumes the previous one is settled; doing them out of order measures noise.
+
+1. **Measure the naive + find the bound.** Benchmark (jit, warmup, compare **p50**), and **dump post-optimization HLO** (`XLA_FLAGS=--xla_dump_to`). Read it to answer: what does it *materialize*? is it compute-bound (near roofline), memory-bound (materialization/redundant-read), or overhead-bound (many tiny ops)? Is it **already fusion-complete**? Estimate the roofline ceiling so you know how much is even on the table — and compute the arithmetic intensity for the *exact shape/dtype combination* (roofline analysis (`index.py get xprof-roofline-model`)), not the op class: mixed precision moves the ridge (weights narrower than compute ≈ halves the compute-bound batch threshold; uniformly-narrow leaves it roughly unchanged), and some structures are *intrinsically* memory/comm-bound at any batch (e.g. a per-example-weights batched matmul, where the "weight" tensor scales with batch — no batching, and no kernel, fixes that; refute) (scaling book ch.1).
+2. **Try the cheapest, most reversible intervention first.** In increasing cost/risk: **(a) refute** — if HLO shows XLA is already fusion-complete/near-roofline, stop now; **(b) flag** — if XLA's kernel is right but resource-limited, a compiler knob may buy the gap for free (bit-exact); **(c) xla-rewrite** — an algebraic change removing a redundant read, bit-exact, no kernel; **(d) author a Pallas kernel** — the expensive, risky option, justified only when a materialization or grouping needs a hand kernel (load [`pallas-kernel.md`](pallas-kernel.md) (`index.py get pallas-kernel`) first — it prevents most of the compile-fix churn). Authoring last, not first, is what makes the loop efficient.
+3. **Get correctness before speed.** Write the parity gate against a *high-precision* recompute first; verify the kernel on a *tiny* shape (correct indexing/masking/grouping) before scaling. A fast wrong kernel is worthless, and ragged/indirection bugs hide until you check a boundary case.
+4. **Structural change before tiling before flags.** Fix the algorithm (streaming, grouping, fusion scope) first; only then sweep block sizes; only then chase flags. A block sweep on a kernel with the wrong structure optimizes the wrong thing.
+5. **Sweep tiling to the wall** (see [tiling theory](#tiling-theory)).
+6. **If nothing beats the naive at parity, REFUTE — with the bound and the specific blocker.** This is a first-class outcome, not a failure; it is more valuable than a forced marginal kernel, and it is what distinguishes directed optimization from black-box search.
+
+## Pick the intervention class (the load-bearing decision)
+
+| Class | Use when | Cost | Parity |
+|---|---|---|---|
+| **refute** | HLO shows XLA already fusion-complete / at minimal traffic / near roofline | free | — |
+| **flag** | XLA's kernel is structurally right but resource-limited (e.g. VMEM budget) | trivial | bit-exact |
+| **xla-rewrite** | the waste is a redundant read (repeat/broadcast/concat) removable by restructuring the algebra | cheap | bit-exact |
+| **kernel-authored** | a materialized intermediate must be kept in VMEM, or ragged/grouped work must be regridded | expensive/risky | tolerance-gated |
+
+The discriminating skill is **not forcing a kernel where a flag, a rewrite, or a refute is correct** — and, having written a kernel, **refuting your own kernel when it loses** rather than shipping a correct-but-slower result.
+
+## Kernel categories → the routing table (which class page an author loads)
+
+Classify by **the measured bound and the op's structure, not the op's name**; the class page is a REQUIRED load, and the chosen category must be recorded in the plan. One primary page; at most one secondary for straddlers.
+
+| Category | Bound signature | Required page |
+|---|---|---|
+| **attention** | S²-scaling score materialization (or its fused absence), softmax + mask structure, shared/paged KV | [`kernel-attention.md](kernel-attention.md) (`index.py get kernel-class-attention`) |
+| **gemm-conv-epilogue** | matmul/conv producer + pointwise/reduction epilogue chain (the dominant suite shape) | [`kernel-gemm-conv-epilogue.md](kernel-gemm-conv-epilogue.md) (`index.py get kernel-class-gemm-conv-epilogue`) |
+| **streaming-reduction** | big reduction over a materialized axis, no dominating matmul producer (norms, CE, standalone softmax) | [`kernel-streaming-reduction.md](kernel-streaming-reduction.md) (`index.py get kernel-streaming-reduction`) |
+| **grouped-ragged-indirection** | per-group serialization, offset/length metadata, gathers, page tables | [`kernel-grouped-ragged-indirection.md](kernel-grouped-ragged-indirection.md) (`index.py get kernel-class-grouped-ragged-indirection`) |
+| **state-carry-scan** | linear recurrence / chunked scan with carried state (SSM, retention, linear attention) | [`kernel-state-carry-scan.md](kernel-state-carry-scan.md) (`index.py get kernel-state-carry-scan`) |
+| **dense-near-roofline** | one large dense contraction already near compute roofline, no epilogue | [`kernel-dense-near-roofline.md](kernel-dense-near-roofline.md) (`index.py get kernel-class-dense-near-roofline`) |
+| **cross-chip-collective** | op spans chips (ring attention, in-kernel collectives) | [`kernel-cross-chip-collective.md](kernel-cross-chip-collective.md) (`index.py get kernel-class-cross-chip-collective`) |
+
+**Serving attention: confirm the kernel before tuning it.** A vLLM server's paged attention is bound at startup by its environment, not by `--attention-backend`: tpu-inference picks the experimental `batched_rpa` kernel or RPA v3, and sessions on the torchtpu-vllm-dev nightly-20260804 image found `batched_rpa` running. Check the startup log or the trace kernel names against `index.py get attention-kernel-dispatch` before timing or editing either one; a loop on the kernel the server doesn't call can't move end-to-end time.
+
+*already-optimal* is not a category but a terminal OUTCOME any category can reach (HLO shows fusion-complete/near-roofline): refute cheaply with the HLO as evidence.
+
+---
+
+## Tiling theory
+
+Block sizes are the **last** structural decision and the primary tuning knob, but they are an *interior optimum found by sweeping* — not a value to guess or copy from another op-point. A block size trades five competing pressures:
+
+- **VMEM residency** — bigger blocks keep more operand resident (fewer reloads) but risk `CompileTimeScopedVmemOom`; the OOM boundary is a hard wall you should map, not avoid blindly.
+- **Pipelining headroom** — the block must leave room for ≥2 buffers to overlap DMA with compute; too big and there is no room to double-buffer.
+- **MXU-tile alignment** — contracting/output dims should be multiples of the MXU tile (128 on ≤v5p, 256 on v6e+); misalignment wastes MXU lanes ([padding requirement](padding.md) (`index.py get padding`)).
+- **Grid-program count** — smaller blocks mean more programs, and each program pays scalar setup + dispatch; overhead can swamp the compute.
+- **DMA granularity** — smaller blocks mean smaller, more numerous DMAs; below a size threshold the DMA orchestration cost dominates the transfer.
+
+**Generalizable heuristics:** the optimum is almost never the smallest block — per-program + tiny-DMA overhead dominates below roughly the MXU-tile edge, so the small-block crossover *scales with the MXU/VREG geometry* and is smaller on a smaller-MXU generation (re-find it per target, don't copy a v6e block size). There is also a *hardware* reason small contractions lose, independent of DMA overhead: the MXU is a weight-stationary systolic array with a fixed pipeline-fill bubble — back-to-back large matmuls amortize it, thin matmuls (contraction below the MXU edge) pay it as a large fraction of their time (scaling book ch.2 (`index.py get scaling-book-tpus`)). And generations with **multiple MXUs per TensorCore** (e.g. 4 on v4/v5 — generation-specific, re-derive; see [megacore](megacore.md) (`index.py get megacore`)) want tile dims sized to feed all of them, not just one MXU edge. Start around the MXU tile and sweep upward until VMEM OOM; the useful range is a few sizes; the win from right-sizing is real (often tens of percent) but secondary to getting the structure right first. Sweep only *after* the algorithm and grid are fixed. When knobs interact and the directed sweep doesn't pin the optimum, fall back to a constrained enumerative/random search with median-of-repeats ranking — the methodology is already grounded in pallas-forge's tune harness.
+
+## The dispatch / orchestration floor
+
+A Pallas kernel pays a fixed dispatch + marshalling cost per call, and each program pays scalar-setup + DMA-orchestration cost. **Below a per-call (and per-program) work threshold, a hand kernel loses to XLA's fused path regardless of how good its inner loop is.** Signs you are near the floor: the op does little arithmetic per byte moved (bandwidth-bound); the grid is enormous with tiny per-program work; the kernel issues many small DMAs (per-element/per-page gather); or the op is a single-token decode. In these cases the correct move is a rewrite or accepting XLA, and the honest verdict for a hand kernel is *refute*. Every kernel hypothesis must name its **operating point** (shapes/dtype/batch) — a kernel that wins at a synthetic op-point but sits below the floor at the real one is not a real win.
+
+## Parity & measurement discipline → the earned rules are in BRIEFS
+
+The **generative principles** (what to be aware of when forming a hypothesis) are below; the **binding earned rules** — the exact gate calibration, the ULP-at-magnitude math, the non-degenerate probe, the artifact-or-void audit, the co-measurement protocol, the portability gate — are in [`briefs.md`](briefs.md) (`index.py get briefs`) — §1 Measurement, §4 Parity & Oracles, §5 Evidence/Verification/Portability — which the [load mandate](#load-mandate-non-negotiable) makes a required load for every kernel. Do not restate them here. The principles a hypothesis must respect:
+
+- **Parity gates a high-precision recompute, not the low-precision baseline** — an fp32-accumulating kernel is *more accurate* than a fused-bf16 baseline (see [`matmul-pallas-architectures`](matmul-pallas-architectures.md) (`index.py get matmul-pallas-architectures`) for the 32-bit accumulator constraint), so a naive max-abs-vs-baseline reads a false ULP; gate against an fp32 (auto-fp64) oracle that replicates the baseline's own casts, absolute-not-relative near zero denominators, on a tiny shape first, at a **non-degenerate** probe point. (Exact rules + the gate-calibration math: BRIEFS §4.)
+- **Read the reference's conventions from its code, not the op name** — pre-scaling, layout, reduction semantics; a wrong assumption is a silent parity fail.
+- **A number exists only if measured honestly**: p50 not mean; flags in a separate process; the kernel-fired (silent-noop) HLO audit; the win attributed to a profile-visible mechanism; watch for compiler-inserted relayout `copy`/`bitcast` (a fourth sink) and for a trailing reduction/collective with its *own* roofline. (Exact protocol + every calibration incident: BRIEFS §1/§5.)
+
+## Reading the profile: bound → lever
+
+Measurement recipes live in [`pallas-validation-and-xprof.md`](pallas-validation-and-xprof.md) (`index.py get pallas-validation-and-xprof`); the *interpretation* is generalizable. Per-functional-unit utilization (from LLO counter tracks) tells you which resource is the bottleneck, and the bottleneck implies the lever:
+
+| Dominant profile signal | What it means | Lever |
+|---|---|---|
+| a large intermediate visible in HLO / high HBM traffic, low compute util | memory-bound on a materialization | streaming kernel (keep it in VMEM) |
+| a `repeat`/`broadcast`/`concat` feeding a matmul in HLO | redundant read | algebraic rewrite |
+| vector-load util ≫ MXU util; high wait between compute | DMA-starved compute | more pipeline buffering, then bigger blocks |
+| MXU util low with aligned shapes and no wait | blocks too small / grid overhead | bigger blocks; check the dispatch floor |
+| scalar-unit util > MXU | scalar-core serialization (address math, control flow, DMA setup) | hoist index math out of the loop, coarsen DMAs |
+| register spill/fill activity > 0 | register pressure | shrink live ranges, smaller unroll/last-dims |
+| MXU util high and steady, still short of roofline | near the achievable ceiling | consider precision (bf16 compute/fp32 accumulate) or refute |
+| kernel fast in isolation but neutral in the real workload | dispatch-bound at the real op-point — OR the surrounding jit inserted collectives/relayouts around the call | validate at the true op-point; check HLO around the custom_call for XLA-inserted all-gathers/copies — pin with `with_sharding_constraint` or move the region to `shard_map` (scaling book ch.10) |
+
+Note the *available* signal depends on the kernel style (pipeline-stage/wait signals exist only for `emit_pipeline` kernels; hand-rolled grids expose only the counter/bundle view) — read whichever the trace carries, and fall back to the HLO custom-call firing audit when counter tracks are absent.
+
+## Hardware envelope (how to read utilization anywhere)
+
+Utilization is *slots-used ÷ issue-slot capacity* per functional unit, so you need the capacity row for the target generation (re-derive from a per-bundle-utilization dump's CAPACITY line). The units and what they issue are generation-invariant; the counts change:
+
+| Unit | Issues | v6e slots (example) |
+|---|---|---|
+| MXU | matrix-multiply pipelines | 2 |
+| VALU / VPOP | vector elementwise / permute | 4 / 2 |
+| EUP | exponent/transcendental (softmax `exp`) | 1 |
+| VLOAD / VSTORE (+ FILL/SPILL) | vector load/store (+ register spill traffic) | 3 / 2 |
+| XLU | cross-lane shuffle/reduction | 2 |
+| SALU | scalar core (address math, control flow, DMA orchestration) | 2 |
+
+Three unit *mechanisms* worth knowing beyond the slot counts (all generation-invariant in kind, scaling book ch.2 (`index.py get scaling-book-tpus`)): the **scalar core issues at most ~1 DMA per cycle** — no amount of MXU/VPU headroom raises the HBM↔VMEM issue rate, which is *why* "hoist index math, coarsen DMAs" works; the **[VPU](vpu.md) (`index.py get vpu`) is roughly an order of magnitude+ below the MXU (`index.py get concept-mxu`) in FLOPs/s** (~30× on recent gens), so a dense elementwise component starves a matmul kernel; and **cross-lane (last-dim) reductions route through the XLU** and cost markedly more than sublane (second-to-last-dim) reductions — the mechanism behind the layout cost-ordering in [pallas-kernel](pallas-kernel.md) (`index.py get pallas-kernel`).
+
+Generation constants that gate tiling: MXU tile edge (128 ≤v5p / 256 v6e+), MXUs per TensorCore, VMEM budget and its OOM wall, HBM bandwidth (sets the memory-bound roofline). See hardware specs (`index.py get hw-tpu-v6e`) (v4 (`index.py get hw-tpu-v4`), v5p (`index.py get hw-tpu-v5p`), v6e (`index.py get hw-tpu-v6e`), tpu-7x (`index.py get hw-tpu-7x`)), vmem (`index.py get concept-vmem`), or query via `pltpu.get_tpu_info_for_chip`.
+
+## Operational gotchas (transferable)
+
+- **The profiling flags that actually work** are narrow and version-sensitive: counter tracks require the two custom-call trace flags in `LIBTPU_INIT_ARGS` (not `XLA_FLAGS`); LLO IR dumps use their own dump-dir flag distinct from the HLO dump dir; several plausible-looking dump flags silently do nothing on a given libtpu. Verify capture worked (non-empty, expected tracks) rather than trusting the flag name — see [`pallas-validation-and-xprof.md`](pallas-validation-and-xprof.md) (`index.py get pallas-validation-and-xprof`).
+- **HLO pre-filter is the cheapest triage** — always dump and read `after_optimizations` before authoring; it both finds the bound and catches "XLA already did it."
+- **Resource flags are startup/process-scoped** (they re-init the device and contaminate a co-resident reference) → measure in separate processes; and they are generation-gated (a VMEM budget valid on one gen is rejected on another).
+- **Framework-version kernel-API drift is real** — primitive names and in-kernel-legal ops move between releases; assume the target version's API, not memory. Prefer ref-slicing primitives over dynamic-slice inside kernels.
+
+## Kernel catalog — reuse before you write (unless authorship is the point)
+
+An existing well-tuned kernel usually beats a fresh one; author from scratch when no library covers the op. **Available here:** jax pallas (`index.py get pallas`), and Tokamax's live kernel catalog (`index.py get tokamax-ops`, then one op's directory by its `tokamax-` keyword, e.g. `index.py get tokamax-ragged-dot`, where a `pallas_mosaic_tpu*` file means a TPU kernel exists). During a tpu-kernel-development run, tpu-kernel-development has already checked Tokamax, and its finding is in `state.library_check`. For paged/ragged attention, JAX ships `ragged_paged_attention` (`index.py get jax-pallas-ragged-paged-attention`); the [attention](kernel-attention.md) class page lists the other shipped kernels and how to use one as the bar. **Known upstream libraries, not yet ingested** — check whether they have been added before assuming they are absent: JAXBench (patterns + roofline grader), ejkernel, pallas-forge, maxtext. Note coverage gaps are common (e.g. no TPU norm kernel in a library that ships attention + CE) — absence of a library kernel is itself a signal about where authorship pays.
+
+---
+
+## Regeneration
+
+This page drifts as new kernels land measured lessons. Rebuild it end-to-end from the wiki's source pages (rather than patch forever) when several new kernel classes have landed, a new TPU generation ships, the Pallas API changes materially, or the structure needs rethinking.
+
+## Sources
+
+- [`pallas-validation-and-xprof.md`](pallas-validation-and-xprof.md) (`index.py get pallas-validation-and-xprof`) (Deep kernel profiling & XProf verification), llo-dumps verified on v6e, ep_* scopes = emit_pipeline only, chunked_xla bf16 accum.
+- roofline-analysis.md (`index.py get xprof-roofline-model`) (Arithmetic intensity, compute-bound vs memory-bound thresholds, TPU bandwidth hierarchy), [pallas-kernel.md](pallas-kernel.md) (`index.py get pallas-kernel`).
+- Scaling book (already-ingested source pages): ch.1 rooflines, ch.2 TPUs (`index.py get scaling-book-tpus`), ch.3 sharding, ch.9 profiling, ch.10 JAX — mechanism layers folded in 2026-07-11 (deep-research sweep).
+- [Ragged Paged Attention (arXiv 2604.15464)](https://arxiv.org/abs/2604.15464) — workload-specialized kernel variants.
+- JAX's shipped ragged paged attention kernel (`index.py get jax-pallas-ragged-paged-attention`).

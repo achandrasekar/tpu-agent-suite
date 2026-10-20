@@ -1,0 +1,8 @@
+{
+  "query": "Explain TPU slices, hosts, chips, node pools, single-host versus multi-host deployment, topology and planning on GKE. Focus on durable concepts, not version or zone tables.",
+  "authoring_request": "Cloud TPU/GKE: simple queries based on GCP pages for content that will not change often",
+  "source_ids": [
+    "gke-tpu-concepts",
+    "gke-plan-tpus"
+  ]
+}

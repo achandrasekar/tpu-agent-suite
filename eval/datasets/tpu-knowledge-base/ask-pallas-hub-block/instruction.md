@@ -1,0 +1,1 @@
+Answer this question about `pallas-codebase-hub`, grounded in the TPU documentation, passing it exactly as written: "What constrains the block sizes of a Pallas kernel?" Answer clearly, citing any references you can for grounding. Drop a JSON at `/logs/artifacts/answer.json` with keys `answer` and `reference`, for scoring.

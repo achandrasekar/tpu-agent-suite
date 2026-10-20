@@ -1,0 +1,516 @@
+{"task": "general", "kind": "term typo", "query": "hostd xprof", "want": ["mldiag-cli"]}
+{"task": "general", "kind": "term typo", "query": "Pallsa", "want": ["pallas", "codebase-pallas"]}
+{"task": "general", "kind": "question typo", "query": "how do I cpature a TPU profile", "want": ["xprof-capture", "xprof-jax", "jax-profiling", "torch-tpu-perf-profiling", "codebase-xprof"]}
+{"task": "general", "kind": "term typo", "query": "ragged paged attrntion", "want": ["ragged-paged-attention-paper"]}
+{"task": "general", "kind": "term typo", "query": "xprof trace viewr", "want": ["xprof-trace-viewer"]}
+{"task": "general", "kind": "term typo", "query": "tpu v5p spces", "want": ["hw-tpu-v5p", "cloud-tpu-v5p"]}
+{"task": "general", "kind": "term typo", "query": "compole cache", "want": ["torch-tpu-compilation-cache"]}
+{"task": "general", "kind": "question typo", "query": "profilling pallas kernels", "want": ["xprof-kernel-profiling", "pallas-validation-xprof"]}
+{"task": "general", "kind": "term typo", "query": "miture of experts", "want": ["hf-moe-guide", "concept-expert-parallelism"]}
+{"task": "general", "kind": "term typo", "query": "torch tpu launch blocknig", "want": ["torch-tpu-eager-mode"]}
+{"task": "general", "kind": "term typo", "query": "irpnwood specs", "want": ["hw-tpu-7x", "cloud-tpu-7x", "ironwood-tpu-announcement"]}
+{"task": "general", "kind": "term typo", "query": "triillium", "want": ["hw-tpu-v6e", "cloud-tpu-v6e"]}
+{"task": "general", "kind": "question typo", "query": "save and rstore model weights", "want": ["orbax-framework"]}
+{"task": "general", "kind": "question typo", "query": "cheapset tpu", "want": ["cloud-tpu-pricing", "cloud-tpu-spot", "wiki-cloud-tpu-capacity"]}
+{"task": "general", "kind": "question typo", "query": "where can I get a tpu in euripe", "want": ["cloud-tpu-regions-zones"]}
+{"task": "general", "kind": "question typo", "query": "run on many hossts", "want": ["jax-multi-process", "cloud-tpu-multislice", "gke-tpu-concepts", "pytorch-torchrun", "wiki-cloud-tpu-concepts", "wiki-cloud-tpu-multislice"]}
+{"task": "general", "kind": "question typo", "query": "what is mgacore", "want": ["concept-megacore"]}
+{"task": "jaxbench-level1", "kind": "question typo", "query": "how do I start opitmizing a pallas kernel", "want": ["kernel-optimization-index", "pallas-kernel-authoring", "pallas-core-mental-model"]}
+{"task": "jaxbench-level1", "kind": "question typo", "query": "which kernel categoty is this op", "want": ["kernel-optimization-index", "pallas-design-class-catalog"]}
+{"task": "jaxbench-level1", "kind": "question typo", "query": "is my kernel compuute bound or memory bound", "want": ["scaling-book-roofline", "xprof-roofline-model", "kernel-optimization-index", "concept-roofline-analysis"]}
+{"task": "jaxbench-level1", "kind": "term typo", "query": "rooflne", "want": ["scaling-book-roofline", "xprof-roofline-model", "concept-roofline-analysis"]}
+{"task": "jaxbench-level1", "kind": "term typo", "query": "artihmetic intensity", "want": ["scaling-book-roofline", "concept-roofline-analysis"]}
+{"task": "jaxbench-level1", "kind": "question typo", "query": "v6e peak bf16 flops and hbm banfwidth", "want": ["hw-tpu-v6e", "cloud-tpu-v6e"]}
+{"task": "jaxbench-level1", "kind": "question typo", "query": "how to bencchmark a jax function correctly with warmup", "want": ["pallas-kernel-briefs", "jax-profiling"]}
+{"task": "jaxbench-level1", "kind": "term typo", "query": "blok_until_ready", "want": ["jax-profiling", "pallas-kernel-briefs"]}
+{"task": "jaxbench-level1", "kind": "question typo", "query": "check the kernel output matches the referecne within tolerance", "want": ["pallas-validation-xprof", "pallas-kernel-briefs", "pytorch-testing-docs"]}
+{"task": "jaxbench-level1", "kind": "question typo", "query": "dump the opyimized hlo to see what xla fused", "want": ["openxla-hlo-dumps", "kernel-optimization-index", "concept-hlo"]}
+{"task": "jaxbench-level1", "kind": "question typo", "query": "how to chooe block sizes for a pallas kernel", "want": ["kernel-optimization-index", "pallas-grid-blockspec", "pallas-tpu-details", "pallas-matmul"]}
+{"task": "jaxbench-level1", "kind": "term typo", "query": "BlockSpce index_map", "want": ["pallas-grid-blockspec", "pallas-tpu-details"]}
+{"task": "jaxbench-level1", "kind": "term typo", "query": "CompileTimeScopedbmemOom", "want": ["kernel-optimization-index", "hw-memory-buffers"]}
+{"task": "jaxbench-level1", "kind": "question typo", "query": "keernel runs out of vmem", "want": ["kernel-optimization-index", "pallas-tpu-details", "pallas-tpu-reference", "concept-vmem", "hw-memory-buffers"]}
+{"task": "jaxbench-level1", "kind": "term typo", "query": "vmem_limt_bytes", "want": ["pallas-tpu-reference", "pallas-kernel-briefs"]}
+{"task": "jaxbench-level1", "kind": "term typo", "query": "dmiension_semantics parallel arbitrary", "want": ["pallas-tpu-reference", "pallas-core-mental-model"]}
+{"task": "jaxbench-level1", "kind": "question typo", "query": "8 by 128 toling rule for tpu arrays", "want": ["pallas-tpu-reference", "concept-padding", "pallas-core-mental-model", "concept-vpu"]}
+{"task": "jaxbench-level1", "kind": "question typo", "query": "ovverlap dma with compute in pallas", "want": ["pallas-pipelining", "pallas-data-management"]}
+{"task": "jaxbench-level1", "kind": "term typo", "query": "double buffeing", "want": ["pallas-pipelining", "pallas-data-management"]}
+{"task": "jaxbench-level1", "kind": "question typo", "query": "use both tensorcoers on the chip", "want": ["concept-megacore"]}
+{"task": "jaxbench-level1", "kind": "question typo", "query": "known pallas pitfalls and measurwment rules", "want": ["pallas-kernel-briefs"]}
+{"task": "jaxbench-level1", "kind": "question typo", "query": "verify the pallas kernel actuallly ran in the profile", "want": ["pallas-validation-xprof", "xprof-custom-call", "xprof-kernel-profiling"]}
+{"task": "jaxbench-level1", "kind": "term typo", "query": "latency hiding schduler xla flag", "want": ["openxla-flags-guidance"]}
+{"task": "jaxbench-level1", "kind": "term typo", "query": "auottuning", "want": ["openxla-persisted-autotuning", "tokamax"]}
+{"task": "jaxbench-level1/1p-flash-attention", "kind": "term typo", "query": "flash atrention pallas kernel", "want": ["kernel-class-attention", "flash-attention-paper", "pallas-data-management", "tokamax-attention"]}
+{"task": "jaxbench-level1/1p-flash-attention", "kind": "term typo", "query": "online sofftmax", "want": ["kernel-class-attention", "flash-attention-paper"]}
+{"task": "jaxbench-level1/1p-flash-attention", "kind": "question typo", "query": "avoid matrializing the attention score matrix", "want": ["kernel-class-attention", "flash-attention-paper", "flash-attention-v1-paper"]}
+{"task": "jaxbench-level1/1p-flash-attention", "kind": "question typo", "query": "causal mask skip blocks above the diagoanl", "want": ["kernel-class-attention", "pallas-data-management"]}
+{"task": "jaxbench-level1/2p-gqa-attention", "kind": "term typo", "query": "grouped query attebtion", "want": ["kernel-class-attention"]}
+{"task": "jaxbench-level1/2p-gqa-attention", "kind": "term typo", "query": "GQA keernel", "want": ["kernel-class-attention"]}
+{"task": "jaxbench-level1/3p-mla-attention", "kind": "term typo", "query": "multi-head latent attntion", "want": ["deepseek-v2-paper", "kernel-class-attention"]}
+{"task": "jaxbench-level1/4p-sparse-attention", "kind": "term typo", "query": "block sparse attenyion", "want": ["pallas-sparse", "kernel-class-attention"]}
+{"task": "jaxbench-level1/4p-sparse-attention", "kind": "term typo", "query": "scalar prrefetch", "want": ["pallas-sparse", "jax-prefetch-scalar-gridspec", "pallas-data-management"]}
+{"task": "jaxbench-level1/5p-flex-attention", "kind": "term typo", "query": "flex attntion score mod", "want": ["kernel-class-attention"]}
+{"task": "jaxbench-level1/6p-paged-attention", "kind": "term typo", "query": "paged atteniton kernel", "want": ["ragged-paged-attention-paper", "vllm-paged-attention-doc", "tpu-inference-kernels", "pallas-data-management"]}
+{"task": "jaxbench-level1/6p-paged-attention", "kind": "question typo", "query": "gather kv cache blocks thriugh a page table", "want": ["pallas-data-management", "kernel-class-grouped-ragged-indirection", "ragged-paged-attention-paper"]}
+{"task": "jaxbench-level1/7p-ragged-paged-attention", "kind": "term typo", "query": "ragged paged attenttion tpu", "want": ["ragged-paged-attention-paper", "tpu-inference-kernels"]}
+{"task": "jaxbench-level1/8p-gemm", "kind": "term typo", "query": "palas matmul", "want": ["pallas-matmul", "matmul-pallas-architectures"]}
+{"task": "jaxbench-level1/8p-gemm", "kind": "question typo", "query": "large bf16 gemm near rooflnie", "want": ["kernel-class-dense-near-roofline", "pallas-matmul", "matmul-pallas-architectures"]}
+{"task": "jaxbench-level1/8p-gemm", "kind": "question typo", "query": "mxu accunulate in float32", "want": ["matmul-pallas-architectures"]}
+{"task": "jaxbench-level1/8p-gemm", "kind": "question typo", "query": "pad matmul dimensionns to a multiple of 128", "want": ["concept-padding", "matmul-pallas-architectures"]}
+{"task": "jaxbench-level1/9p-swiglu-mlp", "kind": "term typo", "query": "siglu mlp kernel", "want": ["kernel-class-gemm-conv-epilogue", "pallas-matmul"]}
+{"task": "jaxbench-level1/9p-swiglu-mlp", "kind": "question typo", "query": "fuse the activatoin into the matmul", "want": ["kernel-class-gemm-conv-epilogue"]}
+{"task": "jaxbench-level1/10p-sparse-moe", "kind": "term typo", "query": "spaese moe", "want": ["hf-moe-guide", "kernel-class-grouped-ragged-indirection", "concept-expert-parallelism"]}
+{"task": "jaxbench-level1/10p-sparse-moe", "kind": "question typo", "query": "route tokens to experts efficiiently on tpu", "want": ["kernel-class-grouped-ragged-indirection", "hf-moe-guide", "concept-expert-parallelism"]}
+{"task": "jaxbench-level1/11p-megablox-gmm", "kind": "term typo", "query": "meablox grouped matmul", "want": ["kernel-class-grouped-ragged-indirection"]}
+{"task": "jaxbench-level1/11p-megablox-gmm", "kind": "term typo", "query": "gmm kenrel", "want": ["kernel-class-grouped-ragged-indirection"]}
+{"task": "jaxbench-level1/12p-rmsnorm", "kind": "term typo", "query": "rmanorm pallas kernel", "want": ["pallas-streaming-reduction"]}
+{"task": "jaxbench-level1/12p-rmsnorm", "kind": "question typo", "query": "fuse normalizatiion into one pass over the rows", "want": ["pallas-streaming-reduction"]}
+{"task": "jaxbench-level1/13p-cross-entropy", "kind": "term typo", "query": "cross entopy kernel", "want": ["pallas-streaming-reduction"]}
+{"task": "jaxbench-level1/13p-cross-entropy", "kind": "question typo", "query": "avoid materialziing the logits for cross entropy loss", "want": ["pallas-streaming-reduction"]}
+{"task": "jaxbench-level1/14p-ragged-dot", "kind": "term typo", "query": "rsgged dot", "want": ["tokamax", "kernel-class-grouped-ragged-indirection"]}
+{"task": "jaxbench-level1/15p-retnet-retention", "kind": "term typo", "query": "retnet retentiion kernel", "want": ["pallas-state-carry-scan"]}
+{"task": "jaxbench-level1/15p-retnet-retention", "kind": "term typo", "query": "linear attentin chunked", "want": ["pallas-state-carry-scan", "gated-deltanet-paper"]}
+{"task": "jaxbench-level1/16p-mamba2-ssd", "kind": "term typo", "query": "mamba2 state space dulaity", "want": ["mamba2-paper", "pallas-state-carry-scan"]}
+{"task": "jaxbench-level1/16p-mamba2-ssd", "kind": "question typo", "query": "chynked scan with carried state in pallas", "want": ["pallas-state-carry-scan"]}
+{"task": "jaxbench-level1/17p-triangle-multiplication", "kind": "term typo", "query": "triangle mulltiplication alphafold", "want": ["pallas-design-class-catalog", "alphafold3"]}
+{"task": "jaxbench-level1/18k-conv2d-relu-biasadd", "kind": "question typo", "query": "conv2d followd by bias add and relu", "want": ["kernel-class-gemm-conv-epilogue"]}
+{"task": "jaxbench-level1/23k-matmul-sum-max-avgpool-logsumexp-logsumexp", "kind": "question typo", "query": "matmul with a logsumepx epilogue", "want": ["kernel-class-gemm-conv-epilogue", "pallas-streaming-reduction"]}
+{"task": "jaxbench-level1/25k-conv3d-groupnorm-mean", "kind": "term typo", "query": "groupmorm", "want": ["torch-nn-groupnorm", "pallas-streaming-reduction"]}
+{"task": "jaxbench-level1/38k-matmul-dropout-softmax", "kind": "question typo", "query": "gemm epiloguue fusion", "want": ["kernel-class-gemm-conv-epilogue"]}
+{"task": "jaxbench-level1/43k-gemm-batchnorm-scaling-softmax", "kind": "question typo", "query": "does xla already fuse the elementwie ops after the matmul", "want": ["kernel-class-gemm-conv-epilogue", "kernel-optimization-index", "openxla-hlo-dumps"]}
+{"task": "xprof-attention/kernel-tuning", "kind": "question typo", "query": "make causal attnetion faster on one tpu chip", "want": ["kernel-class-attention", "flash-attention-paper"]}
+{"task": "xprof-attention/kernel-tuning", "kind": "question typo", "query": "per-device time of an op from the profike", "want": ["xprof-hlo-op-stats", "xprof-trace-viewer", "xprof-overview-page"]}
+{"task": "xprof-attention/kernel-tuning", "kind": "term typo", "query": "tpu_cusstom_call", "want": ["xprof-custom-call", "openxla-custom-call"]}
+{"task": "xprof-attention/kernel-tuning", "kind": "question typo", "query": "profilng flags so llo data reaches the profile", "want": ["pallas-validation-xprof", "xprof-advanced-options", "xprof-kernel-profiling"]}
+{"task": "xprof-attention/kernel-tuning", "kind": "term typo", "query": "LIBTUP_INIT_ARGS", "want": ["pallas-kernel-briefs", "kernel-optimization-index", "pallas-validation-xprof"]}
+{"task": "xprof-attention/kernel-tuning", "kind": "question typo", "query": "kueue job never starts suspemded", "want": ["kueue-overview"]}
+{"task": "xprof-attention/kernel-tuning", "kind": "question typo", "query": "select a tpu node with accelerattor and topology labels", "want": ["tpu-on-gke", "gke-tpu-concepts", "wiki-cloud-tpu-deployment"]}
+{"task": "tpu-hello-world-xprof/xprof-summary", "kind": "term typo", "query": "xprof overiew page step time", "want": ["xprof-overview-page"]}
+{"task": "tpu-hello-world-xprof/xprof-summary", "kind": "term typo", "query": "mxu utiliztaion", "want": ["xprof-overview-page", "tpu-monitoring-library", "tpu-system-architecture"]}
+{"task": "tpu-hello-world-xprof/xprof-summary", "kind": "question typo", "query": "which op takes the most drvice time", "want": ["xprof-hlo-op-stats", "xprof-framework-op-stats"]}
+{"task": "tpu-hello-world-xprof/xprof-summary", "kind": "question typo", "query": "is the worklooad compute bound or hbm bound", "want": ["xprof-roofline-model", "scaling-book-roofline", "xprof-overview-page", "concept-roofline-analysis"]}
+{"task": "tpu-hello-world-xprof/xprof-hbm", "kind": "term typo", "query": "hbm beakdown", "want": ["xprof-memory-viewer"]}
+{"task": "tpu-hello-world-xprof/xprof-hbm", "kind": "question typo", "query": "peak memoyr stack vs heap", "want": ["xprof-memory-viewer"]}
+{"task": "tpu-hello-world-xprof/xprof-hbm", "kind": "term typo", "query": "memory profille", "want": ["xprof-memory-viewer", "jax-device-memory-profiling"]}
+{"task": "tpu-hello-world-xprof/xprof-compare", "kind": "question typo", "query": "compare step time of two profils", "want": ["xprof-overview-page", "xprof-trace-viewer"]}
+{"task": "tpu-hello-world-xprof/xprof-compare", "kind": "term typo", "query": "all-redcue time", "want": ["xprof-hlo-op-stats", "scaling-book-sharding", "openxla-flags-guidance", "concept-collective-costs"]}
+{"task": "tpu-hello-world-xprof/xprof-kernel-visibility", "kind": "term typo", "query": "llo insteuction analysis", "want": ["pallas-validation-xprof", "xprof-kernel-profiling"]}
+{"task": "tpu-hello-world-xprof/xprof-kernel-visibility", "kind": "term typo", "query": "per-keernel stats", "want": ["xprof-kernel-profiling"]}
+{"task": "tpu-hello-world-xprof/xprof-kernel-visibility", "kind": "question typo", "query": "are custom call flops counted in utiliation", "want": ["xprof-custom-call", "pallas-validation-xprof"]}
+{"task": "tpu-hello-world-profiled/profiled", "kind": "question typo", "query": "torch_tpu porfiler api", "want": ["torch-tpu-perf-profiling"]}
+{"task": "tpu-hello-world-profiled/profiled", "kind": "question typo", "query": "is managed ml diagmostics enabled on the cluster", "want": ["mldiag-gke", "mldiag-overview"]}
+{"task": "tpu-hello-world-profiled/profiled", "kind": "question typo", "query": "upload a trace to ml diaggnostics without the sdk", "want": ["gcp-mldiagnostics-non-sdk"]}
+{"task": "tpu-hello-world-profiled/profiled", "kind": "question typo", "query": "proile a warm call not the compile", "want": ["torch-tpu-compilation-cache", "torch-tpu-perf-profiling", "jax-profiling"]}
+{"task": "tpu-hello-world-profiled/profiled", "kind": "term typo", "query": "xplaen trace", "want": ["xprof-capture", "torch-tpu-perf-profiling"]}
+{"task": "tpu-hello-world-cited/cited", "kind": "term typo", "query": "$TPU_AxCELERATOR_TYPE", "want": ["tpu-generation-specs", "hw-tpu-v6e", "cloud-tpu-v6e", "hw-tpu-7x", "cloud-tpu-7x"]}
+{"task": "tpu-hello-world-cited/cited", "kind": "question typo", "query": "tpu7x peak bf16 commpute per chip", "want": ["hw-tpu-7x", "cloud-tpu-7x"]}
+{"task": "tpu-hello-world-cited/cited", "kind": "question typo", "query": "ironwood hbm capacity and bandwidh", "want": ["hw-tpu-7x", "cloud-tpu-7x"]}
+{"task": "tpu-hello-world-cited/cited", "kind": "question typo", "query": "run a matmul on tpu with pyotrch", "want": ["torch-tpu-get-started"]}
+{"task": "tpu-hello-world-cited/cited", "kind": "question typo", "query": "matmul max abs diff tilerance tpu vs cpu", "want": ["torch-tpu-precision-management", "torch-numerical-accuracy"]}
+{"task": "hf-onboarding-torchtpu/baseline", "kind": "question typo", "query": "onboard a huuggingface model to torch_tpu", "want": ["torch-tpu-get-started", "hf-transformers-docs", "hf-custom-models", "analysis-30-model-onboarding-learnings"]}
+{"task": "hf-onboarding-torchtpu/baseline", "kind": "question typo", "query": "estimate serving cost before bechmarking", "want": ["scaling-book-inference", "scaling-book-applied-inference", "cloud-tpu-pricing"]}
+{"task": "hf-onboarding-torchtpu/baseline", "kind": "question typo", "query": "does the model fit in hbm with a 32k cotnext", "want": ["scaling-book-applied-inference", "scaling-book-inference", "scaling-book-transformers", "playbook-size-serving-topology", "concept-kv-cache"]}
+{"task": "hf-onboarding-torchtpu/baseline", "kind": "term typo", "query": "kv cacge size", "want": ["scaling-book-transformers", "scaling-book-inference", "hf-kv-cache-docs", "concept-kv-cache"]}
+{"task": "hf-onboarding-torchtpu/baseline", "kind": "question typo", "query": "replaace flash_attn with sdpa", "want": ["pytorch-sdpa"]}
+{"task": "hf-onboarding-torchtpu/baseline", "kind": "question typo", "query": "cuda calls to tpu eqivalents", "want": ["torch-tpu-api-mapping"]}
+{"task": "hf-onboarding-torchtpu/baseline", "kind": "question typo", "query": "why is my model recompliing every step", "want": ["torch-tpu-compilation-cache", "torch-compiler-dynamic-shapes", "torch-graph-breaks", "playbook-static-shapes-and-tracing"]}
+{"task": "hf-onboarding-torchtpu/baseline", "kind": "term typo", "query": "tensor psrallel size", "want": ["vllm-engine-args", "scaling-book-training", "concept-tensor-parallelism"]}
+{"task": "nightly/engine-compatibility", "kind": "question typo", "query": "vllm tpu supporrted models", "want": ["vllm-tpu-inference", "vllm-tpu-project-docs"]}
+{"task": "nightly/torch-inference-coder", "kind": "question typo", "query": "serve a cusal lm with vllm on tpu", "want": ["vllm-tpu-inference", "gcp-vllm-v6e-tutorial", "vllm-docs"]}
+{"task": "nightly/torch-benchmark-coder", "kind": "question typo", "query": "becnhmark a pytorch model on tpu", "want": ["torch-tpu-perf-profiling", "torch-tpu-get-started"]}
+{"task": "smoke-check/preflight-check", "kind": "term typo", "query": "trust renote code", "want": ["huggingface-runtime-compatibility", "hf-custom-models"]}
+{"task": "jaxbench-level1/19k-matmul-subtract-multiply-relu", "kind": "question typo", "query": "fuse the relu into the matmul epiloogue", "want": ["kernel-class-gemm-conv-epilogue", "pallas-matmul"]}
+{"task": "jaxbench-level1/20k-gemm-multiply-leakyrelu", "kind": "question typo", "query": "leaky relu after a gemm in palas", "want": ["kernel-class-gemm-conv-epilogue", "pallas-matmul"]}
+{"task": "jaxbench-level1/21k-gemm-divide-sum-scaling", "kind": "question typo", "query": "sum over the gemm otuput inside the kernel", "want": ["kernel-class-gemm-conv-epilogue", "pallas-streaming-reduction"]}
+{"task": "jaxbench-level1/22k-conv2d-instancenorm-divide", "kind": "question typo", "query": "instanxe norm after conv2d", "want": ["kernel-class-gemm-conv-epilogue", "pallas-streaming-reduction"]}
+{"task": "jaxbench-level1/24k-matmul-scale-residualadd-clamp-logsumexp-mish", "kind": "question typo", "query": "matmul with residual add clamp and logsummexp", "want": ["kernel-class-gemm-conv-epilogue", "pallas-streaming-reduction"]}
+{"task": "jaxbench-level1/26k-bmm-instancenorm-sum-residualadd-multiply", "kind": "question typo", "query": "batched matmul follwed by instance norm", "want": ["kernel-class-gemm-conv-epilogue", "pallas-streaming-reduction", "pallas-matmul"]}
+{"task": "jaxbench-level1/27k-matmul-mish-mish", "kind": "term typo", "query": "mish acitvation", "want": ["kernel-class-gemm-conv-epilogue"]}
+{"task": "jaxbench-level1/28k-convtranspose3d-layernorm-gelu-scaling", "kind": "question typo", "query": "layernotm inside a pallas kernel", "want": ["pallas-streaming-reduction"]}
+{"task": "jaxbench-level1/29k-matmul-swish-sum-groupnorm", "kind": "question typo", "query": "grroupnorm after a matmul", "want": ["torch-nn-groupnorm", "pallas-streaming-reduction", "kernel-class-gemm-conv-epilogue"]}
+{"task": "jaxbench-level1/30k-matmul-scaling-residualadd", "kind": "question typo", "query": "reidual add fused into the matmul output", "want": ["kernel-class-gemm-conv-epilogue"]}
+{"task": "jaxbench-level1/31k-gemm-batchnorm-gelu-relu", "kind": "question typo", "query": "fold btachnorm into the gemm", "want": ["kernel-class-gemm-conv-epilogue"]}
+{"task": "jaxbench-level1/32k-gemm-sigmoid-logsumexp", "kind": "question typo", "query": "logsumrxp reduction kernel", "want": ["pallas-streaming-reduction"]}
+{"task": "jaxbench-level1/33k-conv3d-mish-tanh", "kind": "question typo", "query": "conv3d kernnel in pallas", "want": ["kernel-class-gemm-conv-epilogue"]}
+{"task": "jaxbench-level1/36k-matmul-sigmoid-sum", "kind": "question typo", "query": "matmul sigmiod then row sum", "want": ["kernel-class-gemm-conv-epilogue", "pallas-streaming-reduction"]}
+{"task": "jaxbench-level1/39k-conv2d-gelu-globalavgpool", "kind": "question typo", "query": "global avwrage pool after a conv", "want": ["kernel-class-gemm-conv-epilogue", "pallas-streaming-reduction"]}
+{"task": "jaxbench-level1/40k-gemm-groupnorm-min-biasadd", "kind": "term typo", "query": "bias add epiloggue", "want": ["kernel-class-gemm-conv-epilogue"]}
+{"task": "jaxbench-level1/41k-gemm-add-relu", "kind": "question typo", "query": "gemm add relu within 30% of roofine", "want": ["kernel-class-gemm-conv-epilogue", "kernel-class-dense-near-roofline", "scaling-book-roofline"]}
+{"task": "jaxbench-level1/42k-gemm-max-subtract-gelu", "kind": "question typo", "query": "row max over the mtamul output", "want": ["kernel-class-gemm-conv-epilogue", "pallas-streaming-reduction"]}
+{"task": "jaxbench-level1/45k-gemm-groupnorm-swish-multiply-swish", "kind": "question typo", "query": "is the epiloggue memory bound or compute bound", "want": ["scaling-book-roofline", "kernel-class-gemm-conv-epilogue", "xprof-roofline-model", "concept-roofline-analysis"]}
+{"task": "jaxbench-level1/47k-matmul-add-swish-tanh-gelu-hardtanh", "kind": "question typo", "query": "chain of elmentwise activations after a matmul", "want": ["kernel-class-gemm-conv-epilogue"]}
+{"task": "jaxbench-level1/49k-matmul-avgpool-gelu-scale-max", "kind": "question typo", "query": "avgpool after matmul", "want": ["kernel-class-gemm-conv-epilogue", "pallas-streaming-reduction"]}
+{"task": "jaxbench-level1/50k-matmul-gelu-softmax", "kind": "question typo", "query": "sogtmax over the matmul output", "want": ["kernel-class-gemm-conv-epilogue", "pallas-streaming-reduction"]}
+{"task": "kernel-set1/8p-gemm", "kind": "question typo", "query": "dennse bf16 gemm on tpu v7", "want": ["kernel-class-dense-near-roofline", "pallas-matmul", "matmul-pallas-architectures"]}
+{"task": "kernel-set1/8p-gemm", "kind": "term typo", "query": "tpu7x peak bf16 flos", "want": ["hw-tpu-7x", "cloud-tpu-7x", "ironwood-tpu-announcement"]}
+{"task": "kernel-set1/8p-gemm", "kind": "question typo", "query": "use evrey chip on the host", "want": ["gke-tpu-concepts", "scaling-book-sharding", "jax-distributed-arrays", "torch-tpu-dist-training-101"]}
+{"task": "kernel-set1/8p-gemm", "kind": "question typo", "query": "get within 30% of rooflune", "want": ["scaling-book-roofline", "xprof-roofline-model", "kernel-class-dense-near-roofline"]}
+{"task": "kernel-set1/8p-gemm", "kind": "question typo", "query": "mattmul tile sizes for the mxu", "want": ["matmul-pallas-architectures", "pallas-matmul", "concept-padding", "concept-mxu"]}
+{"task": "kernel-set1/8p-gemm", "kind": "term typo", "query": "ironwood hbm bandwidh", "want": ["hw-tpu-7x", "cloud-tpu-7x", "ironwood-tpu-announcement", "tpu-ironwood-supercomputer-paper"]}
+{"task": "kernel-set1/8p-gemm", "kind": "question typo", "query": "upload the profile to ml daignostics", "want": ["mldiag-cli", "mldiag-gke", "gcp-mldiagnostics-non-sdk"]}
+{"task": "tpu-hello-world/baseline", "kind": "question typo", "query": "gke node selector for tpu accwlerator and topology", "want": ["tpu-on-gke", "gke-tpu-concepts", "wiki-cloud-tpu-deployment"]}
+{"task": "tpu-hello-world/baseline", "kind": "term typo", "query": "kueeue queue name label", "want": ["kueue-overview"]}
+{"task": "tpu-hello-world/baseline", "kind": "question typo", "query": "tpu job stuck in pendig", "want": ["tpu-on-gke", "kueue-overview", "cloud-tpu-troubleshooting"]}
+{"task": "tpu-hello-world/baseline", "kind": "question typo", "query": "check a tpu matmul aganist the cpu result", "want": ["torch-tpu-precision-management", "pytorch-testing-docs"]}
+{"task": "tpu-hello-world/baseline", "kind": "question typo", "query": "why does the tpu mstmul differ from cpu", "want": ["torch-tpu-precision-management", "torch-numerical-accuracy"]}
+{"task": "tpu-hello-world/baseline", "kind": "question typo", "query": "tolerannce for assert close in bf16", "want": ["pytorch-testing-docs", "torch-numerical-accuracy", "torch-tpu-precision-management"]}
+{"task": "tpu-hello-world/baseline", "kind": "question typo", "query": "run a mamul on the torch tpu device", "want": ["torch-tpu-get-started"]}
+{"task": "nightly/remote-tpu-runner", "kind": "term typo", "query": "tpu accelerator type", "want": ["gke-tpu-concepts", "wiki-cloud-tpu-deployment"]}
+{"task": "nightly/remote-tpu-runner", "kind": "question typo", "query": "how many tpu chops per host", "want": ["gke-tpu-concepts", "tpu-on-gke", "gke-plan-tpus", "wiki-cloud-tpu-concepts"]}
+{"task": "nightly/engine-compatibility", "kind": "term typo", "query": "tensor paralllel size", "want": ["vllm-engine-args", "scaling-book-training", "concept-tensor-parallelism"]}
+{"task": "smoke-check/preflight-check", "kind": "term typo", "query": "qwen2.5 7b instrct", "want": ["qwen-model-card"]}
+{"task": "nightly/torch-benchmark-coder", "kind": "question typo", "query": "meausre tokens per second of a causal lm on tpu", "want": ["torch-tpu-perf-profiling", "scaling-book-inference"]}
+{"task": "nightly/torch-inference-coder", "kind": "term typo", "query": "openai compatoble server", "want": ["vllm-docs"]}
+{"task": "jaxbench-level1/8p-gemm", "kind": "question typo", "query": "why is my palllas matmul slower than jnp.dot", "want": ["kernel-class-dense-near-roofline", "pallas-matmul"]}
+{"task": "kernel-set1/8p-gemm", "kind": "question typo", "query": "my gemm only reaches 40% mxu utiization, what is limiting it", "want": ["kernel-optimization-index", "pallas-matmul"]}
+{"task": "jaxbench-level1/8p-gemm", "kind": "question typo", "query": "does feedign fp32 inputs make the matmul slower than bf16 on tpu", "want": ["pallas-matmul", "matmul-pallas-architectures", "bfloat16"]}
+{"task": "hf-onboarding-torchtpu/baseline", "kind": "term typo", "query": "fp32 mstmul multi-pass cost", "want": ["torch-tpu-precision-management"]}
+{"task": "jaxbench-level1/1p-flash-attention", "kind": "question typo", "query": "how big can a paallas block be before it no longer fits in vmem", "want": ["pallas-core-mental-model", "pallas-tpu-details", "kernel-optimization-index", "concept-vmem"]}
+{"task": "jaxbench-level1/2p-gqa-attention", "kind": "term typo", "query": "vmem capacity per tensorore", "want": ["pallas-core-mental-model", "pallas-tpu-details", "scaling-book-tpus", "concept-vmem", "jax-tpu-info", "hw-memory-buffers"]}
+{"task": "jaxbench-level1/1p-flash-attention", "kind": "question typo", "query": "the porfile shows my kernel waiting on dma between grid steps", "want": ["pallas-pipelining", "kernel-optimization-index", "pallas-data-management"]}
+{"task": "jaxbench-level1/8p-gemm", "kind": "term typo", "query": "pipelone bubbles", "want": ["pallas-matmul", "pallas-pipelining"]}
+{"task": "jaxbench-level1/7p-ragged-paged-attention", "kind": "term typo", "query": "pl.Bufffered buffer_count", "want": ["pallas-tpu-reference", "pallas-core-mental-model"]}
+{"task": "jaxbench-level1/12p-rmsnorm", "kind": "question typo", "query": "my rmsnorm kernel only reaches a fraction of hbm badwidth", "want": ["pallas-streaming-reduction", "pallas-kernel-briefs"]}
+{"task": "jaxbench-level1/13p-cross-entropy", "kind": "term typo", "query": "hbm bandwidht bound", "want": ["scaling-book-roofline", "pallas-validation-xprof", "concept-roofline-analysis", "concept-hbm"]}
+{"task": "jaxbench-level1/11p-megablox-gmm", "kind": "question typo", "query": "grouoed matmul is slower than a dense einsum when all experts get the same number of tokens", "want": ["kernel-class-grouped-ragged-indirection"]}
+{"task": "jaxbench-level1/16p-mamba2-ssd", "kind": "question typo", "query": "sequenntial scan over time steps is slow on tpu, how do I make it use the mxu", "want": ["pallas-state-carry-scan", "mamba2-paper"]}
+{"task": "jaxbench-level1/18k-conv2d-relu-biasadd", "kind": "question typo", "query": "conv with only a few input channels underutilizs the mxu", "want": ["kernel-class-gemm-conv-epilogue", "concept-padding", "cloud-tpu-performance-guide"]}
+{"task": "jaxbench-level1/25k-conv3d-groupnorm-mean", "kind": "question typo", "query": "the intermdeiate after the conv is written to hbm instead of being fused with the norm", "want": ["pallas-kernel-briefs", "kernel-optimization-index", "pallas-validation-xprof"]}
+{"task": "jaxbench-level1/10p-sparse-moe", "kind": "question typo", "query": "moe layer step time is dominated by all-to-all communicatuon", "want": ["scaling-book-training", "scaling-book-sharding", "concept-expert-parallelism"]}
+{"task": "jaxbench-level1/2p-gqa-attention", "kind": "question typo", "query": "repeatiing kv heads for gqa wastes memory bandwidth", "want": ["kernel-optimization-index", "kernel-class-attention"]}
+{"task": "jaxbench-level1/9p-swiglu-mlp", "kind": "term typo", "query": "opeator fusion", "want": ["cloud-tpu-performance-guide", "pallas-validation-xprof", "pallas-data-management", "wiki-cloud-tpu-performance"]}
+{"task": "jaxbench-level1/9p-swiglu-mlp", "kind": "question typo", "query": "my custom fused swiglu kernel is slower than lettnig xla handle it", "want": ["pallas-data-management"]}
+{"task": "kernel-set1/8p-gemm", "kind": "question typo", "query": "how do I shard a large matmul across the chips on a host without communixation dominating", "want": ["scaling-book-sharding", "concept-sharding-notation"]}
+{"task": "kernel-set1/8p-gemm", "kind": "question typo", "query": "tpu v7 shows two deevices per chip, how do I use both halves", "want": ["concept-megacore", "hw-tpu-7x", "cloud-tpu-7x", "cloud-tpu-performance-guide"]}
+{"task": "kernel-set1/8p-gemm", "kind": "question typo", "query": "what aritmetic intensity does a matmul need to be compute bound on tpu v7", "want": ["scaling-book-roofline", "hw-tpu-7x", "cloud-tpu-7x", "concept-roofline-analysis", "concept-critical-batch-size"]}
+{"task": "kernel-set1/8p-gemm", "kind": "term typo", "query": "collecitve matmul", "want": ["scaling-book-sharding", "openxla-flags-guidance", "concept-collective-matmul"]}
+{"task": "kernel-set1/8p-gemm", "kind": "question typo", "query": "all-gather time doninates my sharded matmul step", "want": ["scaling-book-sharding", "openxla-flags-guidance", "concept-collective-matmul"]}
+{"task": "kernel-set1/8p-gemm", "kind": "term typo", "query": "compute commuunication overlap", "want": ["openxla-flags-guidance", "cloud-tpu-performance-guide", "scaling-book-sharding", "concept-compute-communication-overlap"]}
+{"task": "xprof-attention/kernel-tuning", "kind": "question typo", "query": "the trace viewer shows gaps where the tpu is idle betwen ops", "want": ["scaling-book-profiling", "xprof-trace-viewer"]}
+{"task": "xprof-attention/kernel-tuning", "kind": "question typo", "query": "how do I read the roofilne chart in xprof to tell if my kernel is memory bound", "want": ["xprof-roofline-model"]}
+{"task": "xprof-attention/kernel-tuning", "kind": "question typo", "query": "for small attentoon shapes the per-call launch overhead dominates the kernel time", "want": ["kernel-optimization-index", "pallas-kernel-briefs"]}
+{"task": "tpu-hello-world-xprof/xprof-summary", "kind": "question typo", "query": "the ovverview page says my program is input bound, what does that mean", "want": ["xprof-overview-page", "cloud-tpu-performance-guide", "wiki-cloud-tpu-performance"]}
+{"task": "tpu-hello-world-xprof/xprof-summary", "kind": "term typo", "query": "low duty cyle", "want": ["tpu-monitoring-library", "pallas-validation-xprof", "xprof-overview-page"]}
+{"task": "xprof-attention/kernel-tuning", "kind": "question typo", "query": "which hlo ops are memory bound and how much bandwidht do they achieve", "want": ["xprof-hlo-op-stats", "xprof-roofline-model"]}
+{"task": "xprof-attention/kernel-tuning", "kind": "term typo", "query": "dma stakl", "want": ["xprof-hlo-op-stats", "pallas-pipelining"]}
+{"task": "tpu-hello-world-xprof/xprof-hbm", "kind": "question typo", "query": "my model runs out of hbm, how do I find what is using the meemory", "want": ["xprof-memory-viewer", "jax-device-memory-profiling", "scaling-book-profiling"]}
+{"task": "tpu-hello-world-xprof/xprof-hbm", "kind": "question typo", "query": "reduce activation memory with remterialization", "want": ["scaling-book-transformers", "concept-gradient-checkpointing"]}
+{"task": "hf-onboarding-torchtpu/baseline", "kind": "question typo", "query": "the first requests are very slow on torch_tpu, is it compliing", "want": ["torch-tpu-compilation-cache"]}
+{"task": "jaxbench-level1/7p-ragged-paged-attention", "kind": "question typo", "query": "jit revompiles every time the sequence length changes", "want": ["jax-jit-compilation", "playbook-static-shapes-and-tracing"]}
+{"task": "hf-onboarding-torchtpu/baseline", "kind": "question typo", "query": "how do I cut comppilation time for a large model on tpu", "want": ["torch-tpu-compilation-cache", "torch-tpu-api-mapping"]}
+{"task": "hf-onboarding-torchtpu/baseline", "kind": "question typo", "query": "is llm decode bound by memory bandidth or compute on tpu", "want": ["scaling-book-inference", "scaling-book-applied-inference", "concept-prefill-vs-decode", "concept-hbm"]}
+{"task": "hf-onboarding-torchtpu/baseline", "kind": "question typo", "query": "how should I shard a 70b model across chips so the weighst and kv cache fit in hbm", "want": ["scaling-book-applied-inference", "scaling-book-inference", "concept-kv-cache"]}
+{"task": "hf-onboarding-torchtpu/baseline", "kind": "term typo", "query": "tensor parallelism communicstion cost", "want": ["scaling-book-training", "scaling-book-sharding", "concept-tensor-parallelism"]}
+{"task": "tpu-hello-world-profiled/profiled", "kind": "question typo", "query": "why is the first maatmul call much slower than the later ones", "want": ["torch-tpu-compilation-cache", "jax-jit-compilation"]}
+{"task": "kernel-set1/8p-gemm", "kind": "term typo", "query": "model flops utilizaton", "want": ["scaling-book-applied-training", "pallas-core-mental-model", "concept-mfu"]}
+{"task": "jaxbench-level1/21k-gemm-divide-sum-scaling", "kind": "question typo", "query": "can the sum over the gemm output be folded into the weihgts to skip work", "want": ["pallas-kernel-briefs"]}
+{"task": "jaxbench-level1/50k-matmul-gelu-softmax", "kind": "question typo", "query": "the mxu sits idle durong the exp and gelu phases of my kernel", "want": ["pallas-kernel-briefs", "kernel-optimization-index"]}
+{"task": "jaxbench-level1/12p-rmsnorm", "kind": "term typo", "query": "sccoped vmem limit flag", "want": ["pallas-kernel-briefs", "pallas-design-class-catalog", "openxla-flags-guidance", "hw-memory-buffers"]}
+{"task": "jaxbench-level1/3p-mla-attention", "kind": "term typo", "query": "paddng waste", "want": ["concept-padding", "cloud-tpu-performance-guide", "pallas-core-mental-model", "wiki-cloud-tpu-performance"]}
+{"task": "xprof-attention/kernel-tuning", "kind": "question typo", "query": "my atetntion kernel is at 15% of peak after adding online softmax, what should I try next", "want": ["kernel-class-attention"]}
+{"task": "jaxbench-level1/4p-sparse-attention", "kind": "question typo", "query": "my block soarse kernel still spends time on empty blocks", "want": ["pallas-sparse", "pallas-design-class-catalog", "kernel-class-attention"]}
+{"task": "jaxbench-level1/17p-triangle-multiplication", "kind": "question typo", "query": "trranspose copies around my kernel are eating the runtime", "want": ["pallas-kernel-briefs", "pallas-design-class-catalog"]}
+{"task": "hf-onboarding-torchtpu/baseline", "kind": "question typo", "query": "torch.comple graph breaks are making the model slow", "want": ["torch-graph-breaks"]}
+{"task": "hf-onboarding-torchtpu/baseline", "kind": "question typo", "query": "eagre mode is slow, how do I get ops fused on torch_tpu", "want": ["torch-tpu-eager-mode"]}
+{"task": "kernel-set1/8p-gemm", "kind": "question typo", "query": "my bencjmark reports more than peak hbm bandwidth, is my timing wrong", "want": ["pallas-validation-xprof", "pallas-kernel-briefs"]}
+{"task": "xprof-attention", "kind": "term typo", "query": "flash atttention pallas tpu", "want": ["kernel-class-attention", "pallas-data-management", "flash-attention-paper", "tokamax-attention"]}
+{"task": "xprof-attention", "kind": "question typo", "query": "my causal atention is slow on TPU, how do I make it faster without changing the math?", "want": ["kernel-class-attention", "pallas-data-management", "flash-attention-paper", "tokamax-attention"]}
+{"task": "xprof-attention", "kind": "term typo", "query": "attention block size tuning", "want": ["pallas-data-management", "kernel-class-attention"]}
+{"task": "jaxbench-level1", "kind": "question typo", "query": "how do I pick block sgapes for a pallas matmul kernel so it uses the MXU well?", "want": ["pallas-matmul", "matmul-pallas-architectures"]}
+{"task": "jaxbench-level1", "kind": "term typo", "query": "pallas BloockSpec grid", "want": ["pallas-grid-blockspec", "pallas-tpu-details"]}
+{"task": "jaxbench-level1", "kind": "question typo", "query": "pallas kernel fails with a lowering error about block shape not dvisible by 8 and 128", "want": ["pallas-tpu-details", "pallas-tpu-reference", "concept-padding"]}
+{"task": "jaxbench-level1", "kind": "term typo", "query": "VMEM scrathc buffer", "want": ["pallas-tpu-details", "pallas-tpu-reference"]}
+{"task": "jaxbench-level1", "kind": "question typo", "query": "how much VMEM do I have on a TPU core and what haopens if my kernel tiles exceed it?", "want": ["pallas-tpu-details", "scaling-book-tpus", "concept-vmem", "jax-tpu-info", "hw-memory-buffers"]}
+{"task": "jaxbench-level1", "kind": "question typo", "query": "how do I overrlap HBM to VMEM copies with compute in a pallas kernel?", "want": ["pallas-pipelining", "pallas-tpu-details"]}
+{"task": "jaxbench-level1", "kind": "term typo", "query": "manual async copy double bufferng", "want": ["pallas-pipelining", "pallas-distributed", "pallas-tpu-details"]}
+{"task": "jaxbench-level1", "kind": "question typo", "query": "my fused gemm plus activation is memory bound, how do I fuse the eleemntwise ops into the matmul?", "want": ["kernel-class-gemm-conv-epilogue", "pallas-matmul"]}
+{"task": "jaxbench-level1", "kind": "question typo", "query": "how do I tell if XLA akready fused my ops or if I need a custom kernel?", "want": ["openxla-hlo-dumps", "xprof-graph-viewer", "concept-hlo"]}
+{"task": "jaxbench-level1", "kind": "term typo", "query": "bfloat16 matmul precisioon", "want": ["bfloat16", "torch-tpu-precision-management"]}
+{"task": "jaxbench-level1", "kind": "term typo", "query": "groued matmul MoE kernel", "want": ["kernel-class-grouped-ragged-indirection", "tokamax"]}
+{"task": "jaxbench-level1", "kind": "question typo", "query": "how do I implemnet a ragged or grouped matmul for mixture of experts on TPU?", "want": ["kernel-class-grouped-ragged-indirection", "tokamax", "maxtext", "concept-expert-parallelism"]}
+{"task": "jaxbench-level1", "kind": "term typo", "query": "paged artention decode kernel", "want": ["tpu-inference-kernels", "vllm-paged-attention-doc", "ragged-paged-attention-paper"]}
+{"task": "jaxbench-level1", "kind": "question typo", "query": "what's the recommmended kernel for ragged paged attention in vLLM on TPU?", "want": ["ragged-paged-attention-paper", "tpu-inference-kernels", "vllm-tpu-inference"]}
+{"task": "jaxbench-level1", "kind": "term typo", "query": "splash attetion sparse mask", "want": ["pallas-sparse", "kernel-class-attention"]}
+{"task": "jaxbench-level1", "kind": "term typo", "query": "pallas dimensino semantics parallel", "want": ["pallas-tpu-details", "concept-megacore"]}
+{"task": "jaxbench-level1", "kind": "question typo", "query": "how do I make a pallas kernel use both TemsorCores on a megacore chip?", "want": ["concept-megacore", "pallas-tpu-details", "pallas-tpu-core-map"]}
+{"task": "jaxbench-level1", "kind": "term typo", "query": "pallas intterpret mode debugging", "want": ["pallas-quickstart", "pallas-validation-xprof"]}
+{"task": "jaxbench-level1", "kind": "term typo", "query": "roofline arithmtic intensity TPU", "want": ["scaling-book-roofline", "xprof-roofline-model", "concept-roofline-analysis"]}
+{"task": "jaxbench-level1", "kind": "question typo", "query": "how do I cmopute whether my kernel is compute bound or memory bound from FLOPs and bytes?", "want": ["scaling-book-roofline", "kernel-class-dense-near-roofline", "concept-roofline-analysis"]}
+{"task": "jaxbench-level1", "kind": "term typo", "query": "conv2d pergormance TPU layout", "want": ["kernel-class-gemm-conv-epilogue", "cloud-tpu-performance-guide"]}
+{"task": "jaxbench-level1", "kind": "question typo", "query": "why is my coonvolution slow on TPU, does channel padding to 128 matter?", "want": ["cloud-tpu-performance-guide", "concept-padding"]}
+{"task": "jaxbench-level1", "kind": "term typo", "query": "pallas reduction acumulator", "want": ["pallas-streaming-reduction", "pallas-matmul"]}
+{"task": "jaxbench-level1", "kind": "question typo", "query": "how do I write a softmax or lyaernorm reduction inside a pallas kernel across grid steps?", "want": ["pallas-streaming-reduction"]}
+{"task": "jaxbench-level1", "kind": "term typo", "query": "jax.jit static argnums revompile", "want": ["jax-jit-compilation"]}
+{"task": "jaxbench-level1", "kind": "question typo", "query": "my jitted function keeps recompilinng every call, how do I find out why?", "want": ["jax-jit-compilation"]}
+{"task": "kernel-set1", "kind": "term typo", "query": "tpu v7 irowood specs", "want": ["hw-tpu-7x", "cloud-tpu-7x", "ironwood-tpu-announcement"]}
+{"task": "kernel-set1", "kind": "question typo", "query": "what is the peak bf16 TFLOPs and HBM bandwidth of the latest TPU generaiton?", "want": ["hw-tpu-7x", "cloud-tpu-7x", "tpu-generation-specs"]}
+{"task": "kernel-set1", "kind": "question typo", "query": "how do I shard a mstmul across all chips on the host with jax?", "want": ["jax-distributed-arrays", "scaling-book-sharding", "concept-sharding-notation", "codebase-jax"]}
+{"task": "kernel-set1", "kind": "term typo", "query": "shard_map collectivve matmul", "want": ["scaling-book-sharding", "jax-distributed-arrays", "kernel-class-cross-chip-collective", "concept-collective-matmul"]}
+{"task": "kernel-set1", "kind": "term typo", "query": "jax sharding mesh partitionspc", "want": ["jax-distributed-arrays", "scaling-book-sharding", "concept-sharding-notation", "codebase-jax"]}
+{"task": "kernel-set1", "kind": "question typo", "query": "how do I overlap all-gather communiaction with compute in a sharded matmul?", "want": ["scaling-book-sharding", "kernel-class-cross-chip-collective", "pallas-distributed", "concept-collective-matmul"]}
+{"task": "tpu-hello-world-xprof", "kind": "term typo", "query": "caprure xprof trace jax", "want": ["xprof-jax", "jax-profiling", "xprof-capture", "codebase-xprof"]}
+{"task": "tpu-hello-world-xprof", "kind": "question typo", "query": "how do I capture a profile of my TPU program and open it in tensoorboard / xprof?", "want": ["xprof-capture", "jax-profiling", "codebase-xprof"]}
+{"task": "tpu-hello-world-xprof", "kind": "term typo", "query": "xprof op profle", "want": ["xprof-hlo-op-stats", "xprof-framework-op-stats"]}
+{"task": "tpu-hello-world-xprof", "kind": "question typo", "query": "how do I read the trace viewer to find what is eating device time in a trainnig step?", "want": ["xprof-trace-viewer"]}
+{"task": "tpu-hello-world-xprof", "kind": "term typo", "query": "MXU utilixation low", "want": ["cloud-tpu-performance-guide", "xprof-overview-page"]}
+{"task": "tpu-hello-world-xprof", "kind": "question typo", "query": "proofile says my step is memory bound, what does that mean and how do I fix it?", "want": ["xprof-roofline-model", "scaling-book-roofline", "playbook-profile-tpu-program", "concept-roofline-analysis"]}
+{"task": "tpu-hello-world-xprof", "kind": "term typo", "query": "HBM memory prfile peak usage", "want": ["xprof-memory-viewer", "jax-device-memory-profiling"]}
+{"task": "tpu-hello-world-xprof", "kind": "question typo", "query": "how do I find out what's taking up HBM and why my prorgam runs out of device memory?", "want": ["xprof-memory-viewer", "jax-device-memory-profiling", "cloud-tpu-troubleshooting"]}
+{"task": "tpu-hello-world-xprof", "kind": "term typo", "query": "RESOURCE_EXHsUSTED HBM OOM", "want": ["xla-error-codes", "cloud-tpu-troubleshooting", "openxla-errors-overview"]}
+{"task": "tpu-hello-world-xprof", "kind": "term typo", "query": "custom kernel LLO proffile", "want": ["xprof-kernel-profiling", "xprof-custom-call"]}
+{"task": "tpu-hello-world-xprof", "kind": "question typo", "query": "xprof doesn't show per-krnel stats for my pallas kernel, what flags do I need?", "want": ["xprof-custom-call", "xprof-kernel-profiling", "xprof-advanced-options"]}
+{"task": "tpu-hello-world-xprof", "kind": "term typo", "query": "step time brekadown input pipeline", "want": ["xprof-overview-page"]}
+{"task": "tpu-hello-world-profiled", "kind": "question typo", "query": "how do I profike a PyTorch model running on TPU?", "want": ["torch-tpu-perf-profiling", "pytorch-profiler-api"]}
+{"task": "tpu-hello-world-profiled", "kind": "term typo", "query": "torch prrofiler TPU trace", "want": ["torch-tpu-perf-profiling", "pytorch-profiler-api"]}
+{"task": "tpu-hello-world", "kind": "question typo", "query": "how do I run a simple PyTrch matmul on TPU and check it matches CPU?", "want": ["torch-tpu-get-started", "torch-tpu-precision-management"]}
+{"task": "tpu-hello-world", "kind": "term typo", "query": "GKE TPU node seelctor topology", "want": ["tpu-on-gke", "gke-tpu-concepts", "wiki-cloud-tpu-deployment"]}
+{"task": "tpu-hello-world", "kind": "question typo", "query": "my TPU pod stays Pending on GKE, what node labels do I need for the accrlerator and topology?", "want": ["tpu-on-gke", "gke-tpu-concepts", "wiki-cloud-tpu-deployment"]}
+{"task": "tpu-hello-world", "kind": "term typo", "query": "Kueeue TPU job queue", "want": ["kueue-overview"]}
+{"task": "tpu-hello-world-cited", "kind": "term typo", "query": "tpu v6e trilium chip spec", "want": ["hw-tpu-v6e", "cloud-tpu-v6e"]}
+{"task": "tpu-hello-world-cited", "kind": "question typo", "query": "how much HBM does a v5e chip have and what is its memory bandwdith?", "want": ["hw-tpu-v5e", "cloud-tpu-v5e", "tpu-generation-specs"]}
+{"task": "hf-onboarding-torchtpu", "kind": "term typo", "query": "XLA comoilation cache persistent", "want": ["torch-tpu-compilation-cache"]}
+{"task": "hf-onboarding-torchtpu", "kind": "question typo", "query": "how do I avoid reccompiling the model every time the server starts on TPU?", "want": ["torch-tpu-compilation-cache"]}
+{"task": "hf-onboarding-torchtpu", "kind": "term typo", "query": "vLLM TPU servng", "want": ["vllm-tpu-inference", "vllm-tpu-project-docs", "gcp-vllm-v6e-tutorial"]}
+{"task": "hf-onboarding-torchtpu", "kind": "question typo", "query": "how do I serve a Hugging Face LLM on TPU with contniuous batching?", "want": ["gcp-vllm-v6e-tutorial", "vllm-tpu-project-docs", "vllm-tpu-inference"]}
+{"task": "hf-onboarding-torchtpu", "kind": "term typo", "query": "KV cache memory edtimate", "want": ["scaling-book-inference", "hf-kv-cache-docs", "concept-kv-cache"]}
+{"task": "hf-onboarding-torchtpu", "kind": "question typo", "query": "how do I esttimate if a model with 32k context fits in TPU HBM at tensor parallel 1?", "want": ["scaling-book-inference", "scaling-book-applied-inference", "concept-kv-cache"]}
+{"task": "hf-onboarding-torchtpu", "kind": "term typo", "query": "TTFT TPOT decode thoughput", "want": ["scaling-book-inference", "scaling-book-applied-inference", "concept-prefill-vs-decode"]}
+{"task": "hf-onboarding-torchtpu", "kind": "question typo", "query": "why is decode throuhgput on TPU limited by memory bandwidth and how to estimate tokens per second?", "want": ["scaling-book-inference", "concept-prefill-vs-decode", "concept-hbm"]}
+{"task": "hf-onboarding-torchtpu", "kind": "question typo", "query": "how do I port a PyTorch traiming loop to run on TPU devices?", "want": ["torch-tpu-get-started", "hf-accelerate-tpu"]}
+{"task": "general", "kind": "term typo", "query": "FSDP TPU traiining", "want": ["fsdp-v2-paper", "torch-tpu-dist-training-101", "maxtext", "concept-fsdp", "kb-torchtitan-concepts-fsdp-sharding"]}
+{"task": "general", "kind": "question typo", "query": "how do I do data paralel plus tensor parallel training on a TPU pod slice?", "want": ["scaling-book-training", "torch-tpu-dist-training-101", "scaling-book-sharding", "playbook-size-training-parallelism", "concept-parallelism-strategies"]}
+{"task": "general", "kind": "term typo", "query": "multi-host TPU jax intiialize", "want": ["jax-multi-process"]}
+{"task": "general", "kind": "term typo", "query": "ICI DCN bandwidth coklectives", "want": ["scaling-book-tpus", "scaling-book-sharding", "cloud-tpu-multislice", "concept-ici", "concept-dcn", "concept-collective-costs", "wiki-cloud-tpu-multislice"]}
+{"task": "general", "kind": "term typo", "query": "int8 quantizattion TPU inference", "want": ["qwix", "aqt", "torch-tpu-custom-pallas-kernel", "concept-quantization"]}
+{"task": "general", "kind": "term typo", "query": "XLA flgs dump HLO", "want": ["openxla-hlo-dumps", "openxla-flags-guidance"]}
+{"task": "general", "kind": "question typo", "query": "how do I dump the optimizde HLO to see what XLA compiled my program into?", "want": ["openxla-hlo-dumps", "concept-hlo"]}
+{"task": "jaxbench-level1", "kind": "question typo", "query": "how do I pick block sizes for a palkas matmul kernel on v6e so tiles fit in VMEM?", "want": ["pallas-matmul", "matmul-pallas-architectures"]}
+{"task": "jaxbench-level1", "kind": "question typo", "query": "what's the minimum tile shape pallas TPU requres for bf16 \u2014 does the last dim have to be a multiple of 128?", "want": ["pallas-tpu-details", "pallas-tpu-reference"]}
+{"task": "jaxbench-level1", "kind": "term typo", "query": "pallas_call grid dmiension_semantics parallel arbitrary", "want": ["pallas-tpu-details"]}
+{"task": "jaxbench-level1", "kind": "question typo", "query": "how does pallas overkap HBM to VMEM copies with compute across grid steps", "want": ["pallas-pipelining"]}
+{"task": "jaxbench-level1", "kind": "term typo", "query": "emit_piipeline pallas tpu", "want": ["pallas-pipelining"]}
+{"task": "jaxbench-level1", "kind": "question typo", "query": "is there a ready-made flash attntion kernel in jax for TPU I can call instead of writing my own?", "want": ["tokamax", "kernel-class-attention"]}
+{"task": "jaxbench-level1", "kind": "question typo", "query": "how do scalar prefetch argmuents work in pallas, e.g. passing page tables into the index map?", "want": ["pallas-sparse", "jax-prefetch-scalar-gridspec"]}
+{"task": "jaxbench-level1", "kind": "question typo", "query": "my pallas kernel fails with \"Mosaic failed to conpile TPU kernel\" \u2014 what shape/layout rules usually cause that?", "want": ["pallas-tpu-details", "pallas-tpu-reference"]}
+{"task": "jaxbench-level1", "kind": "term typo", "query": "jax.lax.raggeed_dot tpu", "want": ["kernel-class-grouped-ragged-indirection"]}
+{"task": "jaxbench-level1", "kind": "question typo", "query": "how do I do a manual async DMA with seaphores inside a pallas TPU kernel?", "want": ["pallas-distributed", "pallas-tpu-details"]}
+{"task": "jaxbench-level1", "kind": "term typo", "query": "splash attention block sizes", "want": ["kernel-class-attention"]}
+{"task": "jaxbench-level1", "kind": "question typo", "query": "does XLA fuse a matmul followed by elwmentwise ops like gelu and bias add on TPU, or should I write a fused kernel?", "want": ["kernel-class-gemm-conv-epilogue"]}
+{"task": "jaxbench-level1", "kind": "question typo", "query": "which conv layout is fastest on TPU, NCHW or NHWC, and does XLA transpoose for me?", "want": ["kernel-class-gemm-conv-epilogue"]}
+{"task": "jaxbench-level1", "kind": "question typo", "query": "where does losumexp/softmax reduction time go on TPU \u2014 VPU or MXU, and how to make it cheaper", "want": ["pallas-streaming-reduction", "concept-vpu"]}
+{"task": "jaxbench-level1", "kind": "term typo", "query": "pallas input_output_ailases", "want": ["pallas-api-reference", "pallas-tpu-reference"]}
+{"task": "jaxbench-level1", "kind": "question typo", "query": "how can I time a jitted jax function corrwctly without measuring dispatch or compile time", "want": ["pallas-validation-xprof"]}
+{"task": "jaxbench-level1", "kind": "term typo", "query": "float32 acccumulation preferred_element_type", "want": ["pallas-matmul"]}
+{"task": "jaxbench-level1", "kind": "question typo", "query": "why is my GQA attetion slower when I broadcast kv heads with jnp.repeat instead of reshaping?", "want": ["kernel-class-attention"]}
+{"task": "kernel-set1", "kind": "term typo", "query": "tpu7x peak bf16 tflpos", "want": ["hw-tpu-7x", "cloud-tpu-7x"]}
+{"task": "kernel-set1", "kind": "question typo", "query": "what's the roofkine for a 8192x8192x28672 bf16 matmul on Ironwood \u2014 compute bound or HBM bound?", "want": ["scaling-book-roofline", "kernel-class-dense-near-roofline", "concept-roofline-analysis", "concept-critical-batch-size"]}
+{"task": "kernel-set1", "kind": "term typo", "query": "ironwood hbm bandwidtth per chip", "want": ["hw-tpu-7x", "cloud-tpu-7x"]}
+{"task": "kernel-set1", "kind": "question typo", "query": "how do I use all the chips on a tpu7x host from one jax proces for a single big matmul", "want": ["jax-distributed-arrays", "scaling-book-sharding", "concept-sharding-notation"]}
+{"task": "kernel-set1", "kind": "question typo", "query": "does Ironwood have two TensroCores per chip and does jax expose them as separate devices?", "want": ["hw-tpu-7x", "cloud-tpu-7x", "concept-megacore"]}
+{"task": "kernel-set1", "kind": "term typo", "query": "gcloud ml diagnosrics xprof gke", "want": ["mldiag-gke", "mldiag-gcloud"]}
+{"task": "xprof-attention", "kind": "question typo", "query": "how do I enable LLO data in an xprof captture \u2014 which LIBTPU_INIT_ARGS flags?", "want": ["xprof-custom-call"]}
+{"task": "xprof-attention", "kind": "term typo", "query": "jax.prfiler.trace log_dir", "want": ["xprof-jax", "jax-profiling", "codebase-xprof"]}
+{"task": "xprof-attention", "kind": "question typo", "query": "how do I find per-device time for just one funtcion in an xprof trace rather than whole-step wall clock?", "want": ["xprof-trace-viewer", "pallas-validation-xprof"]}
+{"task": "xprof-attention", "kind": "term typo", "query": "tpu_cudtom_call trace viewer", "want": ["xprof-custom-call", "xprof-trace-viewer"]}
+{"task": "xprof-attention", "kind": "question typo", "query": "Unknown command line flag error from libtpu when setting proofiler flags, how to fix", "want": ["xprof-custom-call"]}
+{"task": "xprof-attention", "kind": "term typo", "query": "causal mask block skipping flash attntion", "want": ["kernel-class-attention", "flash-attention-paper"]}
+{"task": "xprof-attention", "kind": "question typo", "query": "what block_q / block_kv values work well for pallas flash attention at head_dim 128 on one chip?", "want": ["kernel-class-attention"]}
+{"task": "xprof-attention", "kind": "term typo", "query": "jax named_scope profiler anbotation", "want": ["xprof-jax", "jax-profiling", "playbook-profile-tpu-program"]}
+{"task": "xprof-attention", "kind": "question typo", "query": "can I keep bf16 inputs but compute softmax in fp32 in a fused attenttion kernel without losing speed?", "want": ["kernel-class-attention"]}
+{"task": "tpu-hello-world-xprof", "kind": "term typo", "query": "xprof hbm stack vs heap reservaton", "want": ["xprof-memory-viewer"]}
+{"task": "tpu-hello-world-xprof", "kind": "question typo", "query": "how does xprof decide if a program is compute-bound or memory-bound in the overviwe page?", "want": ["xprof-overview-page", "xprof-roofline-model"]}
+{"task": "tpu-hello-world-xprof", "kind": "term typo", "query": "mxu utiluzation definition xprof", "want": ["xprof-overview-page"]}
+{"task": "tpu-hello-world-xprof", "kind": "question typo", "query": "what does the memory profiile tool show and how do I find which HLO module holds peak memory", "want": ["xprof-memory-viewer"]}
+{"task": "tpu-hello-world-xprof", "kind": "term typo", "query": "op_profle self time", "want": ["xprof-hlo-op-stats"]}
+{"task": "tpu-hello-world-xprof", "kind": "question typo", "query": "why don't FLOPs from custom calls show up in the xprof utiliaztion numbers?", "want": ["xprof-custom-call"]}
+{"task": "tpu-hello-world-xprof", "kind": "term typo", "query": "xprof step time avwrage", "want": ["xprof-overview-page"]}
+{"task": "tpu-hello-world-xprof", "kind": "question typo", "query": "where in xprof can I see the roofline plot for each op and what does operaational intensity mean there", "want": ["xprof-roofline-model"]}
+{"task": "hf-onboarding-torchtpu", "kind": "question typo", "query": "how much HBM do I need to serve a 4B model at 32k context \u2014 weights plus KV cache estimte?", "want": ["scaling-book-inference", "playbook-size-serving-topology", "concept-kv-cache"]}
+{"task": "hf-onboarding-torchtpu", "kind": "term typo", "query": "v6e-1 hbm caapcity", "want": ["hw-tpu-v6e", "cloud-tpu-v6e"]}
+{"task": "hf-onboarding-torchtpu", "kind": "question typo", "query": "how do I persist the XLA conpilation cache in torch_tpu so the server doesn't recompile on restart", "want": ["torch-tpu-compilation-cache"]}
+{"task": "hf-onboarding-torchtpu", "kind": "term typo", "query": "vllm tpu continuouus batching max_num_seqs", "want": ["vllm-engine-args"]}
+{"task": "hf-onboarding-torchtpu", "kind": "term typo", "query": "torch_tpu profler xplane", "want": ["torch-tpu-perf-profiling"]}
+{"task": "hf-onboarding-torchtpu", "kind": "question typo", "query": "why does my torch compile model recmopile for every new sequence length on tpu?", "want": ["torch-compiler-dynamic-shapes", "playbook-static-shapes-and-tracing"]}
+{"task": "hf-onboarding-torchtpu", "kind": "question typo", "query": "decode is memory bandwudth bound \u2014 how do I estimate max tokens/s from HBM bandwidth and model size", "want": ["scaling-book-inference", "concept-prefill-vs-decode", "concept-hbm"]}
+{"task": "tpu-hello-world", "kind": "question typo", "query": "how do I check from inside a container which TPU genneration my process is actually on", "want": ["tpu-on-gke"]}
+{"task": "tpu-hello-world", "kind": "term typo", "query": "TPU_ACCELERAOR_TYPE env var", "want": ["tpu-on-gke"]}
+{"task": "tpu-hello-world", "kind": "question typo", "query": "pod stuck Pending forever on GKE TPU nodSeelector \u2014 what labels are required?", "want": ["tpu-on-gke", "gke-tpu-concepts", "wiki-cloud-tpu-deployment"]}
+{"task": "tpu-hello-world-cited", "kind": "term typo", "query": "tpu v6e trilloum spec sheet", "want": ["hw-tpu-v6e", "cloud-tpu-v6e"]}
+{"task": "tpu-hello-world-cited", "kind": "question typo", "query": "what is the peak bf16 compute, HBM capacity, and HBM bandwiddth of one TPU7x chip?", "want": ["hw-tpu-7x", "cloud-tpu-7x"]}
+{"task": "tpu-hello-world-cited", "kind": "term typo", "query": "cloud.google.com tpu system architeture", "want": ["tpu-system-architecture"]}
+{"task": "tpu-hello-world-cited", "kind": "question typo", "query": "is the published v5p TFLOPS number per chip or per TensorCoer?", "want": ["hw-tpu-v5p", "cloud-tpu-v5p"]}
+{"task": "tpu-hello-world-profiled", "kind": "question typo", "query": "what's the profiler API in torch_tpu to capture an xplane trace \u2014 is it torch_xla.debug.profiler or somethong else?", "want": ["torch-tpu-perf-profiling"]}
+{"task": "tpu-hello-world-profiled", "kind": "term typo", "query": "xprof serveer port 9012", "want": ["xprof-capture"]}
+{"task": "tpu-hello-world-profiled", "kind": "question typo", "query": "matmul on tpu gives max abs diff around 1e-2 vs cpu — is that expected with bf16 default precsion?", "want": ["torch-tpu-precision-management"]}
+{"task": "tpu-hello-world-profiled", "kind": "term typo", "query": "gke tpu profiler sidecar tensroboard", "want": ["mldiag-gke"]}
+{"task": "smoke-check", "kind": "term typo", "query": "vllm tpu tensor_paralkel_size", "want": ["vllm-engine-args"]}
+{"task": "smoke-check", "kind": "question typo", "query": "which tokenizer or arrchitecture features make a HF model incompatible with vLLM on TPU?", "want": ["vllm-tpu-project-docs"]}
+{"task": "smoke-check", "kind": "term typo", "query": "gke kueue queue-name label job susended", "want": ["kueue-overview"]}
+{"task": "general", "kind": "question typo", "query": "why does my jitted function recomplie every step?", "want": ["jax-jit-compilation"]}
+{"task": "general", "kind": "question typo", "query": "what's the differrnce between v5e and v6e in MXU size and HBM per chip", "want": ["hw-tpu-v5e", "cloud-tpu-v5e", "hw-tpu-v6e", "cloud-tpu-v6e"]}
+{"task": "general", "kind": "question typo", "query": "RESOURCE_EXXHAUSTED: XLA:TPU compile permanent error. Ran out of memory in memory space hbm \u2014 what do I try first?", "want": ["openxla-errors-overview", "cloud-tpu-troubleshooting"]}
+{"task": "general", "kind": "question typo", "query": "how many chips per host does a v6e 2x4 topolgy have and what does the topology string mean", "want": ["hw-tpu-v6e", "cloud-tpu-v6e", "gke-plan-tpus", "wiki-cloud-tpu-concepts"]}
+{"task": "general", "kind": "question typo", "query": "how do jax.sharding Mesh and NamdeSharding map onto a multi-host tpu slice", "want": ["jax-multi-process", "jax-distributed-arrays"]}
+{"task": "general", "kind": "question typo", "query": "which libtpu version do I need for a given jax release, and how do I tell if they're mismarched", "want": ["cloud-tpu-runtimes"]}
+{"task": "general", "kind": "question typo", "query": "stuuff is slow on tpu and I don't know why, where do I start", "want": ["cloud-tpu-performance-guide", "scaling-book-profiling", "wiki-cloud-tpu-performance"]}
+{"task": "general", "kind": "question typo", "query": "how to tell if host-to-device transers or input pipeline are stalling the TPU", "want": ["xprof-overview-page", "xprof-trace-viewer"]}
+{"task": "hf-onboarding-torchtpu/baseline", "kind": "term typo", "query": "flsah_attn", "want": ["flash-attention-to-sdpa"]}
+{"task": "hf-onboarding-torchtpu/baseline", "kind": "question typo", "query": "the model impoets flash_attn, what do I replace it with on tpu", "want": ["flash-attention-to-sdpa", "pytorch-sdpa"]}
+{"task": "hf-onboarding-torchtpu/baseline", "kind": "term typo", "query": "xformers memory_efficiennt_attention", "want": ["xformers-to-sdpa", "pytorch-sdpa"]}
+{"task": "hf-onboarding-torchtpu/baseline", "kind": "question typo", "query": "replace slective_scan_cuda and causal_conv1d in a mamba model", "want": ["mamba-ssm-unwiring"]}
+{"task": "hf-onboarding-torchtpu/baseline", "kind": "question typo", "query": "strip @triton.jit kernesl from a model so it runs on tpu", "want": ["triton-to-pytorch-ops", "triton-jit-ops"]}
+{"task": "hf-onboarding-torchtpu/baseline", "kind": "term typo", "query": "apex FysedRMSNorm", "want": ["apex-to-native-normalization", "pytorch-rmsnorm"]}
+{"task": "hf-onboarding-torchtpu/baseline", "kind": "term typo", "query": "deeepspeed FusedAdam", "want": ["deepspeed-ops-unwiring", "pytorch-adamw"]}
+{"task": "hf-onboarding-torchtpu/baseline", "kind": "question typo", "query": "torch.cuda.set_device and torch.cuda.memory_alocated on tpu", "want": ["cuda-api-stripping-and-runtime"]}
+{"task": "hf-onboarding-torchtpu/baseline", "kind": "question typo", "query": "the model loads a custom cuda etxension with load_inline", "want": ["custom-cuda-kernel-unwiring"]}
+{"task": "hf-onboarding-torchtpu/baseline", "kind": "question typo", "query": "trust_remote_code model fails in check_impirts on a cuda-only package", "want": ["huggingface-runtime-compatibility"]}
+{"task": "hf-onboarding-torchtpu/baseline", "kind": "question typo", "query": "replaace the nccl backend with tpu_dist and drop the cuda wheel index", "want": ["playbook-tpu-distributed-and-env-hygiene"]}
+{"task": "hf-onboarding-torchtpu/baseline", "kind": "question typo", "query": "bicubic upsample is not suported on tpu", "want": ["tpu-tensor-layout-and-interp"]}
+{"task": "hf-onboarding-torchtpu/baseline", "kind": "question typo", "query": "pad inputs to buckets so xla stops recmopiling", "want": ["playbook-static-shapes-and-tracing"]}
+{"task": "general", "kind": "question typo", "query": "pick dp, fsdp and tp sizes for trsining on a pod slice", "want": ["playbook-size-training-parallelism", "scaling-book-training", "concept-parallelism-strategies"]}
+{"task": "general", "kind": "question typo", "query": "smalllest slice and batch size to serve a model for decode", "want": ["playbook-size-serving-topology", "scaling-book-applied-inference"]}
+{"task": "general", "kind": "question typo", "query": "walk through an xprof profile and compare it to the rooflne", "want": ["playbook-profile-tpu-program", "scaling-book-profiling"]}
+{"task": "general", "kind": "question typo", "query": "does int8 give a speesup over bf16 on v5p", "want": ["concept-quantization", "hw-tpu-v5p", "cloud-tpu-v5p"]}
+{"task": "jaxbench-level1", "kind": "question typo", "query": "what is vmem and how does it diiffer from hbm", "want": ["concept-vmem", "pallas-tpu-details"]}
+{"task": "hf-onboarding-torchtpu/baseline", "kind": "question typo", "query": "lessons from onoarding many models to torch_tpu", "want": ["analysis-30-model-onboarding-learnings"]}
+{"task": "general", "kind": "question typo", "query": "Is there a minimal JAX LLM research codebase designed so AI agents can run experiments autonomusly?", "want": ["simply-repo"]}
+{"task": "general", "kind": "question typo", "query": "Which JAX library should I use to chain gradient transformatiosn into a custom optimizer?", "want": ["optax-framework"]}
+{"task": "general", "kind": "question typo", "query": "Why does adding a Python float to a bfloat16 JAX array keep bfloat16 instead of upcaating?", "want": ["jax-type-promotion"]}
+{"task": "general", "kind": "question typo", "query": "What's the recommmended Pythonic way to define neural network modules on top of JAX now?", "want": ["flax-framework"]}
+{"task": "general", "kind": "question typo", "query": "Any JAX framework with many LLM architectres plus SFT, DPO and RL trainers and an OpenAI-compatible server?", "want": ["easydel"]}
+{"task": "general", "kind": "question typo", "query": "How do I convret a PyTorch or CuPy tensor into a JAX array without copying?", "want": ["jax-dlpack-ref"]}
+{"task": "general", "kind": "question typo", "query": "Where do I get pretrained weights and an inference notebook for DeepMind's medium-range weather forecasying models?", "want": ["graphcast"]}
+{"task": "general", "kind": "question typo", "query": "Which JAX lax functtion counts the number of 1 bits in each integer element?", "want": ["jax-population-count"]}
+{"task": "general", "kind": "question typo", "query": "Can I run my exiting PyTorch model on TPU through JAX with minimal code changes?", "want": ["torchax"]}
+{"task": "general", "kind": "question typo", "query": "New to JAX: why are arrays immutbale and how do jit, grad and vmap fit together?", "want": ["jax-thinking-in-jax"]}
+{"task": "general", "kind": "question typo", "query": "What fields does each per-rank JSONL event carry when logging spans and scalars during disteibuted training?", "want": ["kb-torchtitan-doc-concepts-structured-trace-logging", "kb-torchtitan-concepts-metrics-and-observability"]}
+{"task": "general", "kind": "question typo", "query": "Where does the peak FLOPS number for MFU come from on TPU, and how are profiler windows scheeduled?", "want": ["kb-torchtitan-concepts-profiling-and-tooling"]}
+{"task": "general", "kind": "question typo", "query": "How do you set up GRPO training with vLLM rollouts sharing the same model defnition as the trainer?", "want": ["kb-torchtitan-doc-concepts-rl-post-training", "kb-torchtitan-doc-concepts-tpu-rl-with-ray"]}
+{"task": "general", "kind": "question typo", "query": "In what order does the trainer build the meta-device model, apply paarllelism, and create optimizer and dataloader?", "want": ["kb-torchtitan-concepts-trainer-lifecycle", "kb-torchtitan-overview"]}
+{"task": "general", "kind": "question typo", "query": "What rules should I follow when declating new config fields, like defaults and naming for counts?", "want": ["kb-torchtitan-doc-concepts-config-system-conventions"]}
+{"task": "general", "kind": "question typo", "query": "What files and functions do I need to add a new model architectuure to the PyTorch-native LLM trainer?", "want": ["kb-torchtitan-doc-concepts-model-registry", "kb-torchtitan-concepts-train-spec-and-model-protocol"]}
+{"task": "general", "kind": "question typo", "query": "How are integration tests run across flag combinatios and loss parity checked in the PyTorch LLM trainer?", "want": ["kb-torchtitan-doc-concepts-testing-strategy"]}
+{"task": "general", "kind": "question typo", "query": "Should torch.compile wrap each trasnformer block before or after FSDP, and how do I debug recompiles?", "want": ["kb-torchtitan-concepts-torch-compile-integration"]}
+{"task": "general", "kind": "question typo", "query": "Example of multi-turn RL where the policy calls a reteieval tool and gets an exact-match reward?", "want": ["kb-torchtitan-doc-concepts-search-r1-tool-use-rl"]}
+{"task": "general", "kind": "question typo", "query": "At a high level, how does the PyTorch-native LLM trainer run on Cloud TPU, compileed blocks versus whole-step graph?", "want": ["kb-torchtitan-overview", "kb-torchtitan-concepts-torchtpu-backend"]}
+{"task": "general", "kind": "question typo", "query": "Is there a pure Flax NNX training path in tochtitan that avoids PyTorch entirely on TPU?", "want": ["kb-torchtitan-doc-concepts-jax-backend"]}
+{"task": "general", "kind": "question typo", "query": "Can I turn on float8 or MXFP8 trainign for linear and MoE expert layers when running on TPU?", "want": ["kb-torchtitan-concepts-quantization", "kb-torchtitan-doc-concepts-float8-training", "kb-torchtitan-doc-concepts-mxfp8-training"]}
+{"task": "general", "kind": "question typo", "query": "Compare the TPU7x traoning recipes: libtpu flags, memory settings and per-core MFU numbers reported.", "want": ["kb-torchtitan-doc-concepts-ironwood-tpu7x-recipes"]}
+{"task": "general", "kind": "question typo", "query": "How does the traced graph trainer do pipeline parallelissm by reusing one microbatch trace per stage?", "want": ["kb-torchtitan-doc-concepts-graph-pp-pipeline-parallel"]}
+{"task": "general", "kind": "question typo", "query": "How do I see which taining phase eats step time per rank and add a custom log backend?", "want": ["kb-torchtitan-concepts-metrics-and-observability", "kb-torchtitan-doc-concepts-structured-trace-logging"]}
+{"task": "general", "kind": "question typo", "query": "How do I hide MoE all-to-all token exchange behind compute by spltiting the batch into two chunks?", "want": ["kb-torchtitan-doc-concepts-ep-overlap-graph-chunking"]}
+{"task": "general", "kind": "question typo", "query": "Which flags enable profiler traces on TPU training runs so I can view them in TensorBpard XProf?", "want": ["kb-torchtitan-doc-concepts-tpu-profiling-tensorboard", "kb-torchtitan-concepts-profiling-and-tooling"]}
+{"task": "general", "kind": "question typo", "query": "is my kernel limiteed by FLOPs or by memory traffic, and how do I tell", "want": ["concept-roofline-analysis", "scaling-book-roofline", "xprof-roofline-model"]}
+{"task": "general", "kind": "term typo", "query": "scped vmem limit flag", "want": ["hw-memory-buffers", "xla-error-codes", "hw-memory-v7x", "hw-memory-v6e", "hw-memory-v5p"]}
+{"task": "general", "kind": "question typo", "query": "what network carries traffic between separtae TPU slices and how slow is it", "want": ["concept-dcn", "scaling-book-tpus"]}
+{"task": "general", "kind": "question typo", "query": "what changes when porting an H100 traiming job over to TPUs", "want": ["concept-gpu-vs-tpu", "scaling-book-gpus", "analysis-30-model-onboarding-learnings"]}
+{"task": "general", "kind": "question typo", "query": "getting a scoped VMEM out of memory error on v7x, what is the compiller limit", "want": ["hw-memory-v7x", "hw-memory-buffers", "xla-error-codes", "torch-tpu-hardware-alignment-vmem"]}
+{"task": "general", "kind": "term typo", "query": "hiding commuication latency", "want": ["concept-compute-communication-overlap", "concept-collective-matmul"]}
+{"task": "general", "kind": "term typo", "query": "mgeatron sharding", "want": ["concept-tensor-parallelism", "scaling-book-training", "megatron-lm-paper"]}
+{"task": "general", "kind": "term typo", "query": "minimym batch compute-bound", "want": ["concept-critical-batch-size", "scaling-book-roofline"]}
+{"task": "general", "kind": "term typo", "query": "layer stage shharding", "want": ["concept-pipeline-parallelism", "scaling-book-training"]}
+{"task": "general", "kind": "question typo", "query": "which TPU generatons have dedicated hardware for embedding lookups and how many per chip", "want": ["concept-sparsecore"]}
+{"task": "general", "kind": "question typo", "query": "estimaet wall-clock training time from model size, tokens and number of chips", "want": ["concept-mfu", "scaling-book-applied-training"]}
+{"task": "general", "kind": "question typo", "query": "help me read the op lines in a compilwd XLA graph to see shapes and layouts", "want": ["concept-hlo", "scaling-book-profiling"]}
+{"task": "general", "kind": "term typo", "query": "v5p sparsecorre count", "want": ["hw-memory-v5p", "concept-sparsecore", "hw-tpu-v5p"]}
+{"task": "general", "kind": "term typo", "query": "8th gen traniing superpod", "want": ["hw-tpu-8t", "tpu-8th-gen"]}
+{"task": "general", "kind": "term typo", "query": "gke tpu tooology", "want": ["wiki-cloud-tpu-concepts", "gke-tpu-concepts", "gke-plan-tpus"]}
+{"task": "general", "kind": "question typo", "query": "where do model weights and tensors live on a TPU chip and why does its bandwiddth matter", "want": ["concept-hbm", "scaling-book-tpus"]}
+{"task": "general", "kind": "term typo", "query": "gloud tpu-vm ssh", "want": ["wiki-cloud-tpu-cli", "gcp-tpu-vm-guide", "wiki-cloud-tpu-vm-lifecycle"]}
+{"task": "general", "kind": "term typo", "query": "cross-slice newtork", "want": ["concept-dcn", "scaling-book-tpus", "wiki-cloud-tpu-multislice"]}
+{"task": "general", "kind": "term typo", "query": "shaed_map vs jit", "want": ["codebase-jax", "scaling-book-jax-stuff", "jax-distributed-arrays"]}
+{"task": "general", "kind": "term typo", "query": "tpu checkkpoint storage", "want": ["wiki-cloud-tpu-storage", "cloud-tpu-storage-options"]}
+{"task": "general", "kind": "question typo", "query": "how many chips and how much pooled HBM are in the new trining TPU superpod", "want": ["hw-tpu-8t", "tpu-8th-gen"]}
+{"task": "general", "kind": "term typo", "query": "flops utilizatipn", "want": ["concept-mfu"]}
+{"task": "general", "kind": "question typo", "query": "compile fails with scoped vmem OOM on Trrillium and Ironwood, what's the usable limit", "want": ["hw-memory-buffers", "hw-memory-v6e", "hw-memory-v7x", "xla-error-codes"]}
+{"task": "general", "kind": "term typo", "query": "tpu core coponents", "want": ["concept-tensorcore", "tpu-system-architecture", "scaling-book-tpus"]}
+{"task": "general", "kind": "term typo", "query": "stopping vs deleting tpu", "want": ["wiki-cloud-tpu-vm-lifecycle", "gcp-tpu-vm-guide"]}
+{"task": "general", "kind": "term typo", "query": "gke tpu nodeselecyor", "want": ["wiki-cloud-tpu-deployment", "tpu-on-gke"]}
+{"task": "general", "kind": "term typo", "query": "compute vs baandwidth bound", "want": ["concept-roofline-analysis", "scaling-book-roofline", "xprof-roofline-model"]}
+{"task": "general", "kind": "question typo", "query": "what per-chip token batch do I need before matuls stop being limited by weight loading", "want": ["concept-critical-batch-size", "scaling-book-roofline"]}
+{"task": "general", "kind": "term typo", "query": "tpu job hang debgu", "want": ["wiki-cloud-tpu-troubleshooting", "cloud-tpu-troubleshooting", "mldiag-workload-monitoring"]}
+{"task": "general", "kind": "question typo", "query": "what does wriring an array as A[I_X, J] mean for how it's split over the device mesh", "want": ["concept-sharding-notation", "scaling-book-sharding"]}
+{"task": "general", "kind": "term typo", "query": "activation remateriallization", "want": ["concept-gradient-checkpointing", "kb-torchtitan-concepts-activation-checkpointing"]}
+{"task": "general", "kind": "term typo", "query": "input pipeline bottleeck", "want": ["wiki-cloud-tpu-performance", "cloud-tpu-performance-guide"]}
+{"task": "general", "kind": "question typo", "query": "count the parameters and FLOPs per token of a transformre from its config", "want": ["concept-transformer-flops-accounting", "scaling-book-transformers"]}
+{"task": "general", "kind": "term typo", "query": "moe shsrding", "want": ["concept-expert-parallelism", "concept-parallelism-strategies"]}
+{"task": "general", "kind": "term typo", "query": "tpu main memorry", "want": ["concept-hbm", "scaling-book-tpus"]}
+{"task": "general", "kind": "term typo", "query": "cstom tpu kernel", "want": ["codebase-pallas", "pallas", "pallas-quickstart"]}
+{"task": "general", "kind": "question typo", "query": "why is serving memory blowing up with long sequences and many concurrnet requests", "want": ["concept-kv-cache", "scaling-book-inference", "vllm-paper"]}
+{"task": "general", "kind": "term typo", "query": "paeam and flop count", "want": ["concept-transformer-flops-accounting", "scaling-book-transformers"]}
+{"task": "general", "kind": "question typo", "query": "which hardware block in a TPU core does the matrix multipplies and what dims should I pad to", "want": ["concept-mxu", "concept-padding"]}
+{"task": "general", "kind": "term typo", "query": "nvdia vs tpu", "want": ["concept-gpu-vs-tpu", "scaling-book-gpus"]}
+{"task": "general", "kind": "term typo", "query": "marrix unit", "want": ["concept-mxu", "scaling-book-tpus"]}
+{"task": "general", "kind": "term typo", "query": "overlap alllgather with matmul", "want": ["concept-collective-matmul", "scaling-book-jax-stuff"]}
+{"task": "general", "kind": "question typo", "query": "where should I keep datasets and checkoints for a multi-host TPU VM, disks or buckets", "want": ["wiki-cloud-tpu-storage", "cloud-tpu-storage-options"]}
+{"task": "general", "kind": "question typo", "query": "general tips to speed up a slow TPU traiinng job, padding shapes and feeding data", "want": ["wiki-cloud-tpu-performance", "cloud-tpu-performance-guide"]}
+{"task": "general", "kind": "term typo", "query": "mac grid dstaflow", "want": ["concept-systolic-array", "scaling-book-tpus"]}
+{"task": "general", "kind": "question typo", "query": "can I hide the gather of sharded weights behind the matrix multiplly itself", "want": ["concept-collective-matmul", "scaling-book-jax-stuff"]}
+{"task": "general", "kind": "question typo", "query": "running one training job across several TPU slices connectd over the data center network", "want": ["wiki-cloud-tpu-multislice", "cloud-tpu-multislice"]}
+{"task": "general", "kind": "question typo", "query": "what's the gcloud command to ssh into all workers of a multi-host TPU VM", "want": ["wiki-cloud-tpu-cli", "gcp-tpu-vm-guide"]}
+{"task": "general", "kind": "question typo", "query": "does stipping a TPU VM keep my data or should I delete it, and how do ssh keys persist", "want": ["wiki-cloud-tpu-vm-lifecycle", "gcp-tpu-vm-guide"]}
+{"task": "general", "kind": "question typo", "query": "what's the bandwidth between the CPU host and the TPU chips when offfloading data", "want": ["concept-pcie", "scaling-book-tpus"]}
+{"task": "general", "kind": "term typo", "query": "chip interconnct torus", "want": ["concept-ici", "scaling-book-tpus"]}
+{"task": "general", "kind": "term typo", "query": "jax profilre trace", "want": ["codebase-xprof", "xprof-jax", "jax-profiling"]}
+{"task": "general", "kind": "question typo", "query": "what's the usabke scoped VMEM budget on a v5e chip for a kernel", "want": ["hw-memory-v5e"]}
+{"task": "general", "kind": "question typo", "query": "how many SparseCorees and SIMD lanes does a v5p chip have and its VMEM limit", "want": ["hw-memory-v5p"]}
+{"task": "general", "kind": "term typo", "query": "embedding acceerator", "want": ["concept-sparsecore", "openxla-sparsecore"]}
+{"task": "general", "kind": "term typo", "query": "named axis shrading", "want": ["concept-sharding-notation", "scaling-book-sharding"]}
+{"task": "general", "kind": "term typo", "query": "choosimg sharding strategy", "want": ["concept-parallelism-strategies", "scaling-book-training", "playbook-size-training-parallelism"]}
+{"task": "general", "kind": "question typo", "query": "where do I start writinng my own kernel for TPU when XLA codegen isn't fast enough", "want": ["codebase-pallas", "pallas", "pallas-quickstart"]}
+{"task": "general", "kind": "question typo", "query": "splitting the feedforward weights across chips, when does the activation commuication become the bottleneck", "want": ["concept-tensor-parallelism", "scaling-book-training"]}
+{"task": "general", "kind": "term typo", "query": "v7x E1001 erorr", "want": ["hw-memory-v7x", "xla-error-codes", "hw-memory-buffers"]}
+{"task": "general", "kind": "question typo", "query": "What exactly do XLA ops like DotGenersl, Gather or AllReduce compute, operand by operand?", "want": ["openxla-operation-semantics", "stablehlo-spec"]}
+{"task": "general", "kind": "question typo", "query": "What are the stages of the XLA commpilation pipeline from HLO to target-specific executable?", "want": ["openxla-architecture"]}
+{"task": "general", "kind": "question typo", "query": "How do I tune embedding table stacking and limits for SparseCore perforance on TPU?", "want": ["openxla-sparsecore"]}
+{"task": "general", "kind": "question typo", "query": "What compiler infrastrucutre lets me define custom dialects and reusable IR for domain-specific compilers?", "want": ["mlir"]}
+{"task": "general", "kind": "question typo", "query": "Which command-line tools let me rerun, optimize, or isolate a dumped HLO module for drbugging?", "want": ["openxla-tools"]}
+{"task": "general", "kind": "question typo", "query": "How does XLA:GPU lower fusionns to LLVM IR when not using Triton or library calls?", "want": ["openxla-emitters"]}
+{"task": "general", "kind": "question typo", "query": "How are asynchonous HLO instructions represented with start, update and done ops?", "want": ["openxla-async-ops"]}
+{"task": "general", "kind": "question typo", "query": "Why are TPU arrays padded to 8x128 tiles and how is the phsyical memory layout computed?", "want": ["openxla-tiled-layout", "concept-padding"]}
+{"task": "general", "kind": "question typo", "query": "Where is the formal definition of each StableHLO op's semantics, types and consrraints?", "want": ["stablehlo-spec"]}
+{"task": "general", "kind": "question typo", "query": "How should C++ functioons return either a value or an error using StatusOr?", "want": ["absl-status"]}
+{"task": "general", "kind": "question typo", "query": "How can I make an XLA program reuse an input buffer for its output via dontion?", "want": ["openxla-aliasing"]}
+{"task": "general", "kind": "question typo", "query": "How can I shard attentin across devices to train with million-token contexts in JAX?", "want": ["ringattention"]}
+{"task": "general", "kind": "question typo", "query": "I want to train Stable Diffsuion or Flux in JAX on a TPU pod; what reference code exists?", "want": ["maxdiffusion"]}
+{"task": "general", "kind": "question typo", "query": "Is there a JAX library for running fully homomorohic encryption workloads on TPUs?", "want": ["jaxite"]}
+{"task": "general", "kind": "question typo", "query": "Where are the open weights and JAX sampling examples for the Griffin-based recuurrent Gemma model?", "want": ["recurrentgemma"]}
+{"task": "general", "kind": "question typo", "query": "I'm hitting a mesh size asserion; how do dp_shard, tp, cp, ep degrees map to device mesh axes?", "want": ["kb-torchtitan-concepts-parallel-dims-and-mesh"]}
+{"task": "general", "kind": "question typo", "query": "When fine-tuning with low-rank adapters on TPU, what gets frozen and what lands in checkpoitns and optimizer state?", "want": ["kb-torchtitan-concepts-lora"]}
+{"task": "general", "kind": "question typo", "query": "Where are the tested xpk launch commsnds for v6e and TPU7x, and how do I adapt one to my model?", "want": ["kb-torchtitan-doc-concepts-tpu-training-recipes", "torchtitan-tpu-recipes"]}
+{"task": "general", "kind": "question typo", "query": "How does a sharding plan map to DTensor placements or explicit collectivves, and what do the spmd_backend modes do?", "want": ["kb-torchtitan-concepts-dtensor-and-sharding-types"]}
+{"task": "general", "kind": "question typo", "query": "How are docments packed into fixed-length sequences and sharded per data-parallel rank with resumable loader state?", "want": ["kb-torchtitan-concepts-dataloading-and-tokenizer"]}
+{"task": "general", "kind": "question typo", "query": "Why does the trainer disable FSDP2 gradient division, and how are tied embeddings and MoE experts sharded?", "want": ["kb-torchtitan-concepts-fsdp-sharding"]}
+{"task": "general", "kind": "question typo", "query": "How can a 256K-token sequence length fit on a single small Ironwood slice without context paralleliam?", "want": ["kb-torchtitan-doc-concepts-long-context-training-recipe"]}
+{"task": "general", "kind": "question typo", "query": "Can an LLM agent iterattively edit compiler graph passes and keep only speedups with bitwise-identical numerics?", "want": ["kb-torchtitan-doc-concepts-graph-trainer-autoresearch"]}
+{"task": "general", "kind": "question typo", "query": "on v6e how much VMEM can XLA use and how are bf16 arays padded into tiles", "want": ["hw-memory-v6e", "hw-memory-buffers"]}
+{"task": "general", "kind": "question typo", "query": "single host versus multi host TPU slices on Kuebrnetes, how do I pick a topology", "want": ["wiki-cloud-tpu-concepts", "gke-tpu-concepts", "gke-plan-tpus"]}
+{"task": "general", "kind": "question typo", "query": "one worker in my TPU job seems stuck, which metrivs and logs should I check", "want": ["wiki-cloud-tpu-troubleshooting", "cloud-tpu-troubleshooting"]}
+{"task": "general", "kind": "question typo", "query": "when does replicatinng weights on every chip and splitting the batch stop scaling", "want": ["concept-data-parallelism", "scaling-book-training"]}
+{"task": "general", "kind": "question typo", "query": "when should I use explicit sharding mode versus auto partitionig in JAX", "want": ["codebase-jax", "jax-distributed-arrays", "scaling-book-jax-stuff"]}
+{"task": "general", "kind": "question typo", "query": "do TPU chips talk directly to every other chip in the pod or only negihbors", "want": ["concept-ici", "scaling-book-tpus"]}
+{"task": "general", "kind": "question typo", "query": "what pieces make up the comoute core of a TPU chip", "want": ["concept-tensorcore", "tpu-system-architecture", "scaling-book-tpus"]}
+{"task": "general", "kind": "question typo", "query": "why is proocessing the prompt compute bound but token generation memory bound", "want": ["concept-prefill-vs-decode", "scaling-book-inference"]}
+{"task": "general", "kind": "question typo", "query": "is step time the sum of compute and data transfr, or do they run in parallel on TPU", "want": ["concept-compute-communication-overlap", "scaling-book-roofline", "concept-roofline-analysis"]}
+{"task": "general", "kind": "term typo", "query": "allerduce cost", "want": ["concept-collective-costs", "scaling-book-sharding"]}
+{"task": "general", "kind": "term typo", "query": "attebtion cache memory", "want": ["concept-kv-cache", "scaling-book-inference"]}
+{"task": "general", "kind": "term typo", "query": "infeerence phases", "want": ["concept-prefill-vs-decode", "scaling-book-inference"]}
+{"task": "general", "kind": "term typo", "query": "pure dp memoy limit", "want": ["concept-data-parallelism", "scaling-book-training"]}
+{"task": "general", "kind": "term typo", "query": "8th gen infreence chip", "want": ["hw-tpu-8i", "tpu-8th-gen"]}
+{"task": "general", "kind": "term typo", "query": "queued resoueces", "want": ["wiki-cloud-tpu-capacity", "cloud-tpu-queued-resources"]}
+{"task": "general", "kind": "question typo", "query": "what selectors, tolerationns and chip limits go in a pod spec to schedule on TPU nodes", "want": ["wiki-cloud-tpu-deployment", "tpu-on-gke"]}
+{"task": "general", "kind": "question typo", "query": "how much on-chip SRAM and HBM does the new eighth-gen infeence TPU have", "want": ["hw-tpu-8i", "tpu-8th-gen"]}
+{"task": "general", "kind": "question typo", "query": "should I use FSDP, tensor, pipeline or data parallel for my transforemr on a pod", "want": ["concept-parallelism-strategies", "scaling-book-training", "playbook-size-training-parallelism", "torch-tpu-parallelism-decision-tree"]}
+{"task": "general", "kind": "question typo", "query": "shardong mixture of experts layers across chips, what all-to-all traffic should I expect", "want": ["concept-expert-parallelism", "concept-collective-costs"]}
+{"task": "general", "kind": "question typo", "query": "does an all-gather get more exxpensive when I add more chips to the mesh axis", "want": ["concept-collective-costs", "scaling-book-sharding"]}
+{"task": "general", "kind": "question typo", "query": "capture a profile of my JAX program and view the per-core op timeline in tensorboad", "want": ["codebase-xprof", "xprof-jax", "scaling-book-profiling"]}
+{"task": "general", "kind": "term typo", "query": "tirllium bf16 tiling", "want": ["hw-memory-v6e", "hw-memory-buffers"]}
+{"task": "general", "kind": "question typo", "query": "is solitting layers into stages across devices worth it on TPU like it is on GPU clusters", "want": ["concept-pipeline-parallelism", "scaling-book-training"]}
+{"task": "general", "kind": "question typo", "query": "spot versus reserveed versus on-demand TPUs, and how do queued requests progress", "want": ["wiki-cloud-tpu-capacity", "cloud-tpu-queued-resources", "cloud-tpu-spot"]}
+{"task": "general", "kind": "term typo", "query": "multi-slice trainig", "want": ["wiki-cloud-tpu-multislice", "cloud-tpu-multislice"]}
+{"task": "general", "kind": "question typo", "query": "my training OOMs from saved atcivations, can I recompute them in the backward pass instead", "want": ["concept-gradient-checkpointing", "kb-torchtitan-concepts-activation-checkpointing"]}
+{"task": "general", "kind": "question typo", "query": "how does a grid of multiply-accumulaye cells pass operands along to do a matmul", "want": ["concept-systolic-array", "scaling-book-tpus"]}
+{"task": "general", "kind": "question typo", "query": "What is XLA and which frameeworks and hardware does this ML compiler support?", "want": ["openxla-xla", "openxla-architecture"]}
+{"task": "general", "kind": "question typo", "query": "How do I build StableLO from source and use its Python bindings?", "want": ["stablehlo"]}
+{"task": "general", "kind": "question typo", "query": "My XLA GPU results vary between runs; how do I get reprodcuible outputs despite autotuning?", "want": ["openxla-determinism"]}
+{"task": "general", "kind": "question typo", "query": "What do gRPC status codes like DEADLINE_EXCEEDED or UNsVAILABLE mean and how are rich error details sent?", "want": ["grpc-error-handling"]}
+{"task": "general", "kind": "question typo", "query": "How does the compiler infer full partitioninng from a few user sharding annotations on a device mesh?", "want": ["gspmd-paper", "openxla-shardy"]}

@@ -1,0 +1,178 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT062 from the "Kernel optimization" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat062
+    prompt: |-
+      Optimize our beam search update for TPU7x using JAX Pallas. Preserve its signature, output order, shapes, and dtypes. Match integer and Boolean outputs exactly and floating outputs at rtol=0,atol=1e-4.
+      from types import SimpleNamespace
+      import jax
+      import jax.numpy as jnp
+      import numpy as np
+      from jax import lax
+      def get_inputs():
+      import jax
+      import jax.numpy as jnp
+      keys = jax.random.split(jax.random.key(42),5)
+      batch_size, num_beams, vocab_size, max_length = 32,8,50265,256
+      cur_len = jnp.array(128, dtype=jnp.int32)
+      logits = 2.0 * jax.random.normal(keys[0], (batch_size, num_beams, vocab_size), dtype=jnp.float32)
+      eos_logits = jax.random.uniform(keys[1], (batch_size, num_beams), minval=-2.0, maxval=10.0)
+      logits = logits.at[:, :,2].set(eos_logits)
+      running_scores = -80.0 - jnp.sort(jax.random.uniform(keys[2], (batch_size, num_beams), minval=0.0, maxval=8.0), axis=-1)
+      running_sequences = jax.random.randint(keys[3], (batch_size, num_beams, max_length), 3, vocab_size, dtype=jnp.int32)
+      positions = jnp.arange(max_length)
+      running_sequences = jnp.where(positions < cur_len, running_sequences, 1)
+      finished_counts = jnp.arange(batch_size) % (num_beams + 1)
+      is_sent_finished = jnp.arange(num_beams)[None, :] < finished_counts[:, None]
+      sequences = running_sequences.at[:, :,96].set(2)
+      sequences = jnp.where(positions <= 96, sequences, 1)
+      sequences = jnp.where(is_sent_finished[:, :, None], sequences,1)
+      scores = -jnp.sort(jax.random.uniform(keys[4], (batch_size, num_beams), minval=0.6, maxval=1.5), axis=-1)
+      scores = jnp.where(is_sent_finished,scores,jnp.float32(-1.0e7))
+      return [logits, running_sequences,running_scores,sequences,scores,is_sent_finished, cur_len],[]
+      def flatten_beam_dim(tensor):
+      """Flattens the first two dimensions of a non-scalar array."""
+      # ignore scalars (e.g. cache index)
+      if tensor.ndim == 0:
+      return tensor
+      return tensor.reshape((tensor.shape[0] * tensor.shape[1],) + tensor.shape[2:])
+      def unflatten_beam_dim(tensor, batch_size, num_beams):
+      """Unflattens the first, flat batch*beam dimension of a non-scalar array."""
+      # ignore scalars (e.g. cache index)
+      if tensor.ndim == 0:
+      return tensor
+      return tensor.reshape((batch_size, num_beams) + tensor.shape[1:])
+      def gather_beams(nested, beam_indices, batch_size, new_num_beams):
+      """
+      Gathers the beam slices indexed by beam_indices into new beam array.
+      """
+      batch_indices = jnp.reshape(
+      jnp.arange(batch_size * new_num_beams) // new_num_beams, (batch_size, new_num_beams)
+      )
+      def gather_fn(tensor):
+          # ignore scalars (e.g. cache index)
+          if tensor.ndim == 0:
+              return tensor
+          else:
+              return tensor[batch_indices, beam_indices]
+
+      return jax.tree_util.tree_map(gather_fn, nested)
+      def logits_processor(input_ids, scores, cur_len):
+      return scores
+      def computation(logits, running_sequences,running_scores,sequences,scores,is_sent_finished, cur_len):
+      batch_size, num_beams, _ = logits.shape
+      eos_token_id = jnp.int32(2)
+      decoder_prompt_len = 32
+      length_penalty = 1.0
+      early_stopping = True
+      state = SimpleNamespace(running_sequences = running_sequences, running_scores = running_scores, sequences = sequences, scores = scores, is_sent_finished = is_sent_finished, cur_len = cur_len)
+      log_probs = jax.nn.log_softmax(logits)
+      log_probs = logits_processor(
+      flatten_beam_dim(state.running_sequences), flatten_beam_dim(log_probs), state.cur_len
+      )
+      log_probs = unflatten_beam_dim(log_probs, batch_size, num_beams)
+      log_probs = log_probs + jnp.expand_dims(state.running_scores, axis=2)
+      vocab_size = log_probs.shape[2]
+      log_probs = log_probs.reshape((batch_size, num_beams * vocab_size))
+      3. Retrieve top-K
+      Each item in batch has num_beams * vocab_size candidate sequences.
+      For each item, get the top 2*k candidates with the highest log-
+      probabilities. We gather the top 2*K beams here so that even if the best
+      K sequences reach EOS simultaneously, we have another K sequences
+      remaining to continue the live beam search.
+      Gather the top 2*K scores from all beams.
+      Gather 2*k top beams.
+      Recover the beam index by floor division.
+      Recover token id by modulo division and expand Id array for broadcasting.
+      Update sequences for the 2*K top-k new sequences.
+      beams_to_keep = 2 * num_beams
+      topk_log_probs, topk_indices = lax.top_k(log_probs, k=beams_to_keep)
+      topk_beam_indices = topk_indices // vocab_size
+      topk_running_sequences = gather_beams(
+      state.running_sequences, topk_beam_indices, batch_size, beams_to_keep
+      )
+      topk_ids = jnp.expand_dims(topk_indices % vocab_size, axis=2)
+      topk_sequences = lax.dynamic_update_slice(topk_running_sequences, topk_ids, (0, 0, state.cur_len))
+      4. Check which sequences have ended
+      Update current sequences:
+      Did any of these sequences reach an end marker?
+      To prevent these just finished sequences from being added to the current sequences
+      set of active beam search sequences, set their log probs to a very large
+      negative value.
+      did_topk_just_finished = topk_sequences[:, :, state.cur_len] == eos_token_id
+      running_topk_log_probs = topk_log_probs + did_topk_just_finished * np.array(-1.0e7)
+      5. Get running sequences scores for next
+      Determine the top k beam indices (from top 2*k beams) from log probs
+      and gather top k beams (from top 2*k beams).
+      next_topk_indices = lax.top_k(running_topk_log_probs, k=num_beams)[1]
+      next_running_sequences, next_running_scores = gather_beams(
+      [topk_sequences, running_topk_log_probs], next_topk_indices, batch_size, num_beams
+      )
+      6. Process topk logits
+      Further process log probs:
+      - add length penalty
+      - make sure no scores can be added anymore if beam is full
+      - make sure still running sequences cannot be chosen as finalized beam
+      topk_log_probs = topk_log_probs / ((state.cur_len + 1 - decoder_prompt_len) ** length_penalty)
+      beams_in_batch_are_full = jnp.broadcast_to(
+      state.is_sent_finished.all(axis=-1, keepdims=True), did_topk_just_finished.shape
+      ) & (early_stopping is True)
+      add_penalty = ~did_topk_just_finished | beams_in_batch_are_full
+      topk_log_probs += add_penalty * np.array(-1.0e7)
+      7. Get scores, sequences, is sentence finished for next.
+      Combine sequences, scores, and flags along the beam dimension and compare
+      new finished sequence scores to existing finished scores and select the
+      best from the new set of beams
+      merged_sequences = jnp.concatenate([state.sequences, topk_sequences], axis=1)
+      merged_scores = jnp.concatenate([state.scores, topk_log_probs], axis=1)
+      merged_is_sent_finished = jnp.concatenate([state.is_sent_finished, did_topk_just_finished], axis=1)
+      topk_merged_indices = lax.top_k(merged_scores, k=num_beams)[1]
+      next_sequences, next_scores, next_is_sent_finished = gather_beams(
+      [merged_sequences, merged_scores, merged_is_sent_finished], topk_merged_indices, batch_size, num_beams
+      )
+      return (next_running_sequences, next_running_scores,next_sequences, next_scores, next_is_sent_finished)
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT062
+      category: Kernel optimization
+      sub_category: Reductions and normalisation
+      difficulty: Hard
+      has_code: 'Yes'
+      baseline_result: Stumped
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        The expected TPU7x Pallas implementation computes stable FP32 normalization over all 50,265 tokens per beam and uses hierarchical top-16 selection with valid TPU tiles to reduce intermediate memory traffic. It preserves reference ordering and tie-breaking, EOS masking, token insertion at runtime cur_len, length normalization, and the selection and merging of eight running and finished beams with early stopping. It retains all seven inputs and returns running sequences/scores, finished sequences/scores, and finished flags in the original order, with INT32 sequences (32,8,256), FP32 scores (32,8), and Boolean flags (32,8). It compiles and executes on TPU7x, matches integer and Boolean outputs exactly and floating outputs at rtol=0, atol=1e-4, and delivers a meaningful latency improvement over the compiled JAX reference.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        The model’s optimization fails TPU block-shape validation: its (1,1,50265) block for logits shaped (32,8,50265) has a beam extent of 1, which is neither divisible by 8 nor equal to the full beam dimension of 8. The (1,1) block for running_scores shaped (32,8) also violates both trailing-dimension requirements, while both candidate output blocks (1,1,16) repeat the invalid beam extent. The trailing extends of 50265 and 16 are permitted because they match their respective full array dimensions. JAX raises a ValueError before execution, so TPU correctness of all five outputs and speedup could not be evaluated.
+      weight: 0.5

@@ -1,0 +1,58 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT014 from the "TPU Knowledge Q&A" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat014
+    prompt: I am scaling my transformer's sequence length to 128k on my TPU cluster.
+      The model weights are fully sharded and easily fit in memory, but I get an immediate
+      HBM OutOfMemory error the moment the backward pass starts. If my weights fit,
+      what exactly is consuming all the memory, and what technique should I use to
+      prevent it?
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT014
+      category: TPU Knowledge Q&A
+      sub_category: Transformer cost modelling
+      difficulty: Moderate
+      has_code: 'No'
+      baseline_result: Partially Solved
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        The correct answer diagnoses O(n^2) activation bloat and recommends activation checkpointing but it should find the correct Hardware constraints as well, otherwise the solved generated code could leverage a higher memory bandwidth than available on the system. The model can be at risk of generating a sharding or memory strategy that has the potential of leveraging a higher memory footprint than physically available on the system. The actual constraints are as follow:
+        TPU v4: 32 GB of HBM per chip.
+        TPU v5e: 16 GB of HBM per chip.
+        TPU v5p: 95 GB of HBM per chip.
+        TPU v6e (Trillium): 32 GB of HBM per chip.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        The model correctly diagnosed activation bloat and recommended checkpointing, but hallucinated fatal TPU HBM specs (claimed v5e has 32GB, v5p has 64GB, v6e has 64GB).
+      weight: 0.5

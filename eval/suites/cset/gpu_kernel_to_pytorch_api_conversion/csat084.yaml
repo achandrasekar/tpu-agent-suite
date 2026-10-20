@@ -1,0 +1,78 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT084 from the "GPU Kernel to PyTorch API conversion" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat084
+    prompt: |-
+      We are writing a TorchTPU Pallas custom kernel (targeting TPU v6e in bf16) to perform a fused SwiGLU operation.
+
+      Our input tensor `x` is shape `(4, 1000, 768)`. We must tile the sequence dimension (1000) using a strict TPU-aligned block size of 128. This means we have 8 blocks (1000 // 128 = 7.81 -> 8 grids), but the final block hits a ragged boundary (8 * 128 = 1024 > 1000).
+
+      Crucially, we absolutely cannot pad the `x` tensor in HBM before calling `pallas_call`, because `x` is a locked view from our distributed Ring-Attention ring-buffer, and padding it would trigger a pipeline-destroying copy.
+
+      Here is our Pallas setup:
+
+      ```python
+      import jax
+      import jax.numpy as jnp
+      from jax.experimental import pallas as pl
+      import torch
+      from torch_xla.experimental.pallas import pallas_call, BlockSpec
+
+      def swiglu_kernel(x_ref, o_ref):
+          # x_ref: (1, 128, 768) in VMEM
+          o_ref[...] = jax.nn.silu(x_ref[...]) * x_ref[...]
+
+      def run_swiglu(x: torch.Tensor):
+          # x is (4, 1000, 768) in bfloat16
+          return pallas_call(
+              swiglu_kernel,
+              out_shape=torch.empty_like(x),
+              in_specs=[BlockSpec(lambda b, i: (b, i * 128, 0), (1, 128, 768))],
+              out_specs=[BlockSpec(lambda b, i: (b, i * 128, 0), (1, 128, 768))],
+              grid=(4, 8) # 8 blocks of 128 covers the 1000 dimension
+          )(x)
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT084
+      category: GPU Kernel to PyTorch API conversion
+      sub_category: Pallas API misuse
+      difficulty: Hard
+      has_code: 'Yes'
+      baseline_result: Stumped
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        The model must recognize that Mosaic TPU DMA descriptors are strictly static and cannot dynamically pad out-of-bounds HBM reads into VMEM. It must reject the idea that Pallas automatically handles ragged boundaries or performs hardware write-clipping on unpadded tensors. The model should explain both pl.Blocked() and pl.Element() indexing modes to help implement true element coordinate striding. The idiomatic fix is to use pl.Element() and clamp the block index map algebraically (e.g., lambda b, i: (b, jnp.minimum(i * 128, 1000 - 128), 0)) so the final block reads and writes a valid overlapping chunk of memory, safely leveraging the idempotent nature of the element-wise SwiGLU operation and preventing silent data corruption in the Ring-Attention buffer.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        Gemini 3.7 Flash was Stumped. While it correctly noted that the default index_map uses block coordinates (pl.Blocked), it failed to explain that pl.Element must be used to achieve arbitrary element offset shifts. First, it hallucinated a hardware DMA capability, falsely claiming that the TPU v6e automatically detects ragged boundaries on unpadded HBM allocations, virtually pads VMEM, and clips HBM writes. Second, it caused Silent Data Corruption: on raw views carved from contiguous Ring-Attention buffers, fixed-stride DMA stores past the 1000-element boundary will blindly overwrite adjacent tokens, causing silent numerical divergence that destroys distributed training. Finally, its suggested fix (lambda b, i: (b, i, 0)) is an Incomplete Ragged Boundary implementation, as the final tile still executes a 128-element DMA transfer over a 104-element remaining window. It should have applied non-changing Clamped Slicing using pl.Element.
+      weight: 0.5

@@ -1,0 +1,1 @@
+Answer this question about `kernel-class-attention`, grounded in the TPU documentation, passing it exactly as written: "On TPU v6e, what is the smallest causal diagonal subtile size the attention kernel class allows?" Answer clearly, citing any references you can for grounding. Drop a JSON at `/logs/artifacts/answer.json` with keys `answer` and `reference`, for scoring.

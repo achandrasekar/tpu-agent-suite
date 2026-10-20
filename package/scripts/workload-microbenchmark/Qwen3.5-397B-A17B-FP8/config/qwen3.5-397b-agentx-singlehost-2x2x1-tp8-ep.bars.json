@@ -1,0 +1,300 @@
+{
+ "_what": "selftest bars: `cli.py selftest` re-derives from the snapshot and checks",
+ "snapshot": "Qwen3.5-397B-A17B-FP8/config/qwen3.5-397b-agentx-singlehost-2x2x1-tp8-ep.source.json",
+ "model_dir": "Qwen3.5-397B-A17B-FP8",
+ "cases": [
+  {
+   "overrides": {},
+   "expect": {
+    "feasibility.feasible": {
+     "eq": true
+    },
+    "facts.layer_kinds": {
+     "eq": {
+      "gdn": 45,
+      "attn": 15
+     }
+    },
+    "facts.kv_bytes_per_token": {
+     "eq": 15360
+    },
+    "cells.counts.N_A_prefill_chunks": {
+     "eq": 1604
+    },
+    "kernels.gdn": {
+     "eq": "fused_conv1d_gdn (kernels/gdn/v3)"
+    },
+    "kernels.attention": {
+     "eq": "ragged paged attention (CUSTOM)"
+    },
+    "kernels.moe": {
+     "eq": "gmm_sparsecore"
+    },
+    "kernels.linear": {
+     "eq": "per_channel"
+    },
+    "per_rank.q_heads_projected": {
+     "eq": 4
+    },
+    "per_rank.kv_divisor": {
+     "eq": 1
+    },
+    "per_rank.cache_block_tokens": {
+     "eq": 1152
+    },
+    "per_rank.experts_per_rank": {
+     "eq": 64
+    },
+    "per_rank.kv_bytes_per_token_per_rank": {
+     "eq": 7680.0
+    },
+    "per_rank.shared_expert_ffn_per_rank": {
+     "eq": 128
+    },
+    "per_rank.kv_pool_tokens": {
+     "eq": 4617186
+    },
+    "per_rank.kv_pool_tokens_per_rank": {
+     "eq": 4617186
+    },
+    "per_rank.pages_per_rank": {
+     "eq": 4007
+    },
+    "per_rank.attn_kv_heads_per_rank": {
+     "eq": 1
+    },
+    "per_rank.gdn_k_heads_per_rank": {
+     "eq": 2
+    },
+    "per_rank.gdn_v_heads_per_rank": {
+     "eq": 8
+    },
+    "per_rank.gdn_state_bytes_per_seq_per_layer_per_rank": {
+     "eq": 542720
+    },
+    "per_rank.kv_bytes_per_token_per_rank_gqa": {
+     "eq": 7680.0
+    },
+    "cells.recompute.model_over_server": {
+     "between": [
+      0.97,
+      1.03
+     ]
+    }
+   }
+  }
+ ],
+ "twin": {
+  "twin_world": 8,
+  "expect": {
+   "twin.hf_overrides": {
+    "eq": {
+     "text_config": {
+      "num_hidden_layers": 2,
+      "layer_types": [
+       "linear_attention",
+       "full_attention"
+      ]
+     },
+     "quantization_config": {
+      "quant_method": "fp8",
+      "activation_scheme": "dynamic",
+      "weight_per_tensor": false,
+      "act_per_tensor": false,
+      "weight_block_size": [
+       128,
+       128
+      ],
+      "modules_to_not_convert": [
+       "lm_head",
+       "model.language_model.embed_tokens",
+       "model.language_model.layers.0.linear_attn.conv1d",
+       "model.language_model.layers.0.linear_attn.in_proj_a",
+       "model.language_model.layers.0.linear_attn.in_proj_b",
+       "model.language_model.layers.0.mlp.gate",
+       "model.language_model.layers.0.mlp.shared_expert_gate",
+       "model.language_model.layers.1.mlp.gate",
+       "model.language_model.layers.1.mlp.shared_expert_gate",
+       "model.visual.blocks.0.attn.proj",
+       "model.visual.blocks.0.attn.qkv",
+       "model.visual.blocks.0.mlp.linear_fc1",
+       "model.visual.blocks.0.mlp.linear_fc2",
+       "model.visual.blocks.1.attn.proj",
+       "model.visual.blocks.1.attn.qkv",
+       "model.visual.blocks.1.mlp.linear_fc1",
+       "model.visual.blocks.1.mlp.linear_fc2",
+       "model.visual.blocks.10.attn.proj",
+       "model.visual.blocks.10.attn.qkv",
+       "model.visual.blocks.10.mlp.linear_fc1",
+       "model.visual.blocks.10.mlp.linear_fc2",
+       "model.visual.blocks.11.attn.proj",
+       "model.visual.blocks.11.attn.qkv",
+       "model.visual.blocks.11.mlp.linear_fc1",
+       "model.visual.blocks.11.mlp.linear_fc2",
+       "model.visual.blocks.12.attn.proj",
+       "model.visual.blocks.12.attn.qkv",
+       "model.visual.blocks.12.mlp.linear_fc1",
+       "model.visual.blocks.12.mlp.linear_fc2",
+       "model.visual.blocks.13.attn.proj",
+       "model.visual.blocks.13.attn.qkv",
+       "model.visual.blocks.13.mlp.linear_fc1",
+       "model.visual.blocks.13.mlp.linear_fc2",
+       "model.visual.blocks.14.attn.proj",
+       "model.visual.blocks.14.attn.qkv",
+       "model.visual.blocks.14.mlp.linear_fc1",
+       "model.visual.blocks.14.mlp.linear_fc2",
+       "model.visual.blocks.15.attn.proj",
+       "model.visual.blocks.15.attn.qkv",
+       "model.visual.blocks.15.mlp.linear_fc1",
+       "model.visual.blocks.15.mlp.linear_fc2",
+       "model.visual.blocks.16.attn.proj",
+       "model.visual.blocks.16.attn.qkv",
+       "model.visual.blocks.16.mlp.linear_fc1",
+       "model.visual.blocks.16.mlp.linear_fc2",
+       "model.visual.blocks.17.attn.proj",
+       "model.visual.blocks.17.attn.qkv",
+       "model.visual.blocks.17.mlp.linear_fc1",
+       "model.visual.blocks.17.mlp.linear_fc2",
+       "model.visual.blocks.18.attn.proj",
+       "model.visual.blocks.18.attn.qkv",
+       "model.visual.blocks.18.mlp.linear_fc1",
+       "model.visual.blocks.18.mlp.linear_fc2",
+       "model.visual.blocks.19.attn.proj",
+       "model.visual.blocks.19.attn.qkv",
+       "model.visual.blocks.19.mlp.linear_fc1",
+       "model.visual.blocks.19.mlp.linear_fc2",
+       "model.visual.blocks.2.attn.proj",
+       "model.visual.blocks.2.attn.qkv",
+       "model.visual.blocks.2.mlp.linear_fc1",
+       "model.visual.blocks.2.mlp.linear_fc2",
+       "model.visual.blocks.20.attn.proj",
+       "model.visual.blocks.20.attn.qkv",
+       "model.visual.blocks.20.mlp.linear_fc1",
+       "model.visual.blocks.20.mlp.linear_fc2",
+       "model.visual.blocks.21.attn.proj",
+       "model.visual.blocks.21.attn.qkv",
+       "model.visual.blocks.21.mlp.linear_fc1",
+       "model.visual.blocks.21.mlp.linear_fc2",
+       "model.visual.blocks.22.attn.proj",
+       "model.visual.blocks.22.attn.qkv",
+       "model.visual.blocks.22.mlp.linear_fc1",
+       "model.visual.blocks.22.mlp.linear_fc2",
+       "model.visual.blocks.23.attn.proj",
+       "model.visual.blocks.23.attn.qkv",
+       "model.visual.blocks.23.mlp.linear_fc1",
+       "model.visual.blocks.23.mlp.linear_fc2",
+       "model.visual.blocks.24.attn.proj",
+       "model.visual.blocks.24.attn.qkv",
+       "model.visual.blocks.24.mlp.linear_fc1",
+       "model.visual.blocks.24.mlp.linear_fc2",
+       "model.visual.blocks.25.attn.proj",
+       "model.visual.blocks.25.attn.qkv",
+       "model.visual.blocks.25.mlp.linear_fc1",
+       "model.visual.blocks.25.mlp.linear_fc2",
+       "model.visual.blocks.26.attn.proj",
+       "model.visual.blocks.26.attn.qkv",
+       "model.visual.blocks.26.mlp.linear_fc1",
+       "model.visual.blocks.26.mlp.linear_fc2",
+       "model.visual.blocks.3.attn.proj",
+       "model.visual.blocks.3.attn.qkv",
+       "model.visual.blocks.3.mlp.linear_fc1",
+       "model.visual.blocks.3.mlp.linear_fc2",
+       "model.visual.blocks.4.attn.proj",
+       "model.visual.blocks.4.attn.qkv",
+       "model.visual.blocks.4.mlp.linear_fc1",
+       "model.visual.blocks.4.mlp.linear_fc2",
+       "model.visual.blocks.5.attn.proj",
+       "model.visual.blocks.5.attn.qkv",
+       "model.visual.blocks.5.mlp.linear_fc1",
+       "model.visual.blocks.5.mlp.linear_fc2",
+       "model.visual.blocks.6.attn.proj",
+       "model.visual.blocks.6.attn.qkv",
+       "model.visual.blocks.6.mlp.linear_fc1",
+       "model.visual.blocks.6.mlp.linear_fc2",
+       "model.visual.blocks.7.attn.proj",
+       "model.visual.blocks.7.attn.qkv",
+       "model.visual.blocks.7.mlp.linear_fc1",
+       "model.visual.blocks.7.mlp.linear_fc2",
+       "model.visual.blocks.8.attn.proj",
+       "model.visual.blocks.8.attn.qkv",
+       "model.visual.blocks.8.mlp.linear_fc1",
+       "model.visual.blocks.8.mlp.linear_fc2",
+       "model.visual.blocks.9.attn.proj",
+       "model.visual.blocks.9.attn.qkv",
+       "model.visual.blocks.9.mlp.linear_fc1",
+       "model.visual.blocks.9.mlp.linear_fc2",
+       "model.visual.merger.linear_fc1",
+       "model.visual.merger.linear_fc2",
+       "model.visual.patch_embed.proj",
+       "model.visual.pos_embed",
+       "mtp.fc",
+       "mtp.layers.0.mlp.gate",
+       "mtp.layers.0.mlp.shared_expert_gate"
+      ]
+     }
+    }
+   },
+   "twin.server_args": {
+    "eq": {
+     "attention-backend": "CUSTOM",
+     "mamba-cache-mode": "align",
+     "language-model-only": true,
+     "quantization": "fp8",
+     "tensor-parallel-size": 8,
+     "data-parallel-size": 1,
+     "decode-context-parallel-size": 1,
+     "block-size": 1152,
+     "max-model-len": 262144,
+     "load-format": "dummy",
+     "num-gpu-blocks-override": 4007,
+     "max-num-seqs": 8,
+     "max-num-batched-tokens": 16384,
+     "kv-cache-dtype": "fp8",
+     "async-scheduling": true,
+     "enable-expert-parallel": true,
+     "enable-prefix-caching": true,
+     "speculative-config": "{\"method\": \"mtp\", \"num_speculative_tokens\": 3}",
+     "skip-tokenizer-init": true,
+     "kv-cache-memory-bytes": 5915017216
+    }
+   },
+   "layers": {
+    "eq": [
+     "gdn",
+     "attn"
+    ]
+   },
+   "context_scale": {
+    "eq": 1.0
+   },
+   "deviations": {
+    "whats": [
+     "GDN recurrent state",
+     "KV pool blocks"
+    ]
+   },
+   "projection": {
+    "statuses": {
+     "kv_page_tokens": "match",
+     "q_heads_projected": "match",
+     "experts_per_rank": "match",
+     "shared_expert_ffn_per_rank": "match",
+     "cache_block_tokens": "match",
+     "kv_pool_tokens_per_rank": "match (-0.02%)",
+     "attn_kv_heads_per_rank": "match",
+     "gdn_k_heads_per_rank": "match",
+     "gdn_v_heads_per_rank": "match",
+     "gdn_state_bytes_per_seq_per_layer_per_rank": "match",
+     "kv_divisor": "by design",
+     "kv_tokens_for_context_L": "match",
+     "routed_pairs_per_rank": "match",
+     "collective_degree": "by design"
+    }
+   },
+   "memory.weights_real_gib": {
+    "approx": 47.42,
+    "rel": 0.02
+   }
+  }
+ }
+}

@@ -1,0 +1,58 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT036 from the "TPU Knowledge Q&A" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat036
+    prompt: Finance finally signed off and I got access to one of the new Ironwood
+      tpu7xslices yesterday. First thing I did was print jax.devices() like I always
+      do. It lists twice as many devices as the chips we are paying for. On our v6e
+      pods the count always matched the chips one to one. My teammate is sure the
+      runtime is double counting and wants to open a billing ticket before we build
+      anything on top of wrong numbers. Our mesh setup code also fell over because
+      the topology tuple has an extra dimension we never gave it. Is something actually
+      broken here? And when I lay out the mesh, do I treat those extra devices as
+      real or fold them back together somehow?
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT036
+      category: TPU Knowledge Q&A
+      sub_category: Hardware fundamentals
+      difficulty: Hard
+      has_code: 'No'
+      baseline_result: Partially Solved
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        A good answer says nothing is broken and no ticket is needed: Ironwood is a dual chiplet design, JAX exposes each chip as two devices, one per chiplet, so device count is chips times two by design, and the topology gains a fourth dimension to identify the chiplet, which is why v6e mesh code breaks; this is a return to the pre v4 model, unlike v4 through v6e where one chip is one device. It should say to treat each device as real when building the mesh and keep the heaviest communication between the paired devices that share a chip.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        The model reached the right practical answer but invented the mechanism, it credits 2 TensorCores per chip and never mentions the documented dual chiplet design and it claims v4/v5p also expose per-core devices when v4 through v6e actually present one fused device per chip, with Ironwood documented as a return to the pre v4 model. Its (4,4) to (4,4,2) example also misses that Ironwood is a 3D torus, so the real topology is 4D. So, wrong hardware.
+      weight: 0.5

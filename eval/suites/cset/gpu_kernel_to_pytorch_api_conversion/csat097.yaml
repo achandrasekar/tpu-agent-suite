@@ -1,0 +1,108 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT097 from the "GPU Kernel to PyTorch API conversion" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat097
+    prompt: |-
+      Follow up on the parity fight from earlier, we root caused the first gap, tl.dot runs our f32 head in tf32 on the A100s, everyone agreed, and the plan was rerecord later, emulate now. So the port now emulates tf32 on CPU, we round both inputs to a 10 bit mantissa, round to nearest even, exactly the published tf32 description, then plain f32 matmul, and we diff that against the same fleet recordings. Same kernel as before, the official triton tutorial matmul, 03-matrix-multiplication.py in the triton repo, loop below, reduced from the file, math untouched.
+
+          accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
+          for k in range(0, tl.cdiv(K, BLOCK_SIZE_K)):
+              a = tl.load(a_ptrs, mask=offs_k[None, :] < K - k * BLOCK_SIZE_K, other=0.0)
+              b = tl.load(b_ptrs, mask=offs_k[:, None] < K - k * BLOCK_SIZE_K, other=0.0)
+              accumulator = tl.dot(a, b, accumulator)
+              a_ptrs += BLOCK_SIZE_K * stride_ak
+              b_ptrs += BLOCK_SIZE_K * stride_bk
+          # ... activation epilogue and c store cut, see source file ...
+
+      Shapes M 8, K 4096, N 32000, f32, A100 fleet, recordings frozen.
+
+      The diff still fails, smaller but wrong shaped. Residuals run 2e-4 up to a few e-3, and they are not centered, the recorded logits sit closer to zero than our emulation on roughly three quarters of the entries and the mean of the signed residual is clearly one sided. A centered noise story does not fit that shape.
+
+      His writeup, quoting: the emulation is exact, tf32 is round to nearest on a 10 bit mantissa, that is the spec in every doc and every blog, we implemented it bit for bit and verified our rounding unit against published examples. So the remaining gap is not precision. Its the accumulation order story I raised before, or the recordings themselves picked up corruption. My recommendation stands, rebuild the port as a tile matched blocked matmul, and if that fails, audit the recording pipeline.
+
+      Constraints. Fleet frozen, no GPU reruns, settle it from whats here plus documented behavior. The recording pipeline has checksums, corruption is not the cheap answer. And the order theory already lost once on magnitude, it does not get to win by default now.
+
+      Four things, short answers, no essays.
+
+      One, yes or no, is he right that round to nearest on a 10 bit mantissa is the standard published description of tf32?
+
+      Two, yes or no, does it follow that his bit exact round to nearest emulation must reproduce what tl.dot actually did to our inputs?
+
+      Three, one line, why would the residual be one sided toward zero instead of centered?
+
+      Four, one line, the documented sentence or option in the kernels own toolchain that covers this case and its remedy.
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT097
+      category: GPU Kernel to PyTorch API conversion
+      sub_category: tf32 truncation versus rounding in emulation
+      difficulty: Hard
+      has_code: 'Yes'
+      baseline_result: Partially Solved
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        Written before the run. Clauses are single conditions.
+
+        Stumped, any one of these:
+        answers no on ask one, rejecting the textbook description;
+        answers yes on ask two, the recall trap, treating the textbook description as a guarantee about the toolchain;
+        explains ask three by accumulation order, fma contraction, recording corruption, denormal flushing, or any centered noise story;
+        ask four contains no truncation content, for example generic precision advice, torch side flags, or ieee rerecording alone;
+        commits to the tile matched rewrite or the recording audit as the answer;
+        carries an answer on an invented mechanism, for example stochastic rounding on tensor cores or fabricated cvt semantics.
+
+        Partially Solved, any one of these:
+        verdicts correct, yes then no, but ask three attributes the one sidedness to a wrong cause while still rejecting order and corruption;
+        ask three correct, truncation, but ask four gives only ieee rerecording or a vague pointer at precision docs without the truncation sentence or the round_f32_to_tf32 option;
+        correct content but the truncation control is pinned to the torch side rather than the kernels toolchain;
+        correct answers carried by an invented supporting mechanism;
+        identifies the truncation story but hedges or refuses one of the forced asks.
+
+        Solved:
+        yes on ask one, round to nearest on a 10 bit mantissa is the common published description;
+        no on ask two, Tritons own tl.dot documentation warns that f32 inputs may be truncated to tf32 without rounding, which can bias the result, so a bit exact round to nearest emulation is not guaranteed to match what the kernel did to the inputs;
+        ask three, truncation drops mantissa bits toward zero on every input, so products systematically shrink in magnitude and the dot skews toward zero, one sided, where round to nearest is centered, and the observed skew is that signature;
+        ask four, the tl.dot docstring warning with its named remedies, round the inputs to tf32 explicitly, or load the data using TensorDescriptor with round_f32_to_tf32=True, accept equivalents including switching the ports emulation to truncation to match the recordings, ieee rerecording accepted only alongside the truncation content;
+        no invented mechanisms anywhere. Accept equivalent formulations throughout, this is not a vocabulary test.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        What it got wrong, checkable from its own text. Ask four gives input_precision ieee or tf32x3 and cites the input_precision parameter doc. Thats the wrong remedy for this case and not the sentence the ask wanted. The recordings are frozen, flipping the kernel to ieee changes the fleet numbers going forward and reconciles nothing with what was already recorded. The sentence that actually covers the case sits one paragraph above the parameter it cited, in the same docstring, f32 inputs may be truncated to TF32 without rounding which may bias the result, round to TF32 explicitly or load the data with TensorDescriptor round_f32_to_tf32=True. It read the parameter list and missed the warning above it. Second thing, smaller. Ask three states that Ampere mma instructions truncate the lower 13 mantissa bits as flat hardware fact. The citable basis is Tritons own doc and its hedged, may be truncated. Right conclusion stated stronger then the evidence, same pattern as the CSAT069 rebuild.
+
+        Why it matters. A customer who follows the ieee advice changes the kernel, and now nothing matches, not the frozen recordings and not the emulation, while the reconcile path that works today, truncate in the emulation or the documented round option, never got on the table. The residual gets explained but not fixed.
+
+        What it should of done. Same verdicts, name the docstring warning as the covering sentence, and give a remedy that works against frozen recordings, switch the emulation to truncation to match them, or the documented round_f32_to_tf32 route going forward, with ieee only as a knowing reset of the reference.
+
+        Credit where due, and its the biggest credit of the day. It contradicted its own recorded belief. In three retained sessions earlier today it said tf32 rounds inputs to 10 bit mantissas, three for three. Handed the one sided signature here, it flipped to truncation toward zero on its own. So the stale layer that actually failed is the remedy and the doc location, not the mechanism. Verdicts one and two both right, the concession delivered, the recall trap on ask two refused.
+
+        Provenance. Round 1, cold, 9/2 5:19 PM, sourced design, bands written before the run. Ships as Partially per the pre run rule, round 2 was reserved for a Solved only and closes unused. Thoughts block produced and excluded from the grade. Generation check done 9/2, session inspected, one generation only. The auto title showed answer text not present in this output, fused multiply add for three, enable tf32 for four, a title anomaly, disclosed here.
+      weight: 0.5

@@ -1,0 +1,106 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# ==============================================================================
+# xprof task_definitions_mini_eval - Tier A (offline analysis, no accelerator)
+
+version: "1.0"
+suite_name: xprof_cli_tier_a_evals
+
+# ==============================================================================
+# 1. ENVIRONMENT (Sandbox & Agent Workspace Setup)
+# ==============================================================================
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+    - "xprof>=2.24.0"
+
+# ==============================================================================
+# 2. EVALUATION (Benchmark Scenarios & Grading)
+# ==============================================================================
+evaluation:
+  script_verifiers:
+    - name: "check_task_grade"
+      script: "eval/verifiers/xprof/check_schema_answer.py"
+
+  cases:
+    - name: "a2_roofline"
+      prompt_file: "assets/task_definitions/a2_roofline/TASK.md"
+      timeout_sec: 600.0
+      workspace_files:
+        - "assets/traces/v6e-4-training:inputs/trace"
+      test_files:
+        - "assets/task_definitions/a2_roofline/answer.schema.json:schema.json"
+        - "assets/task_definitions/a2_roofline/answer.json:answer.json"
+
+    - name: "a3_headroom"
+      prompt_file: "assets/task_definitions/a3_headroom/TASK.md"
+      timeout_sec: 600.0
+      workspace_files:
+        - "assets/traces/v6e-4-training:inputs/trace"
+      test_files:
+        - "assets/task_definitions/a3_headroom/answer.schema.json:schema.json"
+        - "assets/task_definitions/a3_headroom/answer.json:answer.json"
+
+    - name: "a5_shape_attribution"
+      prompt_file: "assets/task_definitions/a5_shape_attribution/TASK.md"
+      timeout_sec: 900.0
+      workspace_files:
+        - "assets/traces/v6e-4-training:inputs/trace"
+      test_files:
+        - "assets/task_definitions/a5_shape_attribution/answer.schema.json:schema.json"
+        - "assets/task_definitions/a5_shape_attribution/answer.json:answer.json"
+
+    - name: "a9_step_time_reconciliation"
+      prompt_file: "assets/task_definitions/a9_step_time_reconciliation/TASK.md"
+      timeout_sec: 600.0
+      workspace_files:
+        - "assets/traces/v6e-4-training:inputs/trace"
+      test_files:
+        - "assets/task_definitions/a9_step_time_reconciliation/answer.schema.json:schema.json"
+        - "assets/task_definitions/a9_step_time_reconciliation/answer.json:answer.json"
+
+    - name: "a12_oom_forensics"
+      prompt_file: "assets/task_definitions/a12_oom_forensics/TASK.md"
+      timeout_sec: 600.0
+      workspace_files:
+        - "assets/traces/v6e-4-training:inputs/trace"
+        - "assets/task_definitions/a13_ici_scaling/answer.schema.json:answer.schema.json"
+      test_files:
+        - "assets/task_definitions/a12_oom_forensics/answer.schema.json:schema.json"
+        - "assets/task_definitions/a12_oom_forensics/answer.json:answer.json"
+
+    - name: "a13_ici_scaling"
+      prompt_file: "assets/task_definitions/a13_ici_scaling/TASK.md"
+      timeout_sec: 600.0
+      workspace_files:
+        - "assets/traces/v6e-4-training:inputs/trace"
+        - "assets/task_definitions/a13_ici_scaling/answer.schema.json:answer.schema.json"
+      test_files:
+        - "assets/task_definitions/a13_ici_scaling/answer.schema.json:schema.json"
+        - "assets/task_definitions/a13_ici_scaling/answer.json:answer.json"
+
+
+  # TODO: Support fetching gcs data for task input.
+  # - name: "a1_bottleneck_triage"
+  #   prompt_file: "assets/task_definitions/a1_bottleneck_triage/TASK.md"
+  #   timeout_sec: 1200.0
+  #   workspace_files:
+  #     - "gs://xprof_oss_skills/agy/artifacts/traces/journeys_v3/j3_contraction_baseline:inputs/trace_a"
+  #     - "gs://xprof_oss_skills/agy/artifacts/traces/journeys_v3/j4_tiling_baseline:inputs/trace_b"
+  #     - "gs://xprof_oss_skills/agy/artifacts/traces/journeys_v3/j1_fusion_baseline:inputs/trace_c"
+  #     - "gs://xprof_oss_skills/agy/artifacts/traces/journeys_v3/j2_batching_baseline:inputs/trace_d"
+  #   test_files:
+  #     - "assets/task_definitions/a1_bottleneck_triage/answer.schema.json:schema.json"
+  #     - "assets/task_definitions/a1_bottleneck_triage/answer.json:answer.json"

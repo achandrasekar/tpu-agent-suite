@@ -1,0 +1,8 @@
+{
+  "dominant_scaled_component": "ici",
+  "scaled_ici_time_ms": 68.04,
+  "scaled_compute_time_ms": 35.61,
+  "ici_to_compute_ratio": 1.91,
+  "limiting_factor": "interconnect",
+  "recommended_axis": "sharding"
+}

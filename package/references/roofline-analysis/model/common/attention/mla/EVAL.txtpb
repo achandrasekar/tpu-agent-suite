@@ -1,0 +1,105 @@
+# Roofline answer keys for this component: one `cases` block per scenario, each a
+# self-contained prompt plus its expected values. Each expected value derives from the formulas
+# in this directory's SKILL.md. Originally a textproto eval suite bound to a proto schema that is
+# not part of this package; nothing parses the textproto grammar itself.
+
+suite_name: "mla-attention-roofline"
+timeout_seconds: 300
+
+cases {
+  name: "mla_prefill_q_down_proj"
+  prompt: "Calculate the Local FLOPS (GFLOPS) and Local Memory Transfer (MiB) per core for the Q Down Projection layer in MLA during the Prefill phase with local_batch=1, seq_len=1024, hidden_dim=7168, c_q=1536, input_dtype=fp8, weight_dtype=fp8, output_dtype=bf16. Assume weight absorption is applied even during the prefill phase, and ignore causal attention (compute as bidirectional). Assume there are no cached tokens in the Prefill phase."
+  expectations: "The calculated GFlops for Q Down Projection is approximately 22.5"
+  expectations: "The calculated memory_transfer for Q Down Projection is approximately 20.5"
+}
+
+cases {
+  name: "mla_prefill_q_up_proj"
+  prompt: "Calculate the Local FLOPS (GFLOPS) and Local Memory Transfer (MiB) per core for the Q Up Projection layer (NOPE+ROPE) in MLA during the Prefill phase with local_batch=1, seq_len=1024, c_q=1536, num_query_heads=128, total_head_dim=192 (nope=128, rope=64), input_dtype=fp8, weight_dtype=fp8, output_dtype=bf16. Assume weight absorption is applied even during the prefill phase, and ignore causal attention (compute as bidirectional). Assume there are no cached tokens in the Prefill phase."
+  expectations: "The calculated GFlops for Q Up Projection is approximately 77.3"
+  expectations: "The calculated memory_transfer for Q Up Projection is approximately 85.5"
+}
+
+cases {
+  name: "mla_prefill_kv_down_proj"
+  prompt: "Calculate the Local FLOPS (GFLOPS) and Local Memory Transfer (MiB) per core for the KV Down Projection layer in MLA during the Prefill phase with local_batch=1, seq_len=1024, hidden_dim=7168, total_kv_rank=576 (c_kv=512, rope=64), input_dtype=fp8, weight_dtype=fp8, output_dtype=bf16. Assume weight absorption is applied even during the prefill phase, and ignore causal attention (compute as bidirectional). Assume there are no cached tokens in the Prefill phase."
+  expectations: "The calculated GFlops for KV Down Projection is approximately 8.5"
+  expectations: "The calculated memory_transfer for KV Down Projection is approximately 12.06"
+}
+
+cases {
+  name: "mla_prefill_qk_nope"
+  prompt: "Calculate the Local FLOPS (GFLOPS) and Local Memory Transfer (MiB) per core for the QK (nope) phase in MLA during the Prefill phase with local_batch=1, seq_len=1024, num_query_heads=128, c_kv=512. input_dtype=fp8, output_dtype=bf16. Assume weight absorption is applied even during the prefill phase, and ignore causal attention (compute as bidirectional). Assume there are no cached tokens in the Prefill phase."
+  expectations: "The calculated GFlops for QK nope is approximately 137.4"
+  expectations: "The calculated memory_transfer for QK nope is approximately 64.5"
+}
+
+cases {
+  name: "mla_prefill_qk_rope"
+  prompt: "Calculate the Local FLOPS (GFLOPS) and Local Memory Transfer (MiB) per core for the QK (rope) phase in MLA during the Prefill phase with local_batch=1, seq_len=1024, num_query_heads=128, h_rope=64. input_dtype=fp8, output_dtype=bf16. Assume weight absorption is applied even during the prefill phase, and ignore causal attention (compute as bidirectional). Assume there are no cached tokens in the Prefill phase."
+  expectations: "The calculated GFlops for QK rope is approximately 68.7"
+  expectations: "The calculated memory_transfer for QK rope is approximately 8.06"
+}
+
+cases {
+  name: "mla_prefill_av_phase"
+  prompt: "Calculate the Local FLOPS (GFLOPS) and Local Memory Transfer (MiB) per core for the AV phase in MLA during the Prefill phase with local_batch=1, seq_len=1024, num_query_heads=128, c_kv=512. input_dtype=fp8, output_dtype=bf16. Assume weight absorption is applied even during the prefill phase, and ignore causal attention (compute as bidirectional). Assume there are no cached tokens in the Prefill phase."
+  expectations: "The calculated GFlops for AV phase is approximately 137.4"
+  expectations: "The calculated memory_transfer for AV phase is approximately 128.0"
+}
+
+cases {
+  name: "mla_decode_q_down_proj"
+  prompt: "Calculate the Local FLOPS (GFLOPS) and Local Memory Transfer (MiB) per core for the Q Down Projection layer in MLA during the Decode phase with local_batch=112, seq_len=1, hidden_dim=7168, c_q=1536, input_dtype=fp8, weight_dtype=fp8, output_dtype=bf16."
+  expectations: "The calculated GFlops for Q Down Projection is approximately 2.5"
+  expectations: "The calculated memory_transfer for Q Down Projection is approximately 11.59"
+}
+
+cases {
+  name: "mla_decode_q_up_proj"
+  prompt: "Calculate the Local FLOPS (GFLOPS) and Local Memory Transfer (MiB) per core for the Q Up Projection layer (NOPE+ROPE) in MLA during the Decode phase with local_batch=112, seq_len=1, c_q=1536, num_query_heads=128, total_head_dim=192 (nope=128, rope=64), input_dtype=fp8, weight_dtype=fp8, output_dtype=bf16."
+  expectations: "The calculated GFlops for Q Up Projection is approximately 8.5"
+  expectations: "The calculated memory_transfer for Q Up Projection is approximately 41.41"
+}
+
+cases {
+  name: "mla_decode_q_proj_to_k"
+  prompt: "Calculate the Local FLOPS (GFLOPS) and Local Memory Transfer (MiB) per core for the Q Proj to K (K weight absorption) layer in MLA during the Decode phase with local_batch=112, seq_len=1, num_query_heads=128, h_nope=128, c_kv=512, input_dtype=fp8, weight_dtype=fp8, output_dtype=bf16."
+  expectations: "The calculated GFlops for Q Proj to K is approximately 3.8"
+  expectations: "The calculated memory_transfer for Q Proj to K is approximately 23.75"
+}
+
+cases {
+  name: "mla_decode_kv_down_proj"
+  prompt: "Calculate the Local FLOPS (GFLOPS) and Local Memory Transfer (MiB) per core for the KV Down Projection layer in MLA during the Decode phase with local_batch=112, seq_len=1, hidden_dim=7168, total_kv_rank=576 (c_kv=512, rope=64), input_dtype=fp8, weight_dtype=fp8, output_dtype=bf16."
+  expectations: "The calculated GFlops for KV Down Projection is approximately 0.92"
+  expectations: "The calculated memory_transfer for KV Down Projection is approximately 4.83"
+}
+
+cases {
+  name: "mla_decode_qk_nope"
+  prompt: "Calculate the Local FLOPS (GFLOPS) and Local Memory Transfer (MiB) per core for the QK (nope) phase in MLA during the Decode phase with local_batch=112, seq_len=1, cached_seq_len=9216, num_query_heads=128, c_kv=512. input_dtype=fp8, output_dtype=bf16."
+  expectations: "The calculated GFlops for QK nope is approximately 135.3"
+  expectations: "The calculated memory_transfer for QK nope is approximately 511.0"
+}
+
+cases {
+  name: "mla_decode_qk_rope"
+  prompt: "Calculate the Local FLOPS (GFLOPS) and Local Memory Transfer (MiB) per core for the QK (rope) phase in MLA during the Decode phase with local_batch=112, seq_len=1, cached_seq_len=9216, num_query_heads=128, h_rope=64. input_dtype=fp8, output_dtype=bf16."
+  expectations: "The calculated GFlops for QK rope is approximately 67.6"
+  expectations: "The calculated memory_transfer for QK rope is approximately 63.88"
+}
+
+cases {
+  name: "mla_decode_av_phase"
+  prompt: "Calculate the Local FLOPS (GFLOPS) and Local Memory Transfer (MiB) per core for the AV phase in MLA during the Decode phase with local_batch=112, seq_len=1, cached_seq_len=9216, num_query_heads=128, c_kv=512. input_dtype=fp8, output_dtype=bf16."
+  expectations: "The calculated GFlops for AV phase is approximately 135.3"
+  expectations: "The calculated memory_transfer for AV phase is approximately 518.00"
+}
+
+cases {
+  name: "mla_decode_v_up_proj_absorption"
+  prompt: "Calculate the Local FLOPS (GFLOPS) and Local Memory Transfer (MiB) per core for the V Up Proj (Weight Absorption) layer in MLA during the Decode phase with local_batch=112, seq_len=1, num_query_heads=128, c_kv=512, h_nope=128, input_dtype=fp8, weight_dtype=fp8, output_dtype=bf16."
+  expectations: "The calculated GFlops for V Up Proj is approximately 1.9"
+  expectations: "The calculated memory_transfer for V Up Proj is approximately 18.5"
+}

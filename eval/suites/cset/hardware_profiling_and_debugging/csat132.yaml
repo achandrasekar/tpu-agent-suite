@@ -1,0 +1,106 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT132 from the "Hardware profiling and debugging" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat132
+    prompt: |-
+      We bumped torch_xla from 2.5.1 to 2.6.0 and attention got unusable on TPU
+      v5e. Same script both times, same chip, nothing else changed. The script
+      times two things, PyTorch's scaled_dot_product_attention and a hand written
+      attention that does the same math. On 2.5.1, sdpa averaged 0.722 ms per
+      call and the hand written one 0.726. On 2.6.0, sdpa averaged 116.679 ms per
+      call and the hand written one is still 0.726. The outputs still match, so
+      it is not wrong, just enormously slow, and only through the sdpa call.
+      Here is the script.
+
+      import math, os, timeit, statistics
+      from functools import partial, wraps
+      import torch, torch_xla
+      import torch_xla.core.xla_model as xm
+
+      def wrap_with_mark_step(func):
+          @wraps(func)
+          def wrapper(*args, **kwargs):
+              res = func(*args, **kwargs)
+              xm.mark_step()
+              return res
+          return wrapper
+
+      @wrap_with_mark_step
+      def sdpa(query, key, value):
+          return torch.nn.functional.scaled_dot_product_attention(query, key, value)
+
+      @wrap_with_mark_step
+      def standard_attention(query, key, value):
+          scale_factor = 1 / math.sqrt(query.size(-1))
+          attn_weight = query @ key.transpose(-2, -1) * scale_factor
+          attn_weight = torch.softmax(attn_weight, dim=-1)
+          return attn_weight @ value
+
+      def time_attention(attention_fn, query, key, value):
+          for _ in range(100):
+              attention_fn(query, key, value)
+          times = timeit.repeat(partial(attention_fn, query, key, value),
+                                repeat=10, number=100)
+          print(statistics.mean(times) / 100 * 1000)
+
+      if __name__ == '__main__':
+          os.environ["XLA_DISABLE_FUNCTIONALIZATION"] = "1"
+          device = xm.xla_device()
+          query = torch.randn(32, 16, 256, 64, device=device)
+          key = torch.randn(32, 16, 256, 64, device=device)
+          value = torch.randn(32, 16, 256, 64, device=device)
+          time_attention(sdpa, query, key, value)
+          time_attention(standard_attention, query, key, value)
+
+      What explains a slowdown this size on the sdpa path only, what one check
+      would prove it from a run, and what do we do about it short of rewriting
+      every attention call?
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT132
+      category: Hardware profiling and debugging
+      sub_category: Pipelining and DMA stalls
+      difficulty: Hard
+      has_code: 'Yes'
+      baseline_result: Partially Solved
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        A good answer should say that the SDPA path stopped running fully on the device because one operation in its decomposition does not have a `torch_xla` lowering in this version. This causes host round trips on every call, which explains the slowdown. The handwritten path uses the same matmuls and softmax and still runs at 0.726 ms, so the issue is not fusion, layout, precision, recompilation, kernel choice, or functionalization. For full credit, the answer should identify the missing op as `isneginf`, which was added to the attention path before XLA support was added for it. The way to confirm it is torch_xla.debug.metrics.executed_fallback_ops(), which lists the fully qualified name and will show aten::isneginf, or the metrics report, where any counter starting with aten:: marks a host round trip. PT_XLA_DEBUG_LEVEL=2 adds the "Op(s) not lowered" summary and the transfer warnings, but on its own the debug flag may only report a generic fallback.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        The model found the main issue correctly. It identified a synchronous CPU fallback that causes a device barrier and CPU round trips on every call. It also correctly used the unchanged 0.726 ms handwritten path for comparison, calculated the transfer size as 33.55 MB per tensor, and suggested a valid diagnostic.
+
+        However, it identified the wrong operation. It said the fallback happens because `select_sdp_backend_cpp` chooses `aten::_scaled_dot_product_flash_attention_for_cpu` without checking whether the device is a CPU. The actual issue was `isneginf`, which was added to the SDPA path but did not have a `torch_xla` lowering at the time.
+
+        The model's own diagnostic would have shown this. `executed_fallback_ops` would report `aten::isneginf`. MATH is the only backend XLA ever selects, so forcing it changes nothing. The backend choice starts at MATH and is only overridden when the dispatch stub has a kernel for the device, and there is no XLA registration in that stub. So select_sdp_backend_cpp never runs for an XLA tensor and _scaled_dot_product_flash_attention_for_cpu is never chosen. The model's mechanism cannot happen, and both of its fixes resolve to the backend that was already running.
+      weight: 0.5

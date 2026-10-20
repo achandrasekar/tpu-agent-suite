@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CUDA Unwiring Result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "status"
+  ],
+  "properties": {
+    "status": {
+      "enum": [
+        "ok",
+        "blocked",
+        "failed"
+      ],
+      "description": "ok: patched model ran a forward pass on the accelerator. blocked: max_attempts exhausted. failed: a cause outside unwiring."
+    },
+    "patches_path": {
+      "type": "string",
+      "description": "Path to the generated model_patches.py module."
+    },
+    "patched_modules": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "PATCHED_MODULES exposed by the patches module."
+    },
+    "applied_playbooks": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "APPLIED_PLAYBOOKS exposed by the patches module."
+    },
+    "playbook_misses": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Symbols with no cataloged playbook that were reverse-engineered."
+    },
+    "probe_path": {
+      "type": "string",
+      "description": "Path to the parity probe.json, reusable by the parity check."
+    },
+    "candidate_capture": {
+      "type": "string",
+      "description": "Path to the candidate.json capture, reusable by the parity check."
+    },
+    "attempts": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Forward-pass attempts made."
+    },
+    "log_dir": {
+      "type": "string",
+      "description": "Directory holding plan.md and the per-attempt logs."
+    },
+    "error": {
+      "type": "string",
+      "description": "Last error line when blocked or failed."
+    }
+  },
+  "examples": [
+    {
+      "status": "ok",
+      "patches_path": "/home/user/.tpu-agent-suite/runs/20260923T120000Z-000000000000/artifacts/tpu-model-onboarding/unwiring/state-spaces__mamba-2.8b-hf/model_patches.py",
+      "patched_modules": [
+        "backbone.layers.0.mixer"
+      ],
+      "applied_playbooks": [
+        "mamba-ssm-unwiring.md"
+      ],
+      "playbook_misses": [],
+      "probe_path": "/home/user/.tpu-agent-suite/runs/20260923T120000Z-000000000000/artifacts/tpu-model-onboarding/parity/state-spaces__mamba-2.8b-hf/probe.json",
+      "candidate_capture": "/home/user/.tpu-agent-suite/runs/20260923T120000Z-000000000000/artifacts/tpu-model-onboarding/parity/state-spaces__mamba-2.8b-hf/candidate.json",
+      "attempts": 2,
+      "log_dir": "/home/user/.tpu-agent-suite/runs/20260923T120000Z-000000000000/artifacts/tpu-model-onboarding/unwiring/state-spaces__mamba-2.8b-hf"
+    }
+  ]
+}

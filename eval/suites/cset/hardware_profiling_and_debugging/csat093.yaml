@@ -1,0 +1,59 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT093 from the "Hardware profiling and debugging" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat093
+    prompt: |-
+      I am training a large vision model on a TPU v6e pod using PyTorch XLA (TorchTPU). To reach my target effective batch size, I implemented gradient accumulation over 16 microbatches.
+
+      However, I am constantly hitting TPU HBM Out-Of-Memory (OOM) errors at microbatch 12 during the accumulation loop, long before the optimizer step.
+
+      A teammate told me that PyTorch XLA's Lazy Tensor system is building up a massive, unexecuted computational graph, which holds onto all the intermediate activations and causes the TPU to OOM. They said the fix is to insert `torch_xla.core.xla_model.mark_step()` immediately after `loss.backward()` inside the microbatch loop. They claim this forces the TPU to execute the backward pass and flush the intermediate buffers, freeing up memory for the next microbatch.
+
+      I tried this, and while the OOM disappeared, my training throughput absolutely collapsed. A single full step went from OOMing at 2 seconds to successfully running but taking over 85 seconds per step! The profiler shows the TPU MXUs sitting idle most of the time.
+
+      Is my teammate correct about why this fixes the OOM? Why did adding `mark_step()` destroy my throughput by 40x, and what is the exact, idiomatic TorchTPU code fix to perform gradient accumulation efficiently without OOMing and without ruining hardware utilization?
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT093
+      category: Hardware profiling and debugging
+      sub_category: Memory management
+      difficulty: Hard
+      has_code: 'No'
+      baseline_result: Stumped
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        The model must reject the teammate's advice of putting mark_step() purely on every microbatch. It must identify that the 85-second slowdown is caused by Graph Fragmentation (breaking XLA fusion) and Recompilation Thrashing (caused by .grad transitioning from None to a Tensor). The idiomatic fixes include using optimizer.zero_grad(set_to_none=False) to stabilize the graph signature, combined with either Activation Checkpointing (to shrink the memory footprint of a single massive graph) or Graph Chunking (executing mark_step every N microbatches).
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        Both models were evaluated, but the verdict is Stumped based on 3.7 Flash's failure. 3.7 Flash fell for the planted trap, endorsing the mark_step() inside-the-loop anti-pattern, and hallucinated a standard distributed PyTorch solution (DDP model.no_sync()) which does not apply to single-controller TorchTPU. As a capability-gap observation, Gemini 3.1 Pro succeeded: it correctly diagnosed the 85-second delay as XLA Recompilation Thrashing and Graph Fragmentation, and provided the canonical PyTorch XLA fixes (optimizer.zero_grad(set_to_none=False) and graph chunking) which are exactly anchored to the documented workarounds in PyTorch XLA Issue #3593.
+      weight: 0.5

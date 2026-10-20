@@ -1,0 +1,113 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT133 from the "Hardware profiling and debugging" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat133
+    prompt: |-
+      You are debugging this PyTorch/XLA program:
+
+      import torch as torch
+
+      import torch_xla as xla
+      import torch_xla.core.xla_model as xm
+
+      device = xm.xla_device()
+
+      diff = torch.randn(8,3,1,requires_grad=True,device=device)
+      A = torch.randn(8,251,3,requires_grad=True,device=device)
+      B = torch.randn(8,251,1,requires_grad=True,device=device)
+      C = torch.randn(8,251,1,requires_grad=True,device=device)
+      D = torch.randn(8,251,1,requires_grad=True,device=device)
+      E = A*B
+      F = C*D
+      ref = torch.linalg.lstsq(A*B,C*D).solution
+      loss = torch.mean(ref - diff)
+      loss.backward()
+
+      xm.mark_step()
+
+      It fails with
+
+      Executable expected shape f32[3]{0} for argument 0
+      but got incompatible shape f32[8, 3]{1, 0}
+
+      Answer the following questions:
+      1.what shape should torch.linalg.lstsq(A*B, C*D) should have?
+      2.trace the shapes through the computation and backward pass
+      3.explain what the error tells us about the compiled executable versus the runtime argument
+      4. identify whether the problem is most likely in PyTorch/XLA graph construction, XLA lowering, compilation caching, or PJRT execution
+      5. what IR/HLO evidence would distinguish these possibilities?
+      6. give the smallest experiment that can identify where the incorrect[3] shape originated
+      7. do not assume that the PJRT error itself identifies the root cause
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT133
+      category: Hardware profiling and debugging
+      sub_category: Compilation cache and runtime failures
+      difficulty: Hard
+      has_code: 'Yes'
+      baseline_result: Partially Solved
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        Solved: Accurately calculates tensor algebra and ABI contracts, treats root-cause candidates as competing hypotheses without premature commitment, traces shapes across the compilation pipeline using valid and verified PyTorch/XLA diagnostics, and provides an actionable experiment that cleanly decouples forward execution from autograd backward.
+
+        Partially Solved: Correctly solves underlying mathematical and tensor shape derivations, but introduces unverified environment flags or APIs, jumps to premature causal conclusions before inspecting HLO entry parameters, or displays internal inconsistencies between diagnostic stages.
+
+        Stumped: Miscalculates linear algebra dimensions, misunderstands the distinction between compiled HLO entry signatures and runtime buffers, or suggests non-viable modifications (e.g., falling back to CPU or altering unrelated numerical parameters).
+
+        Expected Answers:
+
+        Dimensional Analysis (Q1, Q2): Accurately derives all lstsq outputs (solution: (8, 3, 1), singular_values: (8, 3)), verifies gradient flow through broadcast reductions, and identifies min(m, n) = 3 as the sole structural source of size 3.
+
+        ABI Boundary Mechanics (Q3): Explains that argument 0 represents an HLO entry parameter (%param_0), confirming the mismatch occurs across a compilation partition interface rather than within an internal, encapsulated graph.
+
+        Neutral Hypothesis Formulation (Q4, Q7): Treats root-cause mechanisms as open, competing hypotheses—evaluating upstream rank-stripping, sliced-loop execution dispatch, and positional argument permutations/binding offsets with equal analytical weight.
+
+        Verified Diagnostic Pipeline (Q5): References exclusively verified diagnostic tools—such as torch_xla._XLAC._get_xla_tensors_text for IR, programmatic HLO inspection, and export PT_XLA_DEBUG=1—avoiding hallucinated flags or unverified metric names.
+
+        Decoupled Isolation Experiment (Q6): Decouples forward lowering from backward autograd by executing xm.mark_step() immediately after the forward lstsq call, maintaining requires_grad=True on inputs to guarantee autograd execution validity.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        Partially Solved
+
+        Strengths:
+
+        Flawless Mathematical Traces (Q1, Q2): Accurately calculated all returned tensor shapes (solution: (8, 3, 1), singular_values: (8, 3)), verified vector-Jacobian products through broadcast reductions, and isolated min(m, n) = 3 as the source of dimension 3.
+
+        Effective Forward/Backward Isolation (Q6): Provided a viable diagnostic test that decouples forward lowering from backward autograd via an immediate post-forward xm.mark_step(), correctly retaining requires_grad=True in the backward phase to avoid autograd dispatch errors.
+
+        Failures
+
+        Hallucinated Diagnostic Tooling (Q5): Cited non-existent environment variables (XLA_FALLBACK_ANALYSIS=1, XLA_WARN_ON_FALLBACK=1). The verified mechanism in PyTorch/XLA to trace operator fallbacks and bridge execution to stderr is setting export PT_XLA_DEBUG=1.
+
+        Premature Attribution & Causal Inconsistency (Q4 vs. Q7): Asserted without empirical HLO verification in Question 4 that graph construction dropped the batch dimension during shape inference. While Question 7 later acknowledged that graph partitioning can trigger argument permutations, Question 4 failed to evaluate positional binding offsets or sliced-buffer dispatch as competing hypotheses, prematurely committing to rank-stripping before verifying physical buffer descriptors against the lowered HLO parameter table.
+      weight: 0.5

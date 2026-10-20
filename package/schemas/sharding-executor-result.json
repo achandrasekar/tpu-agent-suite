@@ -1,0 +1,181 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "sharding-executor-result.json",
+  "title": "tpu-sharding Executor Result",
+  "description": "Deliverable from tpu-sharding-executor to orchestrator.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "run_id",
+    "iteration",
+    "status"
+  ],
+  "properties": {
+    "run_id": {
+      "type": "string",
+      "pattern": "^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}$",
+      "description": "Session run identifier namespace."
+    },
+    "iteration": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Zero-based iteration index that executed."
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "completed",
+        "failed",
+        "invalid_input",
+        "needs_input"
+      ],
+      "description": "Subagent deliverable completion status."
+    },
+    "execution_status": {
+      "type": "string",
+      "enum": [
+        "SUCCESS",
+        "PARTIAL_SUCCESS",
+        "FAIL",
+        "TIMEOUT"
+      ],
+      "description": "Physical workload execution outcome, aligned with state.json trajectory."
+    },
+    "job_id": {
+      "type": "string",
+      "description": "Backend job identifier assigned by the compute runtime."
+    },
+    "execution_duration_seconds": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Elapsed execution duration in seconds."
+    },
+    "target_metric": {
+      "type": "object",
+      "description": "Primary target metric extracted from the run. Present if execution succeeded in producing metrics.",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "value",
+        "unit"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "value": {
+          "type": "number"
+        },
+        "unit": {
+          "type": "string",
+          "description": "Canonical unit ('s' for all time/latency metrics, '%' for percentages, 'GiB'/'GB' for memory, 'GiB/s'/'GB/s' for bandwidth, 'TFLOPS/s/device' for compute, throughput units, or '' for dimensionless/custom dimensions).",
+          "enum": [
+            "s",
+            "%",
+            "GiB",
+            "GB",
+            "GiB/s",
+            "GB/s",
+            "TFLOPS/s/device",
+            "tok/s/dev",
+            "tok/s",
+            "req/s",
+            "samples/s",
+            "steps/s",
+            ""
+          ]
+        }
+      }
+    },
+    "related_metrics": {
+      "type": "array",
+      "description": "Tracked related metrics extracted from logs.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "value",
+          "unit"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "value": {
+            "type": "number"
+          },
+          "unit": {
+            "type": "string",
+            "description": "Canonical unit ('s' for all time/latency metrics, '%' for percentages, 'GiB'/'GB' for memory, 'GiB/s'/'GB/s' for bandwidth, 'TFLOPS/s/device' for compute, throughput units, or '' for dimensionless/custom dimensions).",
+            "enum": [
+              "s",
+              "%",
+              "GiB",
+              "GB",
+              "GiB/s",
+              "GB/s",
+              "TFLOPS/s/device",
+              "tok/s/dev",
+              "tok/s",
+              "req/s",
+              "samples/s",
+              "steps/s",
+              ""
+            ]
+          }
+        }
+      }
+    },
+    "report_artifact": {
+      "type": "string",
+      "description": "Relative artifact path to updated run report (e.g., '1/report_1.md')."
+    },
+    "profiler_trace_path": {
+      "type": "string",
+      "description": "Path or GCS URI to captured profiler trace directory."
+    },
+    "xprof_session_id": {
+      "type": "string",
+      "description": "XProf session timestamp identifier."
+    },
+    "failure_reason": {
+      "type": "string",
+      "description": "Diagnostic reason if execution_status is FAIL or TIMEOUT (e.g., 'OOM on device 0 during forward pass', 'Process timed out after 3600s')."
+    },
+    "error_message": {
+      "type": "string",
+      "description": "Detailed error logs, traceback snippet, or failure message."
+    }
+  },
+  "examples": [
+    {
+      "run_id": "20260921T120000Z-abcdef012345",
+      "iteration": 1,
+      "status": "completed",
+      "execution_status": "SUCCESS",
+      "job_id": "jobset-qwen-run-1",
+      "execution_duration_seconds": 580.2,
+      "target_metric": {
+        "name": "mfu",
+        "value": 42.1,
+        "unit": "%"
+      },
+      "related_metrics": [
+        {
+          "name": "step_time",
+          "value": 3.85,
+          "unit": "s"
+        },
+        {
+          "name": "token_throughput",
+          "value": 2110.0,
+          "unit": "tok/s/dev"
+        }
+      ],
+      "report_artifact": "1/report_1.md",
+      "profiler_trace_path": "1/tensorboard",
+      "xprof_session_id": "2026_09_21_13_15_00"
+    }
+  ]
+}

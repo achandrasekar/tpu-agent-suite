@@ -1,0 +1,199 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Study Round Record",
+  "description": "The body a round writes at its integrate step. Replaces the study's arms wholesale rather than patching them: a whole-file rewrite cannot leave the state half-updated, and a partial write on an interrupted round is the one corruption this design refuses to be exposed to.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["arms"],
+  "properties": {
+    "arms": {
+      "type": "array",
+      "description": "Every arm the study knows about, in rank order. Written whole each round.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["arm", "kind", "status", "claim"],
+        "properties": {
+          "arm": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Stable identifier, reused across rounds so a reader can follow one arm's history."
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "kernel-block",
+              "exposed-collective",
+              "sharding-overhead",
+              "load-imbalance",
+              "host-critical-path",
+              "recompilation-padding",
+              "scheduler-batching",
+              "memory-capacity"
+            ],
+            "description": "What kind of problem this is, which decides the ceiling formula and where the work can go. Named rather than inferred, because a candidate routed by its symptom instead of its cause reaches somewhere that cannot act on it."
+          },
+          "status": {
+            "type": "string",
+            "enum": ["open", "in_flight", "decided", "blocked"],
+            "description": "`in_flight` means a job exists and nothing else may assume its result."
+          },
+          "claim": {
+            "type": "string",
+            "minLength": 1,
+            "description": "One line: what this arm asserts would help."
+          },
+          "share": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Amdahl bottleneck share in [0, 1]: measured fraction of total step/request time attributed to this bottleneck in the baseline profile (e.g. 0.40 if a kernel takes 40% of step time)."
+          },
+          "headroom": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Addressable fraction in [0, 1] of `share` this arm claims it can eliminate (e.g. 0.50 for a 2x kernel speedup; `share * headroom` = 0.20 expected end-to-end ceiling gain)."
+          },
+          "since_round": { "type": "integer", "minimum": 0 },
+          "blocked_on": {
+            "type": "string",
+            "description": "Required in spirit for a blocked arm: what is needed and who can give it."
+          },
+          "claimed_at": {
+            "type": "string",
+            "description": "ISO-8601 timestamp when an executor or worker claimed this arm for in-flight execution (defaults to America/Los_Angeles PDT/PST; configurable via TPU_AGENT_SUITE_TIMEZONE)."
+          },
+          "claimed_by": {
+            "type": "string",
+            "description": "Identifier of the worker or process holding the active in-flight claim."
+          },
+          "summary": {
+            "type": "string",
+            "description": "One-line conclusion or summary recorded when an arm is released or evaluated."
+          },
+          "failed_dispatches": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "How many dispatches of this arm ended `failed` with no verdict: an implementation the executor could not repair, not a tested idea. Counted by `study release-arm --failed`, which blocks the arm when it reaches the cap, so an arm nobody can implement does not take every remaining round."
+          },
+          "release_reason": {
+            "type": "string",
+            "description": "Deprecated alias for `summary` when an in-flight arm was released."
+          },
+          "result": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["verdict", "execution_id"],
+            "description": "Present once the arm is decided. Carries the measurement, not a summary of it.",
+            "properties": {
+              "verdict": {
+                "type": "string",
+                "enum": ["win", "tie", "loss", "invalid"],
+                "description": "`tie` is the default and the burden is on `win`. `invalid` means the measurement cannot be trusted or violates admissibility constraints (cannot count), which is different from a result that did not help (`loss`, performance regression below the noise floor)."
+              },
+              "execution_id": {
+                "type": "string",
+                "minLength": 1,
+                "description": "The single execution that produced this measurement -- a compute job id, not a session or run id. This is what makes a gate's same_execution requirement checkable instead of decorative."
+              },
+              "metric": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["name", "value", "replicates", "provenance"],
+                "properties": {
+                  "name": { "type": "string", "minLength": 1 },
+                  "value": { "type": "number" },
+                  "unit": { "type": "string" },
+                  "replicates": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "How many times it was actually measured, which is not necessarily what the protocol asked for."
+                  },
+                  "delta_pct": {
+                    "type": "number",
+                    "description": "Change against the study's baseline. Compared to the protocol's noise floor to separate a win from a tie."
+                  },
+                  "provenance": {
+                    "type": "string",
+                    "enum": ["measured", "inferred", "modeled", "projected"],
+                    "description": "A closed set. Not `verified`, not `confirmed`, not `derived`. A modelled ceiling reported where it reads as measured is the most common way a study starts believing its own predictions."
+                  }
+                }
+              },
+              "gates": {
+                "type": "array",
+                "description": "One entry per gate the protocol declares. A gate the protocol requires and the result omits is a missing check, not a passing one.",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["name", "passed", "execution_id"],
+                  "properties": {
+                    "name": { "type": "string", "minLength": 1 },
+                    "passed": { "type": "boolean" },
+                    "value": { "type": "number" },
+                    "execution_id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Which execution this gate was measured on. When the protocol marks the gate same_execution, this must equal the metric's execution_id: throughput from one run and accuracy from another do not describe the same configuration."
+                    }
+                  }
+                }
+              },
+              "artifacts": {
+                "type": "array",
+                "description": "Paths to durable outputs. Referenced, never inlined, so a round stays cheap to read.",
+                "items": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "next": {
+      "type": "string",
+      "description": "The one thing that unblocks the next round, and when it can happen."
+    }
+  },
+  "examples": [
+    {
+      "arms": [
+        {
+          "arm": "a1",
+          "kind": "kernel-block",
+          "status": "decided",
+          "claim": "fuse the dequant epilogue into the MoE GEMM",
+          "since_round": 1,
+          "result": {
+            "verdict": "tie",
+            "execution_id": "j-81ec2c4d",
+            "metric": {
+              "name": "output_tokens_per_s",
+              "value": 37625.33,
+              "unit": "tok/s",
+              "replicates": 3,
+              "delta_pct": 0.13,
+              "provenance": "measured"
+            },
+            "gates": [
+              {
+                "name": "ttft-ceiling",
+                "passed": true,
+                "value": 3278.4,
+                "execution_id": "j-81ec2c4d"
+              },
+              {
+                "name": "accuracy-floor",
+                "passed": true,
+                "value": 0.9727,
+                "execution_id": "j-81ec2c4d"
+              }
+            ],
+            "artifacts": ["arms/a1/report.md"]
+          }
+        }
+      ],
+      "next": "a2 needs a chip; earliest tomorrow 09:00"
+    }
+  ]
+}

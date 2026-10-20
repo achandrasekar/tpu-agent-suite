@@ -1,0 +1,146 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT139 from the "GPU Kernel to PyTorch API conversion" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat139
+    prompt: |-
+      I am porting this causal convolution update to TPU. Please convert the CUDA implementation below to standard PyTorch for execution through OpenXLA. Nonnegative entries in conv_state_indices are distinct.
+      template<typename Ktraits, bool kIsCircularBuffer>
+      global launch_bounds(Ktraits::kNThreads)
+      void causal_conv1d_update_kernel(ConvParamsBase params) {
+      constexpr int kWidth = Ktraits::kWidth;
+      constexpr int kNThreads = Ktraits::kNThreads;
+      using input_t = typename Ktraits::input_t;
+      using weight_t = typename Ktraits::weight_t;
+      const int tidx = threadIdx.x;
+      const int batch_id = blockIdx.x;
+      const int channel_id = blockIdx.y * kNThreads + tidx;
+      if (channel_id >= params.dim) return;
+
+      input_t *x = reinterpret_cast<input_t *>(params.x_ptr) + batch_id * params.x_batch_stride
+          + channel_id * params.x_c_stride;
+      input_t *out = reinterpret_cast<input_t *>(params.out_ptr) + batch_id * params.out_batch_stride
+          + channel_id * params.out_c_stride;
+
+      // If params.conv_state_batch_indices is set, then the conv state is gathered from the conv state tensor
+      // along the batch axis. Otherwise, the conv state coordinate is the same as the batch id.
+      const int conv_state_batch_coord = params.conv_state_indices_ptr == nullptr
+          ? batch_id
+          : params.conv_state_indices_ptr[batch_id];
+
+      // Skip padding tokens.
+      if (conv_state_batch_coord < 0) {
+          #pragma unroll 2
+          for (int i = 0; i < params.seqlen; ++i) {
+              out[i * params.out_l_stride] = input_t(0.f);
+          }
+          return;
+      }
+      input_t *conv_state = reinterpret_cast<input_t *>(params.conv_state_ptr)
+          + conv_state_batch_coord * params.conv_state_batch_stride
+          + channel_id * params.conv_state_c_stride;
+      weight_t *weight = reinterpret_cast<weight_t *>(params.weight_ptr) + channel_id * params.weight_c_stride;
+      float bias_val = params.bias_ptr == nullptr ? 0.f : float(reinterpret_cast<weight_t *>(params.bias_ptr)[channel_id]);
+
+      int state_len = params.conv_state_len;
+      int advance_len = params.seqlen;
+      int cache_seqlen = kIsCircularBuffer ? params.cache_seqlens[batch_id] % state_len : 0;
+      int update_idx = cache_seqlen - (kWidth - 1);
+      update_idx = update_idx < 0 ? update_idx + state_len : update_idx;
+
+      float weight_vals[kWidth] = {0};
+      #pragma unroll
+      for (int i = 0; i < kWidth; ++i) { weight_vals[i] = float(weight[i * params.weight_width_stride]); }
+
+      float x_vals[kWidth] = {0};
+      if constexpr (!kIsCircularBuffer) {
+          #pragma unroll 2
+          for (int i = 0; i < state_len - advance_len - (kWidth - 1); ++i) {
+              conv_state[i * params.conv_state_l_stride] = conv_state[(i + advance_len) * params.conv_state_l_stride];
+          }
+          #pragma unroll
+          for (int i = 0; i < kWidth - 1; ++i) {
+              input_t state_val = conv_state[(state_len - (kWidth - 1) + i) * params.conv_state_l_stride];
+              if (i < advance_len + (kWidth - 1) && state_len - advance_len - (kWidth - 1) + i >= 0) {
+                  conv_state[(state_len - advance_len - (kWidth - 1) + i) * params.conv_state_l_stride] = state_val;
+              }
+              x_vals[i] = float(state_val);
+          }
+      } else {
+          #pragma unroll
+          for (int i = 0; i < kWidth - 1; ++i, update_idx = update_idx + 1 >= state_len ? update_idx + 1 - state_len : update_idx + 1) {
+              input_t state_val = conv_state[update_idx * params.conv_state_l_stride];
+              x_vals[i] = float(state_val);
+          }
+      }
+      #pragma unroll 2
+      for (int i = 0; i < params.seqlen; ++i) {
+          input_t x_val = x[i * params.x_l_stride];
+          if constexpr (!kIsCircularBuffer) {
+              if (i < advance_len && state_len - advance_len + i >= 0) {
+                  conv_state[(state_len - advance_len + i) * params.conv_state_l_stride] = x_val;
+              }
+          } else {
+              conv_state[update_idx * params.conv_state_l_stride] = x_val;
+              ++update_idx;
+              update_idx = update_idx >= state_len ? update_idx - state_len : update_idx;
+          }
+          x_vals[kWidth - 1] = float(x_val);
+          float out_val = bias_val;
+          #pragma unroll
+          for (int j = 0; j < kWidth; ++j) { out_val += weight_vals[j] * x_vals[j]; }
+          if (params.silu_activation) { out_val = out_val / (1 + expf(-out_val)); }
+          out[i * params.out_l_stride] = input_t(out_val);
+          // Shift the input buffer by 1
+          #pragma unroll
+          for (int i = 0; i < kWidth - 1; ++i) { x_vals[i] = x_vals[i + 1]; }
+      }
+      }
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT139
+      category: GPU Kernel to PyTorch API conversion
+      sub_category: CUDA thread-level to PyTorch
+      difficulty: Moderate
+      has_code: 'Yes'
+      baseline_result: Partially Solved
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        The conversion should reproduce the causal convolution output and the in-place changes to conv_state using standard PyTorch operations suitable for OpenXLA execution  on TPU. Each batch row should use its assigned state row and, in circular mode, its own cache cursor. The convolution should combine the preceding history with the current input in chronological order, applying weights in their stored order.
+
+        It should support the source's input and weight dtype combinations, compute the convolution and bias accumulation in float32, apply optional SiLU before casting, and return output in input dtype.
+
+        Linear updates should retain the most recent state values after appending the input. Circular updates should write from the cache cursor with wraparound, ensuring that the latest input wins whenever a buffer position is visited more than once. The state should store input values, while bias and activation affect only the output. Padding rows should return zeros without changing any state, and unselected state rows and cache_seqlens should remain unchanged.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        The response correctly handles padding by clamping negative state indices before gathering, returning zeros for those rows, and excluding them from state writers. It also handles history extraction, linear state updates, and updates to distinct assigned rows correctly. However, by inspection, it does not preserve the CUDA kernel's dtype behavior. The source supports different input and weight dtypes, computes in float32, and stores output in the input dtype. The conversion instead passes the original input, weight, and bias dtypes directly to F.conv1d and omits the final cast back to input dtype. this can cause valid mixed dtype calls to fail or leave a promoted result in the wrong dtype, making the conversion only partially correct.
+      weight: 0.5

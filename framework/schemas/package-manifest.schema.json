@@ -1,0 +1,321 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TPU agent suite Package Manifest Schema",
+  "description": "JSON Schema specification for TPU agent suite package manifests (package.release.json).",
+  "type": "object",
+  "required": ["name", "version", "description", "skills", "environment", "compatibility_targets"],
+  "properties": {
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+      "description": "Canonical lowercase package identifier."
+    },
+    "version": {
+      "type": "string",
+      "description": "Semantic version string (MAJOR.MINOR.PATCH)."
+    },
+    "display_name": {
+      "type": "string",
+      "description": "Human-friendly package title."
+    },
+    "description": {
+      "type": "string",
+      "description": "Detailed package description and purpose."
+    },
+    "author": {
+      "type": "string",
+      "description": "Author or owning team."
+    },
+    "copy": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Asset directories or files to bundle verbatim: data no frontmatter reaches (schemas, environment, and data a script reads or writes)."
+    },
+    "workspace_memory": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["marker", "content"],
+        "properties": {
+          "marker": {
+            "type": "string",
+            "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+            "description": "Block identifier, namespaced by package name at compile time."
+          },
+          "content": {
+            "type": "string",
+            "description": "Package-relative path to the markdown file holding the block body. Rendered through the compile-time resource registry; may reference central resources only."
+          }
+        }
+      },
+      "description": "Managed blocks installed into the workspace memory file (CLAUDE.md/AGENTS.md)."
+    },
+    "native_tools": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "visibility", "action_level"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "enum": ["ask", "edit", "read", "search", "shell", "web_fetch", "web_search", "write"],
+            "description": "Native tool primitive identifier."
+          },
+          "description": {
+            "type": "string",
+            "description": "Tool functionality description."
+          },
+          "visibility": {
+            "type": "string",
+            "enum": ["external", "internal"],
+            "description": "Access boundary."
+          },
+          "action_level": {
+            "type": "object",
+            "required": ["effect", "scope"],
+            "properties": {
+              "effect": {
+                "type": "string",
+                "enum": ["delete", "execute", "read", "write"]
+              },
+              "scope": {
+                "type": "string",
+                "enum": ["host", "session", "workspace"]
+              },
+              "approval": {
+                "type": "string",
+                "enum": ["always", "never", "on-demand"],
+                "description": "Interactive user confirmation policy for operations."
+              }
+            }
+          }
+        }
+      },
+      "description": "Declared native harness primitives available in this package."
+    },
+    "script_tools": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "path", "visibility", "action_level"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Unique script tool identifier."
+          },
+          "path": {
+            "type": "string",
+            "description": "Executable file path relative to package root."
+          },
+          "description": {
+            "type": "string",
+            "description": "Tool functionality description."
+          },
+          "visibility": {
+            "type": "string",
+            "enum": ["external", "internal"],
+            "description": "Access boundary (internal: package-only; external: exported to skill/user)."
+          },
+          "action_level": {
+            "type": "object",
+            "required": ["effect", "scope"],
+            "properties": {
+              "effect": {
+                "type": "string",
+                "enum": ["delete", "execute", "read", "write"]
+              },
+              "scope": {
+                "type": "string",
+                "enum": ["host", "session", "workspace"]
+              },
+              "approval": {
+                "type": "string",
+                "enum": ["always", "never", "on-demand"],
+                "description": "Interactive user confirmation policy for operations."
+              }
+            }
+          }
+        }
+      },
+      "description": "Executable custom script tools shipped within the package."
+    },
+    "mcp_servers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "command", "visibility", "action_level"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Unique MCP server identifier."
+          },
+          "command": {
+            "type": "string",
+            "description": "Executable command to start the MCP server."
+          },
+          "args": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Command line arguments passed to the server process."
+          },
+          "env": {
+            "type": "object",
+            "additionalProperties": { "type": "string" },
+            "description": "Environment variables passed to the server."
+          },
+          "description": {
+            "type": "string",
+            "description": "Description of services and tools exposed by this server."
+          },
+          "visibility": {
+            "type": "string",
+            "enum": ["external", "internal"],
+            "description": "Access boundary."
+          },
+          "action_level": {
+            "type": "object",
+            "required": ["effect", "scope"],
+            "properties": {
+              "effect": {
+                "type": "string",
+                "enum": ["delete", "execute", "read", "write"]
+              },
+              "scope": {
+                "type": "string",
+                "enum": ["host", "session", "workspace"]
+              },
+              "approval": {
+                "type": "string",
+                "enum": ["always", "never", "on-demand"],
+                "description": "Interactive user confirmation policy for operations."
+              }
+            }
+          }
+        }
+      },
+      "description": "Model Context Protocol servers declared by this package."
+    },
+    "hooks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "event"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]*$",
+            "description": "Unique hook identifier. Restricted to characters that are safe in a file name, because per-session hook state is stored at ~/.tpu-agent-suite/sessions/<session>.contexts/<name>.json -- names needing escaping could collide there and serve one hook another's cached context."
+          },
+          "event": {
+            "type": "string",
+            "enum": [
+              "PreToolUse",
+              "PostToolUse",
+              "SubagentStop",
+              "SessionStart",
+              "Stop",
+              "SessionEnd"
+            ],
+            "description": "Lifecycle event. PreToolUse/PostToolUse wrap a tool call. Stop fires when the execution loop terminates and can resume it, which is the only place a run killed by a transient backend failure can be picked up without losing its conversation. SessionEnd fires once the session is over and cannot resume it; it is where a run's leftovers are cleaned up."
+          },
+          "matchers": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Tools (PreToolUse/PostToolUse) or subagent names (SubagentStop) to intercept. Rejected on other events, which name neither."
+          },
+          "action": {
+            "type": "string",
+            "description": "Custom script action (e.g. script:scripts/guard.py)."
+          },
+          "command": {
+            "type": "string",
+            "description": "Executable command to start the hook process."
+          },
+          "args": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Command line arguments passed to the hook command."
+          },
+          "env": {
+            "type": "object",
+            "additionalProperties": { "type": "string" },
+            "description": "Environment variables passed to the hook process."
+          },
+          "timeout": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Timeout in seconds for hook execution."
+          },
+          "on_failure": {
+            "type": "string",
+            "enum": ["deny", "allow"],
+            "default": "deny",
+            "description": "Decision when the hook fails (times out, exits non-zero, raises, or prints an invalid reply). A deny from the hook itself is always honoured. Failures are logged to ~/.tpu-agent-suite/logs/hook_failures.jsonl."
+          },
+          "description": {
+            "type": "string",
+            "description": "Description of services and guardrails implemented by this hook."
+          },
+          "visibility": {
+            "type": "string",
+            "enum": ["external", "internal"],
+            "description": "Access boundary."
+          },
+          "action_level": {
+            "type": "object",
+            "required": ["effect", "scope"],
+            "properties": {
+              "effect": {
+                "type": "string",
+                "enum": ["delete", "execute", "read", "write"]
+              },
+              "scope": {
+                "type": "string",
+                "enum": ["host", "session", "workspace"]
+              },
+              "approval": {
+                "type": "string",
+                "enum": ["always", "never", "on-demand"],
+                "description": "Interactive user confirmation policy for operations."
+              }
+            }
+          }
+        }
+      },
+      "description": "Lifecycle hooks and tool interceptors declared by this package."
+    },
+    "skills": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+        "description": "A skill name, whose document is skills/<name>/SKILL.md."
+      },
+      "description": "Skills released by this package. Each names skills/<name>/SKILL.md, whose frontmatter declares everything else. The compiler discovers agents, references, scripts, schemas and dependencies by following frontmatter from here."
+    },
+    "environment": {
+      "type": "object",
+      "required": ["questions", "schema"],
+      "properties": {
+        "questions": { "type": "string" },
+        "schema": { "type": "string" }
+      }
+    },
+    "compatibility_targets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["harness", "versions"],
+        "properties": {
+          "name": { "type": "string" },
+          "harness": {
+            "type": "string",
+            "enum": ["antigravity", "claude-code", "codex", "cursor"]
+          },
+          "versions": { "type": "string" }
+        }
+      }
+    }
+  }
+}

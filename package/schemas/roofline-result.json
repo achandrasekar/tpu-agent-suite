@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "tpu-roofline Result",
+  "description": "Output payload of the tpu-roofline agent. Every number it carries is modelled, not measured. The full report stays on disk; this payload carries the summary and the paths.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "status",
+    "summary"
+  ],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": [
+        "completed",
+        "needs_input",
+        "invalid_input",
+        "failed"
+      ],
+      "description": "'completed': a roofline was computed. 'needs_input': a required choice is missing and is listed in `missing`. 'invalid_input': the request names nothing to model. 'failed': the selftest or a script failed."
+    },
+    "summary": {
+      "type": "string",
+      "description": "Short result: the headline numbers, what binds them, and what would have to change to move them."
+    },
+    "provenance": {
+      "type": "string",
+      "const": "modeled",
+      "description": "Provenance label of every number in this result."
+    },
+    "results": {
+      "type": "object",
+      "description": "Optional headline numbers, keyed by metric name (for example roofline_ms, bound_by, t_prefill_ms, tpot_ms). Keys are not fixed.",
+      "additionalProperties": true
+    },
+    "missing": {
+      "type": "array",
+      "description": "Inputs required before a roofline can be computed, when status is 'needs_input'.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "input",
+          "reason"
+        ],
+        "properties": {
+          "input": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "description": "Paths of the files written: the report, the config, the raw output and the CSV.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "error_message": {
+      "type": "string",
+      "description": "Diagnostic message when status is 'failed' or 'invalid_input'."
+    },
+    "run_id": {
+      "type": "string",
+      "description": "Identifier of the active TPU agent suite run namespace."
+    }
+  },
+  "examples": [
+    {
+      "status": "completed",
+      "summary": "MoE down-projection, 8192 tokens: roofline 1.42 ms, HBM bound. Weight reads are 81% of the bytes.",
+      "provenance": "modeled",
+      "results": {
+        "roofline_ms": 1.42,
+        "bound_by": "HBM"
+      },
+      "artifacts": [
+        "~/.tpu-agent-suite/runs/20260914T120000Z-000000000000/artifacts/roofline/moe_down.md"
+      ],
+      "run_id": "20260914T120000Z-000000000000"
+    },
+    {
+      "status": "needs_input",
+      "summary": "Cannot compute the model roofline: the workload is not given.",
+      "missing": [
+        {
+          "input": "workload",
+          "reason": "ISL, OSL, max-num-batched-tokens and decode concurrency set every phase time."
+        }
+      ],
+      "run_id": "20260914T120000Z-000000000000"
+    }
+  ]
+}

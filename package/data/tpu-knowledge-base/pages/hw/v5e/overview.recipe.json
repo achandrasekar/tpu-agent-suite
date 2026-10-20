@@ -1,0 +1,10 @@
+{
+  "query": "Generate the complete TPU v5e hardware overview, not just a memory/buffers page. Cover all hardware topics supported by the supplied sources: compute, TensorCores/MXUs, SparseCore when established, HBM and on-chip memory, ICI/DCN, topology/pod scale, slices, host/VM specifications, NUMA, framework support, availability and operational constraints. Focus solely on v5e. Explain gaps rather than filling them.",
+  "authoring_request": "Why is it only memory-buffers. do all of hw",
+  "source_ids": [
+    "cloud-tpu-v5e",
+    "xla-scoped-vmem",
+    "openxla-tiled-layout",
+    "openxla-sparsecore"
+  ]
+}

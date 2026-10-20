@@ -1,0 +1,36 @@
+{
+  "_comment": "Models that serve on the vllm engine only with a vllm_torchtpu patch applied at launch. Keyed by Hugging Face model id, matched exactly. `patch` is a file beside this one: a fixed `.patch` diff, or a `.py` patch script that finds its own anchors and so follows the plugin across revisions; `apply_vllm_patch.sh` runs either, and each stack entry may name its own `patch` (defaulting to the model's top-level `patch`). `provenance` is the tpu-knowledge-base keyword holding why it is needed, how to verify the server, and the failures it fixes; `validated` is the stack it was last proven on, `serving` the settings to launch with (they take precedence over the engine check's TP recommendation), and `also_verified` any other settings that passed there; `previously_validated` lists older stacks it was proven on. `image_probe.py` reads this file to select the closest patch version(s) (before and after the installed vllm version, or only the last one on a newer version) and dry-run them against the image's plugin.",
+  "models": {
+    "openai/gpt-oss-20b": {
+      "patch": "gpt_oss_mxfp4.py",
+      "provenance": "vllm-gpt-oss-mxfp4",
+      "validated": {
+        "date": "2026-10-13",
+        "vllm": "0.29.0",
+        "patch": "gpt_oss_mxfp4.py",
+        "torch": "2.13.0",
+        "torch_tpu": "0.1.1 (release 2026.9.22)",
+        "transformers": "5.14.1",
+        "jax": "0.11.2",
+        "hardware": "tpu7x 2x2x1 (8 devices, 96 GiB HBM each)",
+        "serving": "--tensor-parallel-size 8 --data-parallel-size 1 --max-model-len 8192 --attention-backend CUSTOM, with USE_MOE_SPARSE_CORE=0",
+        "also_verified": "TP 2 x DP 4 and TP 4 x DP 2 with the same flags; TP 1 has no torch_tpu device layout on this stack"
+      },
+      "previously_validated": [
+        {
+          "date": "2026-10-13",
+          "vllm": "0.22.1",
+          "patch": "gpt_oss_mxfp4.py",
+          "torch": "2.11.0",
+          "torch_tpu": "0.1.1.dev20260714",
+          "transformers": "5.8.0",
+          "jax": "0.10.2",
+          "hardware": "tpu7x 2x2x1 (8 devices, 96 GiB HBM each)",
+          "serving": "--tensor-parallel-size 1 --data-parallel-size 8 --max-model-len 8192 --attention-backend CUSTOM",
+          "also_verified": "the validated serving settings above (TP 8 x DP 1, USE_MOE_SPARSE_CORE=0)",
+          "first_validated": "2026-10-01, with gpt_oss_mxfp4.patch (the fixed diff this script replaced) at TP 1 x DP 8"
+        }
+      ]
+    }
+  }
+}

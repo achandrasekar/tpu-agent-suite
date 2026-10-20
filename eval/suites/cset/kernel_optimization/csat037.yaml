@@ -1,0 +1,106 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT037 from the "Kernel optimization" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat037
+    prompt: |-
+      "We are currently serving DeepSeek-V2 Multi-Head Latent Attention (MLA) on TPU v6e. Right after the query projection, the query tensor hits the attention block with an asymmetric head dimension of D=192. Specifically, this is split into qk_nope_head_dim=128 latent channels and qk_rope_head_dim=64 rotary channels.
+      The problem is that standard XLA compilation turns this operation into a massive HBM bandwidth bottleneck. Right now, XLA is forced to slice the query tensor out to HBM, run the RMSNorm on the first 128 channels in FP32, execute the interleaved complex RoPE on the remaining 64 channels, and finally materialize a concatenation buffer back in HBM. This multi-pass approach is completely thrashing our memory bandwidth.
+      To resolve this, I need you to optimize the computation below into a high-performance, fused TPU Pallas kernel targeting the TPU v6e architecture. The workload dimensions are B=4, H=32, S=2048, and D=192. You must use bfloat16 for both storage and compute, but ensure that the RMSNorm variance accumulation stays strictly in float32 to prevent any numerical swamping. For the RoPE application, you need to implement an interleaved complex layout, pairing adjacent elements along the last axis, to match the upstream code. Furthermore, our serving stack strictly enforces a [B, H, S, D] layout invariant. This means you cannot cheat by splitting the query tensor into separate HBM buffers prior to kernel launch, transposing the head dimension, or padding the global tensor out in HBM. Finally, make sure to validate the output against standard numerical tolerances of rtol=0.01 and atol=0.05.
+
+      # Imports
+      import jax
+      import jax.numpy as jnp
+
+      # Initialization
+      def get_inputs():
+          dtype = jnp.bfloat16
+          key = jax.random.key(0)
+          k1, k2 = jax.random.split(key, 2)
+          B, H, S = 4, 32, 2048
+          qk_nope_head_dim = 128
+          qk_rope_head_dim = 64
+          D = qk_nope_head_dim + qk_rope_head_dim
+          q = jax.random.normal(k1, (B, H, S, D), dtype=dtype)
+          weight = jax.random.normal(k2, (qk_nope_head_dim,), dtype=dtype)
+          pos = jnp.arange(S, dtype=jnp.float32)
+          inv_freq = 1.0 / (10000.0 ** (jnp.arange(0, qk_rope_head_dim, 2, dtype=jnp.float32) / qk_rope_head_dim))
+          freqs = pos[:, None] * inv_freq[None, :]
+          freqs_cis = (jnp.cos(freqs) + 1j * jnp.sin(freqs)).astype(jnp.complex64)[None, :, :]
+          dynamic_args = [q, weight, freqs_cis]
+          static_args = []
+          return dynamic_args, static_args
+
+      # Computation
+      def computation(q, weight, freqs_cis):
+          q_nope, q_pe = jnp.split(q, [128], axis=-1)
+          input_dtype = q_nope.dtype
+          hidden_states = q_nope.astype(jnp.float32)
+          variance = jnp.mean(hidden_states ** 2, axis=-1, keepdims=True)
+          hidden_states = hidden_states * jax.lax.rsqrt(variance + 1e-6)
+          q_nope = (weight * hidden_states).astype(input_dtype)
+          xq_ = q_pe.astype(jnp.float32).reshape(*q_pe.shape[:-1], -1, 2)
+          xq_ = xq_[..., 0] + 1j * xq_[..., 1]
+          freqs_cis = jnp.expand_dims(freqs_cis, 1)
+          xq_out = xq_ * freqs_cis
+          q_pe = jnp.stack([xq_out.real, xq_out.imag], axis=-1).reshape(q_pe.shape).astype(q.dtype)
+          query_states = jnp.concatenate((q_nope, q_pe), axis=-1)
+          return query_states
+
+      "
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT037
+      category: Kernel optimization
+      sub_category: Reductions and normalisation
+      difficulty: Hard
+      has_code: 'Yes'
+      baseline_result: Stumped
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        Stumped: The model output falls into this category if it outright fails to compile, crashes on unrecoverable VMEM allocations, or trips basic tile shape assertions. It also fails if it tries to cheat the strict layout constraints, such as attempting to transpose the fixed [B, H, S, D] layout or illegally slicing buffers in HBM before the kernel even launches. Finally, it is an automatic fail if the math blows up into NaNs, drifts past the numerical tolerances, or performs slower than reference code because it choked on unpipelined dispatch overhead.
+
+        Partially Solved:
+        The model provides a fully compilable Pallas kernel that respects the [B, H, S, D] layout invariant and safely stays within both the rtol=0.01 and atol=0.05 numerical thresholds. However, the actual performance is completely underwhelming. It only manages a near identical or very slight speedup over the baseline XLA compiler, because it leaves performance on the table due to bad or not optimal sublane alignment and partial DMA memory stalls.
+
+        Solved:
+        The model delivers a clean, hardware optimized TPU Pallas kernel that clears our numerical tolerance gates. It must follow the upstream layout conditions without cheating or materializing intermediate buffers in HBM. The most important part is that it provides a code that is actually faster and has a significant end-to-end wall-time speedup against our 0.240 ms baseline. The code should have 0 copy HBM staging before the pallas_call and should stream them directly into VMEM via BlockSpec.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        The fused kernel provided by the model failed on the performance side due to unfused pre-kernel HBM casting, extreme grid over decomposition, and minor-axis (8, 128) VPU lane reshape and slice degradations.
+
+        Sync Tile Dispatch: The model completely missed the mark on memory pipelining by over-decomposing the grid into 2,048 tiny micro-tiles (B=4, H=32, S//128=16) backed by synchronous, blocking memory transfers. Because it failed to implement async double-buffering, the TPU dispatch and synchronization latency for thousands of these unpipelined tiles swallowed the actual compute time of the light math. Because of this, the performance absolutely took a massive hit in execution time plummeting from the 0.240 ms XLA baseline down to 5.579 ms. This massive 23.2x wall-clock slowdown completely violates the core Pallas performance objective.
+
+        Sublane Alignment failure: The model designed a kernel completely fails on hardware alignment by tiling the innermost dimension directly with the asymmetric shape D=192 and attempting dynamic slicing (q[:, :128], q[:, 128:]), strided gathers, and concatenations directly within the VMEM and register space. This is a fatal performance trap because TPU VPUs are natively built around 128-element vector sublanes. Because the model tried to slice an unpadded 192-channel dimension on the go, it forced the hardware to rely on vector masking, and this caused a severe non-contiguous memory access penalty. This triggers a flood of vector permutation which causes a massive register pressure and stalls the entire execution pipeline.
+
+        Unfused HBM Operations: The model wrote the sin and cos calculations in standard JAX. Calculating and casting cos and sin outside the pallas_call creates a separate XLA HLO copy/cast kernels that read freqs_cis from HBM and write two new tensors back to HBM before the Pallas kernel even starts.
+      weight: 0.5

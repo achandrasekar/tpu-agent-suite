@@ -1,0 +1,194 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Study Protocol",
+  "description": "Pre-registered terms of a study: what is measured, against what bar, and when it stops. Fixed before the baseline runs, because deciding these after seeing the first number is deciding them too late. Amending it is legal and recorded; amending it silently is not. Identity and indexing fields live on the study document instead, so correcting a name is not an amendment to the experiment.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "primary_metric",
+    "measurement_cell",
+    "replicate_count",
+    "noise_floor_pct",
+    "stopping_rule",
+    "admissibility_gates",
+    "mode"
+  ],
+  "properties": {
+    "primary_metric": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "unit",
+        "direction"
+      ],
+      "description": "The single metric a win is measured against. One, not several: two primary metrics means every tie is resolved by whichever the reader looked at first.",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "unit": {
+          "type": "string",
+          "minLength": 1
+        },
+        "direction": {
+          "type": "string",
+          "enum": [
+            "minimize",
+            "maximize"
+          ],
+          "description": "Stated rather than inferred from the name. 'latency' and 'throughput' are guessable; 'score' and 'cost' are not."
+        }
+      }
+    },
+    "measurement_cell": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "topology"
+      ],
+      "description": "The conditions every number in this study is measured under. A number without its cell is not a number: the baseline, the noise floor and the ranking of candidates all move between cells.",
+      "properties": {
+        "topology": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Hardware shape, e.g. v6e-2x2x1."
+        },
+        "shape": {
+          "type": "string",
+          "description": "Workload shape. Inference: input and output lengths. Training: batch and sequence length."
+        },
+        "concurrency": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "replicate_count": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "How many times a candidate is measured before its result counts. Decided here, before the first measurement, because deciding it after seeing one number is deciding it too late."
+    },
+    "noise_floor_pct": {
+      "type": "number",
+      "minimum": 0,
+      "description": "A delta smaller than this is a tie, not a win. Set from the spread of repeated baseline runs, not from hope."
+    },
+    "stopping_rule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_rounds"
+      ],
+      "description": "What ends the study. `max_rounds` is required so termination is guaranteed even when nothing else fires.",
+      "properties": {
+        "max_rounds": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Hard stop, and the only bound that is countable today. Counts attempted rounds, including rounds that crashed, because a crashed round still spent hardware. This is what bounds an unattended `auto` study: a round is one dispatch, so a round count is the one spend proxy the runtime can actually evaluate."
+        },
+        "plateau_rounds": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Stop after this many consecutive rounds with no win. Optional."
+        },
+        "target_improvement_pct": {
+          "type": "number",
+          "description": "Stop early once the primary metric improves on the baseline by this much. Optional."
+        }
+      }
+    },
+    "admissibility_gates": {
+      "type": "array",
+      "description": "Hard constraints a candidate must pass to count at all. Required as a field but may be empty: stating 'no gates' is a decision, omitting the field is an oversight, and only one of those is acceptable here. An empty list means every result is admissible, which is rarely true.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "metric",
+          "comparator",
+          "bound",
+          "same_execution"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "metric": {
+            "type": "string",
+            "minLength": 1
+          },
+          "comparator": {
+            "type": "string",
+            "enum": [
+              "lt",
+              "lte",
+              "gt",
+              "gte"
+            ]
+          },
+          "bound": {
+            "type": "number"
+          },
+          "unit": {
+            "type": "string"
+          },
+          "same_execution": {
+            "type": "boolean",
+            "description": "True when this gate must be measured on the same execution that produced the primary metric. Throughput from one run and accuracy from another do not describe the same configuration, even with identical config."
+          }
+        }
+      }
+    },
+    "mode": {
+      "type": "string",
+      "enum": [
+        "approve",
+        "auto"
+      ],
+      "default": "approve",
+      "description": "`approve` blocks at the first expensive dispatch and waits for a human. `auto` self-approves the protocol it was given -- never a new one -- and runs to the stopping rule unattended. Defaults to `approve` so absence fails safe. Both modes are bounded by `stopping_rule.max_rounds`, which is required, so `auto` cannot be unbounded."
+    }
+  },
+  "examples": [
+    {
+      "primary_metric": {
+        "name": "output_tokens_per_s",
+        "unit": "tok/s",
+        "direction": "maximize"
+      },
+      "measurement_cell": {
+        "topology": "v6e-2x2x1",
+        "shape": "8192-1024",
+        "concurrency": 256
+      },
+      "replicate_count": 3,
+      "noise_floor_pct": 0.4,
+      "stopping_rule": {
+        "max_rounds": 40,
+        "plateau_rounds": 6
+      },
+      "admissibility_gates": [
+        {
+          "name": "ttft-ceiling",
+          "metric": "ttft_p50_ms",
+          "comparator": "lt",
+          "bound": 5000,
+          "unit": "ms",
+          "same_execution": true
+        },
+        {
+          "name": "accuracy-floor",
+          "metric": "gsm8k",
+          "comparator": "gte",
+          "bound": 0.94,
+          "same_execution": true
+        }
+      ],
+      "mode": "auto"
+    }
+  ]
+}

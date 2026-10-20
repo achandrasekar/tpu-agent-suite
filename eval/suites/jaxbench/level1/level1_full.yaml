@@ -1,0 +1,341 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# ==============================================================================
+# JaxBench Level 1 Benchmark Suite
+# ==============================================================================
+suite_name: jaxbench_level_1_full
+
+# ==============================================================================
+# 1. ENVIRONMENT (Sandbox & Agent Suite Requirements)
+# ==============================================================================
+environment:
+  base_image: python:3.12-slim
+  apt_packages:
+    - gnupg
+    - procps
+    - sqlite3
+    - jq
+  pip_packages:
+    - numpy
+    - pyyaml
+    - "jax[cpu]"
+  cpus: 8
+  memory_mb: 65536
+  storage_mb: 20480
+
+# ==============================================================================
+# 2. EVALUATION (Benchmark Scenarios & Grading)
+# ==============================================================================
+evaluation:
+  cases:
+    - name: "1p-flash-attention"
+      prompt_file: "assets/prompts/accelerate_kernel.md"
+      workspace_files:
+        - "assets/bases/1p-flash-attention.py:base.py"
+      timeout_sec: 14400.0
+
+    - name: "2p-gqa-attention"
+      prompt_file: "assets/prompts/accelerate_kernel.md"
+      workspace_files:
+        - "assets/bases/2p-gqa-attention.py:base.py"
+      timeout_sec: 14400.0
+
+    - name: "3p-mla-attention"
+      prompt_file: "assets/prompts/accelerate_kernel.md"
+      workspace_files:
+        - "assets/bases/3p-mla-attention.py:base.py"
+      timeout_sec: 14400.0
+
+    - name: "4p-sparse-attention"
+      prompt_file: "assets/prompts/accelerate_kernel.md"
+      workspace_files:
+        - "assets/bases/4p-sparse-attention.py:base.py"
+      timeout_sec: 14400.0
+
+    - name: "5p-flex-attention"
+      prompt_file: "assets/prompts/accelerate_kernel.md"
+      workspace_files:
+        - "assets/bases/5p-flex-attention.py:base.py"
+      timeout_sec: 14400.0
+
+    - name: "6p-paged-attention"
+      prompt_file: "assets/prompts/accelerate_kernel.md"
+      workspace_files:
+        - "assets/bases/6p-paged-attention.py:base.py"
+      timeout_sec: 14400.0
+
+    - name: "7p-ragged-paged-attention"
+      prompt_file: "assets/prompts/accelerate_kernel.md"
+      workspace_files:
+        - "assets/bases/7p-ragged-paged-attention.py:base.py"
+      timeout_sec: 14400.0
+
+    - name: "8p-gemm"
+      prompt_file: "assets/prompts/accelerate_kernel.md"
+      workspace_files:
+        - "assets/bases/8p-gemm.py:base.py"
+      timeout_sec: 14400.0
+
+    - name: "9p-swiglu-mlp"
+      prompt_file: "assets/prompts/accelerate_kernel.md"
+      workspace_files:
+        - "assets/bases/9p-swiglu-mlp.py:base.py"
+      timeout_sec: 14400.0
+
+    - name: "10p-sparse-moe"
+      prompt_file: "assets/prompts/accelerate_kernel.md"
+      workspace_files:
+        - "assets/bases/10p-sparse-moe.py:base.py"
+      timeout_sec: 14400.0
+
+    - name: "11p-megablox-gmm"
+      prompt_file: "assets/prompts/accelerate_kernel.md"
+      workspace_files:
+        - "assets/bases/11p-megablox-gmm.py:base.py"
+      timeout_sec: 14400.0
+
+    - name: "12p-rmsnorm"
+      prompt_file: "assets/prompts/accelerate_kernel.md"
+      workspace_files:
+        - "assets/bases/12p-rmsnorm.py:base.py"
+      timeout_sec: 14400.0
+
+    - name: "13p-cross-entropy"
+      prompt_file: "assets/prompts/accelerate_kernel.md"
+      workspace_files:
+        - "assets/bases/13p-cross-entropy.py:base.py"
+      timeout_sec: 14400.0
+
+    - name: "14p-ragged-dot"
+      prompt_file: "assets/prompts/accelerate_kernel.md"
+      workspace_files:
+        - "assets/bases/14p-ragged-dot.py:base.py"
+      timeout_sec: 14400.0
+
+    - name: "15p-retnet-retention"
+      prompt_file: "assets/prompts/accelerate_kernel.md"
+      workspace_files:
+        - "assets/bases/15p-retnet-retention.py:base.py"
+      timeout_sec: 14400.0
+
+    - name: "16p-mamba2-ssd"
+      prompt_file: "assets/prompts/accelerate_kernel.md"
+      workspace_files:
+        - "assets/bases/16p-mamba2-ssd.py:base.py"
+      timeout_sec: 14400.0
+
+    - name: "17p-triangle-multiplication"
+      prompt_file: "assets/prompts/accelerate_kernel.md"
+      workspace_files:
+        - "assets/bases/17p-triangle-multiplication.py:base.py"
+      timeout_sec: 14400.0
+
+    - name: "18k-conv2d-relu-biasadd"
+      prompt_file: "assets/prompts/accelerate_kernel.md"
+      workspace_files:
+        - "assets/bases/18k-conv2d-relu-biasadd.py:base.py"
+      timeout_sec: 14400.0
+
+    - name: "19k-matmul-subtract-multiply-relu"
+      prompt_file: "assets/prompts/accelerate_kernel.md"
+      workspace_files:
+        - "assets/bases/19k-matmul-subtract-multiply-relu.py:base.py"
+      timeout_sec: 14400.0
+
+    - name: "20k-gemm-multiply-leakyrelu"
+      prompt_file: "assets/prompts/accelerate_kernel.md"
+      workspace_files:
+        - "assets/bases/20k-gemm-multiply-leakyrelu.py:base.py"
+      timeout_sec: 14400.0
+
+    - name: "21k-gemm-divide-sum-scaling"
+      prompt_file: "assets/prompts/accelerate_kernel.md"
+      workspace_files:
+        - "assets/bases/21k-gemm-divide-sum-scaling.py:base.py"
+      timeout_sec: 14400.0
+
+    - name: "22k-conv2d-instancenorm-divide"
+      prompt_file: "assets/prompts/accelerate_kernel.md"
+      workspace_files:
+        - "assets/bases/22k-conv2d-instancenorm-divide.py:base.py"
+      timeout_sec: 14400.0
+
+    - name: "23k-matmul-sum-max-avgpool-logsumexp-logsumexp"
+      prompt_file: "assets/prompts/accelerate_kernel.md"
+      workspace_files:
+        - "assets/bases/23k-matmul-sum-max-avgpool-logsumexp-logsumexp.py:base.py"
+      timeout_sec: 14400.0
+
+    - name: "24k-matmul-scale-residualadd-clamp-logsumexp-mish"
+      prompt_file: "assets/prompts/accelerate_kernel.md"
+      workspace_files:
+        - "assets/bases/24k-matmul-scale-residualadd-clamp-logsumexp-mish.py:base.py"
+      timeout_sec: 14400.0
+
+    - name: "25k-conv3d-groupnorm-mean"
+      prompt_file: "assets/prompts/accelerate_kernel.md"
+      workspace_files:
+        - "assets/bases/25k-conv3d-groupnorm-mean.py:base.py"
+      timeout_sec: 14400.0
+
+    - name: "26k-bmm-instancenorm-sum-residualadd-multiply"
+      prompt_file: "assets/prompts/accelerate_kernel.md"
+      workspace_files:
+        - "assets/bases/26k-bmm-instancenorm-sum-residualadd-multiply.py:base.py"
+      timeout_sec: 14400.0
+
+    - name: "27k-matmul-mish-mish"
+      prompt_file: "assets/prompts/accelerate_kernel.md"
+      workspace_files:
+        - "assets/bases/27k-matmul-mish-mish.py:base.py"
+      timeout_sec: 14400.0
+
+    - name: "28k-convtranspose3d-layernorm-gelu-scaling"
+      prompt_file: "assets/prompts/accelerate_kernel.md"
+      workspace_files:
+        - "assets/bases/28k-convtranspose3d-layernorm-gelu-scaling.py:base.py"
+      timeout_sec: 14400.0
+
+    - name: "29k-matmul-swish-sum-groupnorm"
+      prompt_file: "assets/prompts/accelerate_kernel.md"
+      workspace_files:
+        - "assets/bases/29k-matmul-swish-sum-groupnorm.py:base.py"
+      timeout_sec: 14400.0
+
+    - name: "30k-matmul-scaling-residualadd"
+      prompt_file: "assets/prompts/accelerate_kernel.md"
+      workspace_files:
+        - "assets/bases/30k-matmul-scaling-residualadd.py:base.py"
+      timeout_sec: 14400.0
+
+    - name: "31k-gemm-batchnorm-gelu-relu"
+      prompt_file: "assets/prompts/accelerate_kernel.md"
+      workspace_files:
+        - "assets/bases/31k-gemm-batchnorm-gelu-relu.py:base.py"
+      timeout_sec: 14400.0
+
+    - name: "32k-gemm-sigmoid-logsumexp"
+      prompt_file: "assets/prompts/accelerate_kernel.md"
+      workspace_files:
+        - "assets/bases/32k-gemm-sigmoid-logsumexp.py:base.py"
+      timeout_sec: 14400.0
+
+    - name: "33k-conv3d-mish-tanh"
+      prompt_file: "assets/prompts/accelerate_kernel.md"
+      workspace_files:
+        - "assets/bases/33k-conv3d-mish-tanh.py:base.py"
+      timeout_sec: 14400.0
+
+    - name: "34k-conv2d-activation-batchnorm"
+      prompt_file: "assets/prompts/accelerate_kernel.md"
+      workspace_files:
+        - "assets/bases/34k-conv2d-activation-batchnorm.py:base.py"
+      timeout_sec: 14400.0
+
+    - name: "35k-gemm-scaling-hardtanh-gelu"
+      prompt_file: "assets/prompts/accelerate_kernel.md"
+      workspace_files:
+        - "assets/bases/35k-gemm-scaling-hardtanh-gelu.py:base.py"
+      timeout_sec: 14400.0
+
+    - name: "36k-matmul-sigmoid-sum"
+      prompt_file: "assets/prompts/accelerate_kernel.md"
+      workspace_files:
+        - "assets/bases/36k-matmul-sigmoid-sum.py:base.py"
+      timeout_sec: 14400.0
+
+    - name: "37k-matmul-swish-scaling"
+      prompt_file: "assets/prompts/accelerate_kernel.md"
+      workspace_files:
+        - "assets/bases/37k-matmul-swish-scaling.py:base.py"
+      timeout_sec: 14400.0
+
+    - name: "38k-matmul-dropout-softmax"
+      prompt_file: "assets/prompts/accelerate_kernel.md"
+      workspace_files:
+        - "assets/bases/38k-matmul-dropout-softmax.py:base.py"
+      timeout_sec: 14400.0
+
+    - name: "39k-conv2d-gelu-globalavgpool"
+      prompt_file: "assets/prompts/accelerate_kernel.md"
+      workspace_files:
+        - "assets/bases/39k-conv2d-gelu-globalavgpool.py:base.py"
+      timeout_sec: 14400.0
+
+    - name: "40k-gemm-groupnorm-min-biasadd"
+      prompt_file: "assets/prompts/accelerate_kernel.md"
+      workspace_files:
+        - "assets/bases/40k-gemm-groupnorm-min-biasadd.py:base.py"
+      timeout_sec: 14400.0
+
+    - name: "41k-gemm-add-relu"
+      prompt_file: "assets/prompts/accelerate_kernel.md"
+      workspace_files:
+        - "assets/bases/41k-gemm-add-relu.py:base.py"
+      timeout_sec: 14400.0
+
+    - name: "42k-gemm-max-subtract-gelu"
+      prompt_file: "assets/prompts/accelerate_kernel.md"
+      workspace_files:
+        - "assets/bases/42k-gemm-max-subtract-gelu.py:base.py"
+      timeout_sec: 14400.0
+
+    - name: "43k-gemm-batchnorm-scaling-softmax"
+      prompt_file: "assets/prompts/accelerate_kernel.md"
+      workspace_files:
+        - "assets/bases/43k-gemm-batchnorm-scaling-softmax.py:base.py"
+      timeout_sec: 14400.0
+
+    - name: "44k-matmul-divide-gelu"
+      prompt_file: "assets/prompts/accelerate_kernel.md"
+      workspace_files:
+        - "assets/bases/44k-matmul-divide-gelu.py:base.py"
+      timeout_sec: 14400.0
+
+    - name: "45k-gemm-groupnorm-swish-multiply-swish"
+      prompt_file: "assets/prompts/accelerate_kernel.md"
+      workspace_files:
+        - "assets/bases/45k-gemm-groupnorm-swish-multiply-swish.py:base.py"
+      timeout_sec: 14400.0
+
+    - name: "46k-conv2d-groupnorm-tanh-hardswish-residualadd-logsumexp"
+      prompt_file: "assets/prompts/accelerate_kernel.md"
+      workspace_files:
+        - "assets/bases/46k-conv2d-groupnorm-tanh-hardswish-residualadd-logsumexp.py:base.py"
+      timeout_sec: 14400.0
+
+    - name: "47k-matmul-add-swish-tanh-gelu-hardtanh"
+      prompt_file: "assets/prompts/accelerate_kernel.md"
+      workspace_files:
+        - "assets/bases/47k-matmul-add-swish-tanh-gelu-hardtanh.py:base.py"
+      timeout_sec: 14400.0
+
+    - name: "48k-matmul-batchnorm-biasadd-divide-swish"
+      prompt_file: "assets/prompts/accelerate_kernel.md"
+      workspace_files:
+        - "assets/bases/48k-matmul-batchnorm-biasadd-divide-swish.py:base.py"
+      timeout_sec: 14400.0
+
+    - name: "49k-matmul-avgpool-gelu-scale-max"
+      prompt_file: "assets/prompts/accelerate_kernel.md"
+      workspace_files:
+        - "assets/bases/49k-matmul-avgpool-gelu-scale-max.py:base.py"
+      timeout_sec: 14400.0
+
+    - name: "50k-matmul-gelu-softmax"
+      prompt_file: "assets/prompts/accelerate_kernel.md"
+      workspace_files:
+        - "assets/bases/50k-matmul-gelu-softmax.py:base.py"
+      timeout_sec: 14400.0

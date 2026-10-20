@@ -1,0 +1,1 @@
+Answer this question about `tpu7x`, grounded in the TPU documentation, passing it exactly as written: "Which machine type do all TPU7x topologies use?" Answer clearly, citing any references you can for grounding. Drop a JSON at `/logs/artifacts/answer.json` with keys `answer` and `reference`, for scoring.

@@ -1,0 +1,120 @@
+# Task: serve Qwen3-32B on TPU via torch-tpu
+
+Onboard Qwen3-32B (https://huggingface.co/Qwen/Qwen3-32B) to run as an
+inference server on Cloud TPU, using the torch_tpu backend.
+Model: Qwen3-32B
+
+## Definition of done
+
+You are done when all eight hold:
+
+1. A vLLM server is running on TPU hardware serving the model.
+2. It answers a completion request over HTTP with coherent output, and you
+show the request and the response.
+3. You report measured performance in markdown tables (format below) — real
+numbers from your run, not estimates.
+4. You give the exact commands to reproduce the result from scratch.
+5. Your code changes are a series of local git commits, and the log reads as
+the story of how you got there.
+6. Every artifact is retained locally, with versions pinned (see below).
+7. Within the harness, use Opus 5 (1M) context do this task.
+8. Use a tpu-v7 for this task. There should be some on a shared cluster you
+can use. Check the environment for the correct cluster.
+
+If you cannot reach a running server, say so plainly and report how far you
+got, what blocked you, and what you ruled out. A truthful partial result is
+worth more than a claimed success.
+
+## Artifacts and versions
+
+Everything you produce must survive the run. A result that cannot be inspected
+or reproduced afterwards does not count.
+
+- **Keep artifacts on local disk**, under one directory, organised and named so
+a reader can tell what each file is. Not scattered in /tmp, not left inside a
+container that gets torn down, not only in a scrollback buffer.
+- **Retain at minimum**: raw benchmark output (not just the summary numbers),
+server logs, any generated or patched source, the serving config, and any
+profiles you captured.
+- **Pin every version you depended on**, recorded in one file alongside the
+artifacts:
+- container image — the **digest**, not just the tag
+- torch_tpu build / wheel version
+- vLLM version
+- Tokamax commit SHA, if used
+- Hugging Face model revision (the commit hash, not `main`)
+- TPU runtime / accelerator type and topology
+- **Every benchmark row must be traceable** to the raw output it came from and
+the version set it ran against. State which.
+- Do not commit credentials or model weights. If ADC or a token is mounted,
+keep it out of the artifact directory and out of git history.
+- At the end of the task run a artifacts organization step, where
+your artifact directory (or /logs/artifacts only if your agent environment does not already specify an artifact directory) is organized with all generated code, profiles,
+relevant logs as so on. Ready to be zipped for analysis.
+
+## Reporting benchmarks
+
+Report numbers in tables, not prose. One row per configuration you measured.
+
+| Config | Topology | dtype | Batch | In/Out tokens | TTFT (ms) | ITL (ms) | Throughput (tok/s) |
+|---|---|---|---|---|---|---|---|
+
+Rules for the table:
+- Every number is measured. If a cell is an estimate or a single sample, mark
+  it. If you did not measure it, leave it blank — never fill it in plausibly.
+- State how many runs each number averages, and the variance if you have it.
+- If you measured a baseline (CPU, or the model before your changes), give it
+  its own row so the comparison is visible rather than asserted.
+
+Put failures in a second table — what you tried, what happened, whether you
+resolved it:
+
+| Attempt | Config | Outcome | Resolution |
+|---|---|---|---|
+
+## How to work
+
+- **Commit as you go, locally.** Each commit should be one coherent step that
+  builds or runs. Do not deliver one large commit at the end.
+- **The commit message carries the reasoning** — what changed and why it was
+  necessary. This is where the narrative lives.
+- **Comment the flow in code where it is not obvious**: why a kernel was
+  swapped, why a shape is padded, why an op was replaced. Explain *why*, not
+  *what* — a line restating the code is noise. Keep it short.
+- No need to push anything. Local history is the deliverable.
+
+## Hard constraints
+
+- **Use torch_tpu.** Do NOT use torch_xla / pytorch_xla, and do NOT use the
+  tpu-inference repo. Both are older paths and are out of scope. If you find
+  yourself importing either, stop and reconsider the approach.
+- **Do not reuse existing work.** Write everything this task needs yourself.
+  - You MAY read: the Hugging Face model card and config, the torch_tpu source
+    inside the provided container, Tokamax, and public vLLM/TPU documentation.
+  - You MUST NOT read or copy onboarding code, scripts, notebooks, configs, or
+    output artifacts that already exist on any VM, disk, bucket, or container
+    you did not create during this task. Reading such material is a FAIL, even
+    if you do not copy from it.
+  - If you encounter pre-existing work, stop reading it and say so in your
+    report.
+- **Do not contaminate pre-existing containers.** Create your own. Do not
+  install into, modify, or exec against a container you did not start.
+- **Name every job with "agent" in the job name**, so runs are identifiable.
+
+## Environment
+
+- Inspect your environment before assuming what is available: check for TPU
+  access, a GKE cluster, and quota. Authenticate with ADC.
+- Prefer a clean GKE setup. A TPU VM is acceptable if the environment is clean.
+- Size the topology for a 32B model yourself and state your reasoning.
+
+## Allowances
+
+- vLLM is the intended inference engine.
+- You may use existing Pallas kernels where they apply. Tokamax has some:
+  https://github.com/openxla/tokamax
+
+## Reporting
+
+Cite the source for each non-obvious decision — which doc, which file, which
+measurement. Where you inferred or guessed, say that you did.

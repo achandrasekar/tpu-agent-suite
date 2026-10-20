@@ -1,0 +1,82 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT152 from the "Kernel optimization" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat152
+    prompt: |-
+      We need a faster Pallas kernel for this per-token  INT8 activation quantization on TPU7x. The input x is bfloat16 with shape (4096, 7168), and the outputs are int8 values and bfloat16 scales. Preserve the function signature, layouts, and output order, matching the reference with rtol=1e-5 and atol=1e-6.
+      import jax
+      import jax.numpy as jnp
+      def get_inputs():
+      x = jax.random.normal(jax.random.key(42), (4096,7168), dtype=jnp.float32).astype(jnp.float32)
+      x = x.at[0].set(0)
+      dynamic_args = [x]
+      static_args = []
+      return dynamic_args, static_args
+      def computation(x):
+      dtype = jnp.int8
+      dim = -1
+      out_dtype = jnp.bfloat16
+      if jnp.issubdtype(dtype, jnp.integer):
+      dtype_info = jnp.iinfo(dtype)
+      max_val = int(dtype_info.max)
+      min_val = int(dtype_info.min)
+      else:
+      dtype_info = jnp.finfo(dtype)
+      max_val = float(dtype_info.max)
+      min_val = float(dtype_info.min)
+      x_abs_max = jnp.max(jnp.abs(x), axis=dim, keepdims=True)
+      scale = x_abs_max / max_val
+      Guard all-zero slices to avoid 0/0 -> NaN.
+      scale_safe = scale + (scale == 0).astype(scale.dtype)
+      x_scaled = x / scale_safe
+      if jnp.issubdtype(dtype, jnp.integer):
+      # float->int casts truncate toward zero; integer quantization needs
+      # round-to-nearest. Float targets (fp8) round in the cast itself.
+      x_scaled = jnp.round(x_scaled)
+      x_q = jnp.clip(x_scaled, min_val, max_val).astype(dtype)
+      return x_q, scale.astype(out_dtype)
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT152
+      category: Kernel optimization
+      sub_category: Quantised and mixed precision
+      difficulty: Moderate
+      has_code: 'Yes'
+      baseline_result: Partially Solved
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        The expected TPU7x Pallas kernel fuses the per-row absolute maximum reduction, scaling, rounding, clipping, and INT8 conversion, using row tiling, on-chip data reuse, and pipelining to reduce memory traffic while controlling register pressure. It preserves max(abs(x))/127 scaling at the reference precision through quantization, nearest rounding with ties to even, clipping to [-128,127], and zero quantized values and zero scales for all-zero rows. The function signature, layouts, and output order remain unchanged: INT8 values of shape (4096, 7168) followed by BF16 scales of shape (4096,1), with integer values matching exactly and scales satisfying rtol=1e-5 and atol=1e-6. The implementation compiles and executes on TPU7x and delivers a meaningful speedup over the supplied JAX reference.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        The model's kernel compiles and matches the reference on TPU7x, but achieves only a 1.29x wall-time speedup. It loads an entire 128 by 7168 tile and reuses it after computing the row maxima, leaving a large working set that can increase register pressure and require extra VMEM traffic. The response justifies processing 128 rows by citing the TPU's 128-wide vector lanes, but those lanes correspond to the channel dimension; this does not establish an efficient row block size. The fusion delivers a real improvement, but the response does not establish that its register tiling achieves the clamied "maximal compute utilization."
+      weight: 0.5

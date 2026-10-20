@@ -1,0 +1,65 @@
+# Copyright 2025 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+name: dataset-task-naming
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - 'eval/**'
+  push:
+    branches: [main]
+    paths:
+      - 'eval/**'
+
+permissions:
+  contents: read
+
+jobs:
+  check-dataset-names:
+    name: Validate dataset folder names
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Check dataset folder naming convention
+        run: |
+          # Find all directories named "datasets" anywhere in the repo, then
+          # validate that direct child (level 1) and grandchild (level 2)
+          # subdirectories use only lowercase letters, hyphens, and digits
+          # (pattern: ^[a-z0-9-]+$).
+          # Folders starting with '_' or '.' (such as _template) are ignored.
+          status=0
+
+          while IFS= read -r datasets_dir; do
+            while IFS= read -r subdir; do
+              name="$(basename "$subdir")"
+
+              # Skip hidden or template directories starting with '.' or '_'
+              if [[ "$name" =~ ^[._] ]]; then
+                continue
+              fi
+
+              if ! echo "$name" | grep -qE '^[a-z0-9-]+$'; then
+                echo "::error file=${subdir}::Invalid dataset folder name '${name}' under ${datasets_dir}/. Names must contain only lowercase letters, hyphens, and numbers (a-z, 0-9, -)."
+                status=1
+              fi
+            done < <(find "$datasets_dir" -mindepth 1 -maxdepth 2 -type d)
+          done < <(find . -type d -name datasets)
+
+          if [ "$status" -eq 0 ]; then
+            echo "All dataset folder names are valid."
+          fi
+
+          exit "$status"

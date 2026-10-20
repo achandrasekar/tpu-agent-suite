@@ -1,0 +1,107 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT118 from the "GPU Kernel to PyTorch API conversion" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat118
+    prompt: |-
+      We are migrating our continuous-batching LLM inference engine from NVIDIA CUDA to PyTorch for OpenXLA compilation on TPU v6e. The CUDA kernel below implements PagedAttention KV cache insertion (reshape_and_cache), copying incoming token key/value projections into blocked physical KV cache buffers based on slot_mapping. Padding tokens have slot_mapping[token] = -1 and must not be written to the cache.
+
+      Convert this kernel to an idiomatic PyTorch function that compiles cleanly under torch_xla without graph breaks, dynamic-shape recompilations, or race conditions.
+
+      Shapes: key and value are (512, 32, 128), bf16. key_cache is (1024, 32, 16, 16, 8) and value_cache is (1024, 32, 128, 16), bf16, with block_size=16 and x=8. slot_mapping is (512,), int64. Target chip is TPU v6e.
+
+      template <typename scalar_t>
+      __global__ void reshape_and_cache_kernel(
+          const scalar_t* __restrict__ key,
+          const scalar_t* __restrict__ value,
+          scalar_t* __restrict__ key_cache,
+          scalar_t* __restrict__ value_cache,
+          const int* __restrict__ slot_mapping,
+          const int key_stride,
+          const int value_stride,
+          const int num_heads,
+          const int head_size,
+          const int block_size,
+          const int x) {
+        const int token_idx = blockIdx.x;
+        const int slot_idx = slot_mapping[token_idx];
+        if (slot_idx < 0) {
+          return;
+        }
+        const int block_idx = slot_idx / block_size;
+        const int block_offset = slot_idx % block_size;
+
+        const int n = num_heads * head_size;
+        for (int i = threadIdx.x; i < n; i += blockDim.x) {
+          const int head_idx = i / head_size;
+          const int head_offset = i % head_size;
+          const int x_idx = head_offset / x;
+          const int x_offset = head_offset % x;
+
+          const int tgt_key_idx = block_idx * num_heads * (head_size / x) * block_size * x
+                                + head_idx * (head_size / x) * block_size * x
+                                + x_idx * block_size * x
+                                + block_offset * x
+                                + x_offset;
+          const int tgt_value_idx = block_idx * num_heads * head_size * block_size
+                                  + head_idx * head_size * block_size
+                                  + head_offset * block_size
+                                  + block_offset;
+          key_cache[tgt_key_idx] = key[token_idx * key_stride + i];
+          value_cache[tgt_value_idx] = value[token_idx * value_stride + i];
+        }
+      }
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT118
+      category: GPU Kernel to PyTorch API conversion
+      sub_category: CUDA Thread-Level to PyTorch
+      difficulty: Hard
+      has_code: 'Yes'
+      baseline_result: Stumped
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        Solved: Provides a vectorized PyTorch implementation that avoids Python token loops and eliminates dynamic shape boolean slicing (e.g. key[slot_mapping >= 0]), preserving static tensor shapes for OpenXLA compilation. Correctly calculates multi-dimensional index offsets (block_idx and block_offset) and handles negative slot padding without corrupting slot 0 (e.g. routing invalid slots to a scratchpad/sink buffer or using static masked scatter/index_put with int64 indices).
+
+        Partially Solved: Vectorizes the operation and maps to cache dimensions, but uses dynamic boolean indexing (src[mask]) that causes graph recompilations on TPU, or misses int64 index casting.
+
+        Stumped: Implements a sequential Python for loop over tokens (for token in range(num_tokens)), clamps negative slots to 0 (causing padding tokens to silently overwrite valid cached tokens in block 0), or invents non-existent torch.ops.xla cache scatter APIs.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        The baseline model correctly avoided dynamic Python control flow and preserved static tensor shapes for OpenXLA compilation. However, it failed catastrophically on the negative padding token trap (slot_mapping = -1).
+
+        Directly from model output:
+        (1) It asserted that passing negative indices into PyTorch advanced indexing (key_cache[block_indices, ..., block_offsets, :]) is an out-of-bounds no-op that safely skips padding tokens under OpenXLA scatter semantics.
+        (2) This safety claim is false: in PyTorch tensor indexing, computing block_idx = slot_mapping // block_size evaluates -1 // 16 = -1. PyTorch advanced indexing resolves index -1 by wrapping around to the final dimension coordinate (e.g. block 1023).
+
+        Because this wrap-around occurs in the frontend before any XLA scatter operation, padding tokens execute valid writes into the final physical KV block, silently corrupting active cached sequences.
+      weight: 0.5

@@ -1,0 +1,13 @@
+{
+  "query": "Write a comprehensive grounded reference on TPU memory and buffer sizing for v6e (Trillium) and v7x (Ironwood) only. Do not mention or compare previous chip generations. Cover physical capacity versus usable scoped VMEM limits, exact byte counts and units, instruction/program allocation scopes, tile residency and padding, SparseCore scratch sizing, static versus runtime XProf memory inspection, DMA utilization and trace-buffer overflow. Label arithmetic and unknown capacities explicitly. Cite only the supplied GitHub source documents using catalog source IDs in Markdown footnotes.",
+  "authoring_request": "Can you search openxla xprof pages and make this more comprehensive. There must be buffer sizes etc",
+  "source_ids": [
+    "xla-scoped-vmem",
+    "xprof-memory-viewer",
+    "xprof-memory-profile",
+    "openxla-tiled-layout",
+    "openxla-sparsecore",
+    "xprof-utilization-viewer",
+    "xprof-custom-call"
+  ]
+}

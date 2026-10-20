@@ -1,0 +1,1 @@
+Answer this question about `jax-device-memory-profiling`, grounded in the TPU documentation, passing it exactly as written: "What pprof command does the page give to open the saved memory.prof in a browser?" Answer clearly, citing any references you can for grounding. Drop a JSON at `/logs/artifacts/answer.json` with keys `answer` and `reference`, for scoring.

@@ -1,0 +1,40 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+[judge]
+judge = "vertex_ai/gemini-3.5-flash"
+atif-trajectory = "/logs/agent/trajectory.json"
+
+[[criterion]]
+description = "The agent reads the model as openai/gpt-oss-20b, links its Hugging Face page, and asks the user to confirm it -- a question with that repository as the default -- rather than presenting it as resolved. It does not substitute a different model."
+type = "binary"
+weight = 1.0
+
+[[criterion]]
+description = "The plan states what is already known to constrain the run -- for example mixture-of-experts routing or MXFP4 weights on torch_tpu -- citing the source tpu-knowledge-base returned, or says the point is unknown and left to onboarding's preflight. It does not claim what the task image contains."
+type = "binary"
+weight = 1.0
+
+[[criterion]]
+description = "The plan's deliverable is inference onboarding only. It does not add benchmarking, a CPU or GPU baseline comparison, or a persistent serving endpoint to the planned work."
+type = "binary"
+weight = 1.0
+
+[[criterion]]
+description = "The agent asks the user one or more numbered questions, in its reply or through its ask tool, each with a suggested default, and says a short reply such as 'go' accepts the defaults. It does not claim onboarding has already started."
+type = "binary"
+weight = 1.0
+
+[scoring]
+aggregation = "weighted_mean"

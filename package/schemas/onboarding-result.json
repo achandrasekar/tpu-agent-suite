@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TPU Onboarding Result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "status",
+    "summary"
+  ],
+  "properties": {
+    "status": {
+      "enum": [
+        "success",
+        "onboarding_required",
+        "blocked_on_cuda_kernel",
+        "needs_input",
+        "failed"
+      ],
+      "description": "Outcome status of the onboarding pipeline."
+    },
+    "summary": {
+      "type": "string",
+      "description": "Human-readable summary of onboarding execution."
+    },
+    "speedup": {
+      "type": "number",
+      "description": "Speedup ratio compared to baseline."
+    },
+    "endpoint_url": {
+      "type": "string",
+      "description": "Verified HTTP inference endpoint URL when mode includes inference."
+    },
+    "job_id": {
+      "type": "string",
+      "description": "Compute job ID of the inference server; live only in serving mode."
+    },
+    "compute_profile": {
+      "type": "string",
+      "description": "The compute profile the inference server runs under; set with job_id when a server is left running."
+    },
+    "health_status": {
+      "type": "string",
+      "description": "Last polled health state of the inference server."
+    },
+    "unwiring_status": {
+      "enum": [
+        "not_required",
+        "ok",
+        "blocked",
+        "failed"
+      ],
+      "description": "Outcome of CUDA unwiring; not_required when preflight flagged nothing."
+    },
+    "parity_verdict": {
+      "enum": [
+        "PASS",
+        "FAIL",
+        "UNVERIFIED",
+        "not_run"
+      ],
+      "description": "Numerical parity verdict from compare_parity.py."
+    },
+    "output_files": {
+      "type": "object",
+      "description": "Named hand-off files produced by the workflow, as fully resolved run-scoped paths.",
+      "additionalProperties": false,
+      "properties": {
+        "benchmark_report": {
+          "type": "string",
+          "description": "Path to generated benchmark report markdown."
+        },
+        "cuda_report": {
+          "type": "string",
+          "description": "Path to the cuda_kernels_report.<model_slug>.json artifact."
+        },
+        "deployments_json": {
+          "type": "string",
+          "description": "Path to the deployments.json service manifest the server was launched from: model, engine, max_model_len, parallelism and every other serving flag. tpu-agent hands it to tpu-kernel-development as `serving_config`, so a kernel harness is built from the configuration the server actually runs."
+        },
+        "launch_recipe": {
+          "type": "string",
+          "description": "Path to the recipe the server was launched with (e.g. launch_vllm.sh): the exact serve command and environment, including flags the manifest does not hold, such as --attention-backend. Handed to tpu-kernel-development with `deployments_json`."
+        },
+        "bench_request": {
+          "type": "string",
+          "description": "Path to bench_request.json (schemas/bench-request.json): the serving benchmark's route, the client's exact arguments and the server it measured. Run again against a changed server, it measures the change on the same points."
+        },
+        "results_json": {
+          "type": "string",
+          "description": "Path to benchmark results: for a served model, the serving benchmark client's summary.json for `bench_request` (a sweep's merged one)."
+        },
+        "patches": {
+          "type": "string",
+          "description": "Path to the model_patches.py unwiring module."
+        },
+        "parity_report": {
+          "type": "string",
+          "description": "Path to parity_report.json."
+        },
+        "sweep_plan": {
+          "type": "string",
+          "description": "Path to the sweep_plan.json a benchmark of several shapes ran from, when it ran on several servers at once. Its merged summary.json is the measurement."
+        }
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "description": "Durable artifact paths produced under the run's artifacts directory.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "error": {
+      "type": "string",
+      "description": "Error diagnostic details if status is failed or blocked."
+    }
+  },
+  "examples": [
+    {
+      "status": "success",
+      "summary": "Model successfully benchmarked and deployed on TPU v5e.",
+      "speedup": 2.45,
+      "endpoint_url": "http://10.0.0.1:8000/v1/completions",
+      "output_files": {
+        "benchmark_report": "artifacts/tpu-model-onboarding/benchmark_report.md",
+        "cuda_report": "artifacts/cuda_kernels_report.state-spaces--mamba-2.8b-hf.json"
+      },
+      "artifacts": [
+        "artifacts/tpu-model-onboarding/benchmark_report.md"
+      ]
+    }
+  ]
+}

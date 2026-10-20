@@ -1,0 +1,72 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT099 from the "Kernel optimization" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat099
+    prompt: |-
+      Optimize the CLIP image-text similarity computation below into a fast Pallas kernel for TPU7x. The inputs are image_embeds with shape(1024,768), text_embeds with shape (4096,768), and a scalar logit_scale, all float32. Keep all three as runtime inputs and preserve the function signature and both output layouts. Test against the reference with rtol=0.001 and atol=0.001.
+      from types import SimpleNamespace
+      import jax
+      import jax.numpy as jnp
+      import numpy as np
+      def get_inputs():
+      import jax
+      import jax.numpy as jnp
+      image_key, text_key = jax.random.split(jax.random.key(42))
+      image_embeds = jax.random.normal(image_key, (1024,768), dtype=jnp.float32)
+      text_embeds = jax.random.normal(text_key, (4096, 768), dtype=jnp.float32)
+      logit_scale = jnp.array(2.6592, dtype=jnp.float32)
+      return [image_embeds, text_embeds, logit_scale],[]
+      def computation(image_embeds,text_embeds,logit_scale):
+      self = SimpleNamespace(logit_scale=logit_scale)
+      image_embeds = image_embeds / jnp.linalg.norm(image_embeds, axis=-1, keepdims=True)
+      text_embeds = text_embeds / jnp.linalg.norm(text_embeds, axis=-1, keepdims=True)
+      cosine similarity as logits
+      logit_scale = jnp.exp(self.logit_scale)
+      logits_per_text = jnp.matmul(text_embeds, image_embeds.T) * logit_scale
+      logits_per_image = logits_per_text.T
+      return logits_per_image, logits_per_text
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT099
+      category: Kernel optimization
+      sub_category: Matmul variants
+      difficulty: Hard
+      has_code: 'Yes'
+      baseline_result: Stumped
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        The expected TPU7x Pallas implementation computes each row’s L2 norm across all 768 features once and reuses the normalization data across similarity tiles, fusing runtime exp(logit_scale) scaling and both output writes into the matrix multiplication epilogue. It uses FP32 norm reductions and accumulation with sufficient multiplication precision, selecting tiles that balance MXU utilization, operand reuse, and register/VMEM usage while overlapping transfers with computation. It preserves all three runtime inputs, the function signature, and the reference’s normalized cosine similarity computation, returning FP32 logits_per_image (1024, 4096) and logits_per_text (4096,1024) as transposes in that order and with their required layouts.  It compiles and executes on TPU7x, matches both outputs within rtol=0.001 and atol=0.001, including the absolute tolerance for logits near zero, and delivers a meaningful latency improvement over the JAX reference.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        The model’s fused Pallas kernel repeats normalization across its 32*8 grid of 256 tile invocations: each text row is normalized eight times and each image row 32 times, adding redundant reductions and scaling instead of reusing normalization results. It compiles and passes correctness at rtol=0.001 and atol=0.001, but takes 0.160 ms versus 0.055 ms for the reference, approximately 2.9x slower, with reported speedups of 0.34x for wall time and 0.20x for XProf. The reported maximum relative difference of 2.38e+01 is amplified by logits near zero; the maximum absolute difference of 9.26e-04 is below atol=0.001, consistent with the passing correctness check.
+      weight: 0.5

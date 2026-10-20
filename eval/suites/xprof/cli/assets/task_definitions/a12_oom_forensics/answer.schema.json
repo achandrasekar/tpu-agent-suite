@@ -1,0 +1,32 @@
+{
+  "task": "a12_oom_forensics",
+  "title": "Project memory scaling to 2x batch and prescribe OOM fix",
+  "answer_file": "answer.json",
+  "pass_threshold": 8,
+  "fields": {
+    "peak_memory_b4_gib": {
+      "type": "number",
+      "tol_rel": 0.05,
+      "weight": 3
+    },
+    "projected_peak_at_2x_gib": {
+      "type": "number",
+      "tol_rel": 0.10,
+      "weight": 3
+    },
+    "fits_in_31_25_gib": {
+      "type": "bool",
+      "weight": 2
+    },
+    "recommended_fix": {
+      "type": "enum",
+      "values": [
+        "remat",
+        "donation",
+        "sharding",
+        "none"
+      ],
+      "weight": 3
+    }
+  }
+}

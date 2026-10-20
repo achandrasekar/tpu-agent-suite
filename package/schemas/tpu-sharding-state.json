@@ -1,0 +1,484 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "tpu-sharding Experiment State",
+  "description": "Structured session ledger for the tpu-sharding multi-agent optimization loop (<artifacts>/state.json).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "task_definition",
+    "current_standings",
+    "trajectory"
+  ],
+  "properties": {
+    "task_definition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "model",
+        "task_type",
+        "target_metric",
+        "related_metrics_to_track",
+        "execution_timeout_seconds"
+      ],
+      "properties": {
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Target model identifier (e.g., qwen3.5-397b-a17b)."
+        },
+        "task_type": {
+          "type": "string",
+          "enum": [
+            "inference",
+            "training"
+          ],
+          "description": "Workload type."
+        },
+        "target_metric": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Primary metric to optimize (e.g., minimize_ttft, maximize_mfu)."
+        },
+        "related_metrics_to_track": {
+          "type": "array",
+          "description": "Task default metrics plus user-specified custom metrics.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "model_path": {
+          "type": "string",
+          "description": "Filesystem path or repository URL to the model code."
+        },
+        "hardware_topology": {
+          "type": "string",
+          "description": "TPU generation and slice topology (e.g., v6e_2x2x1)."
+        },
+        "optimization_constraints": {
+          "type": "string",
+          "description": "User-defined constraints and bounds (e.g., 'Sequence length must be fixed at 2048.', 'HBM usage < 90%')."
+        },
+        "optimization_guardrails": {
+          "type": "string",
+          "description": "User-defined constraints and bounds (e.g., batch_size range, HBM limits)."
+        },
+        "execution_timeout_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Per-run execution timeout in seconds (default: 3600)."
+        },
+        "baseline_report_path": {
+          "type": "string",
+          "description": "Relative artifact path to the baseline run report (e.g., 0/report_0.md)."
+        },
+        "loop_budget_runs": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Optimization loop limit as an integer number of runs (e.g., 5)."
+        },
+        "loop_budget": {
+          "type": "string",
+          "description": "Optimization loop limit as a string (e.g., 'indefinite' or '5')."
+        }
+      }
+    },
+    "current_standings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "consecutive_non_improving_greedy",
+        "consecutive_non_improving_broad"
+      ],
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "GREEDY",
+            "BROAD_SEARCH"
+          ],
+          "description": "Current optimization search mode."
+        },
+        "consecutive_non_improving_greedy": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Consecutive non-improving attempts in GREEDY mode."
+        },
+        "consecutive_non_improving_broad": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Consecutive non-improving attempts in BROAD_SEARCH mode."
+        },
+        "best_run": {
+          "type": "object",
+          "description": "Present once at least one run has succeeded; omitted before baseline completion or if all runs have failed.",
+          "additionalProperties": false,
+          "required": [
+            "iteration",
+            "target_metric",
+            "report_path",
+            "recipe_path"
+          ],
+          "properties": {
+            "iteration": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Iteration index of the best run so far."
+            },
+            "target_metric": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "name",
+                "value",
+                "unit"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "number"
+                },
+                "unit": {
+                  "type": "string",
+                  "description": "Canonical unit ('s' for all time/latency metrics, '%' for percentages, 'GiB'/'GB' for memory, 'GiB/s'/'GB/s' for bandwidth, 'TFLOPS/s/device' for compute, throughput units, or '' for dimensionless/custom dimensions).",
+                  "enum": [
+                    "s",
+                    "%",
+                    "GiB",
+                    "GB",
+                    "GiB/s",
+                    "GB/s",
+                    "TFLOPS/s/device",
+                    "tok/s/dev",
+                    "tok/s",
+                    "req/s",
+                    "samples/s",
+                    "steps/s",
+                    ""
+                  ]
+                }
+              }
+            },
+            "report_path": {
+              "type": "string",
+              "description": "Relative artifact path to the best run report."
+            },
+            "recipe_path": {
+              "type": "string",
+              "description": "Relative artifact path to the best run recipe."
+            }
+          }
+        },
+        "last_executed_run": {
+          "type": "object",
+          "description": "Present once at least one run has completed execution; omitted during initial setup.",
+          "additionalProperties": false,
+          "required": [
+            "iteration",
+            "status"
+          ],
+          "properties": {
+            "iteration": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Iteration index of the most recently executed run."
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "PENDING",
+                "RUNNING",
+                "SUCCESS",
+                "PARTIAL_SUCCESS",
+                "FAIL",
+                "TIMEOUT"
+              ],
+              "description": "Execution status of the last run."
+            },
+            "target_metric": {
+              "type": "object",
+              "description": "Primary target metric for the last run (omitted if run failed before producing metrics).",
+              "additionalProperties": false,
+              "required": [
+                "name",
+                "value",
+                "unit"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "number"
+                },
+                "unit": {
+                  "type": "string",
+                  "description": "Canonical unit ('s' for all time/latency metrics, '%' for percentages, 'GiB'/'GB' for memory, 'GiB/s'/'GB/s' for bandwidth, 'TFLOPS/s/device' for compute, throughput units, or '' for dimensionless/custom dimensions).",
+                  "enum": [
+                    "s",
+                    "%",
+                    "GiB",
+                    "GB",
+                    "GiB/s",
+                    "GB/s",
+                    "TFLOPS/s/device",
+                    "tok/s/dev",
+                    "tok/s",
+                    "req/s",
+                    "samples/s",
+                    "steps/s",
+                    ""
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "trajectory": {
+      "type": "array",
+      "description": "Cumulative chronological log of all experiment iterations.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "iteration",
+          "report_path",
+          "hypothesis",
+          "justification",
+          "status"
+        ],
+        "properties": {
+          "iteration": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Zero-based experiment iteration index (0 is baseline)."
+          },
+          "job_id": {
+            "type": "string",
+            "description": "Backend job identifier."
+          },
+          "report_path": {
+            "type": "string",
+            "description": "Relative artifact path to report_<N>.md."
+          },
+          "recipe_path": {
+            "type": "string",
+            "description": "Relative artifact path to recipe_<N>.<ext> (or winning sub-run recipe_<N>.<k>.<ext>)."
+          },
+          "branched_from": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Iteration index from which this configuration branched (omitted or 0 for baseline Run 0)."
+          },
+          "hypothesis": {
+            "type": "string",
+            "description": "Configuration change tested (written by Optimizer)."
+          },
+          "justification": {
+            "type": "string",
+            "description": "Engineering rationale for the hypothesis (written by Optimizer)."
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "PENDING",
+              "RUNNING",
+              "SUCCESS",
+              "PARTIAL_SUCCESS",
+              "FAIL",
+              "TIMEOUT"
+            ],
+            "description": "Execution status (written by Executor)."
+          },
+          "failure_reason": {
+            "type": "string",
+            "description": "Optional reason when status is FAIL or TIMEOUT (e.g., OOM, Executor Hung - Cleaned Up)."
+          },
+          "execution_duration_seconds": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Elapsed execution duration in seconds (written by Executor)."
+          },
+          "target_metric": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "value",
+              "unit"
+            ],
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "value": {
+                "type": "number"
+              },
+              "unit": {
+                "type": "string",
+                "description": "Canonical unit ('s' for all time/latency metrics, '%' for percentages, 'GiB'/'GB' for memory, 'GiB/s'/'GB/s' for bandwidth, 'TFLOPS/s/device' for compute, throughput units, or '' for dimensionless/custom dimensions).",
+                "enum": [
+                  "s",
+                  "%",
+                  "GiB",
+                  "GB",
+                  "GiB/s",
+                  "GB/s",
+                  "TFLOPS/s/device",
+                  "tok/s/dev",
+                  "tok/s",
+                  "req/s",
+                  "samples/s",
+                  "steps/s",
+                  ""
+                ]
+              }
+            }
+          },
+          "related_metrics": {
+            "type": "array",
+            "description": "Tracked related metrics with scalar numeric value and canonical unit (for percentile metrics like P50/P99, record separate entries such as ttft_p50 and ttft_p99; for iteration N >= 1, reuse the exact (name, unit) pairs from trajectory[0]).",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "name",
+                "value",
+                "unit"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "number"
+                },
+                "unit": {
+                  "type": "string",
+                  "description": "Canonical unit ('s' for all time/latency metrics, '%' for percentages, 'GiB'/'GB' for memory, 'GiB/s'/'GB/s' for bandwidth, 'TFLOPS/s/device' for compute, throughput units, or '' for dimensionless/custom dimensions).",
+                  "enum": [
+                    "s",
+                    "%",
+                    "GiB",
+                    "GB",
+                    "GiB/s",
+                    "GB/s",
+                    "TFLOPS/s/device",
+                    "tok/s/dev",
+                    "tok/s",
+                    "req/s",
+                    "samples/s",
+                    "steps/s",
+                    ""
+                  ]
+                }
+              }
+            }
+          },
+          "profiler_trace_path": {
+            "type": "string",
+            "description": "Path or GCS URI to the profiler trace directory (written by Executor)."
+          },
+          "xprof_session_id": {
+            "type": "string",
+            "description": "XProf session timestamp directory identifier (written by Executor)."
+          },
+          "takeaways": {
+            "type": "string",
+            "description": "Summary empirical takeaways (written by Optimizer)."
+          }
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "task_definition": {
+        "model": "qwen3.5-397b-a17b",
+        "task_type": "training",
+        "target_metric": "maximize_mfu",
+        "related_metrics_to_track": [
+          "step_time",
+          "mfu",
+          "tflops_per_device",
+          "token_throughput"
+        ],
+        "optimization_guardrails": "batch_size between 64 and 256, HBM usage < 90%",
+        "execution_timeout_seconds": 3600,
+        "baseline_report_path": "0/report_0.md",
+        "loop_budget": "indefinite"
+      },
+      "current_standings": {
+        "mode": "GREEDY",
+        "consecutive_non_improving_greedy": 0,
+        "consecutive_non_improving_broad": 0,
+        "best_run": {
+          "iteration": 0,
+          "target_metric": {
+            "name": "mfu",
+            "value": 39.5,
+            "unit": "%"
+          },
+          "report_path": "0/report_0.md",
+          "recipe_path": "0/recipe_0.sh"
+        },
+        "last_executed_run": {
+          "iteration": 0,
+          "status": "SUCCESS",
+          "target_metric": {
+            "name": "mfu",
+            "value": 39.5,
+            "unit": "%"
+          }
+        }
+      },
+      "trajectory": [
+        {
+          "iteration": 0,
+          "job_id": "job-20260921-000",
+          "report_path": "0/report_0.md",
+          "recipe_path": "0/recipe_0.sh",
+          "branched_from": 0,
+          "hypothesis": "Establish initial workload validation and baseline hardware metrics.",
+          "justification": "Baseline execution with user-supplied configuration.",
+          "status": "SUCCESS",
+          "execution_duration_seconds": 612.4,
+          "target_metric": {
+            "name": "mfu",
+            "value": 39.5,
+            "unit": "%"
+          },
+          "related_metrics": [
+            {
+              "name": "step_time",
+              "value": 4.12,
+              "unit": "s"
+            },
+            {
+              "name": "tflops_per_device",
+              "value": 362.1,
+              "unit": "TFLOPS/s/device"
+            },
+            {
+              "name": "token_throughput",
+              "value": 1980.5,
+              "unit": "tok/s/dev"
+            },
+            {
+              "name": "loss",
+              "value": 2.14,
+              "unit": ""
+            }
+          ],
+          "profiler_trace_path": "0/tensorboard",
+          "xprof_session_id": "2026_09_21_12_30_00",
+          "takeaways": "Baseline achieved 39.5% MFU; XProf indicates AllToAll routing overhead from ep=8."
+        }
+      ]
+    }
+  ]
+}

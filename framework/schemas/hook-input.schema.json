@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Hook Input Schema",
+  "description": "JSON Schema specification for normalized lifecycle hook inputs delivered via stdin to developer hook scripts.",
+  "type": "object",
+  "required": [
+    "event",
+    "args"
+  ],
+  "properties": {
+    "event": {
+      "type": "string",
+      "enum": [
+        "PreToolUse",
+        "PostToolUse",
+        "SubagentStop",
+        "SessionStart",
+        "Stop",
+        "SessionEnd"
+      ],
+      "description": "Lifecycle phase of the hook invocation."
+    },
+    "tool": {
+      "type": "string",
+      "description": "Canonical tool category (e.g. shell, read, write, edit, search, delegate) or custom tool identifier."
+    },
+    "subagent": {
+      "type": "string",
+      "description": "Subagent type or name identifier (e.g. for SubagentStop or delegation events)."
+    },
+    "args": {
+      "type": "object",
+      "description": "Normalized dictionary of parameters supplied to the tool or subagent."
+    },
+    "output": {
+      "description": "Execution output, deliverable, or result payload (populated for PostToolUse and SubagentStop events)."
+    },
+    "success": {
+      "type": "boolean",
+      "description": "Whether tool execution completed successfully without error (populated for PostToolUse events)."
+    },
+    "context": {
+      "type": "object",
+      "properties": {
+        "workspace": {
+          "type": "string",
+          "description": "Absolute filesystem path to the active workspace root."
+        },
+        "package": {
+          "type": "string",
+          "description": "Canonical identifier of the TPU agent suite package owning the hook."
+        },
+        "session_id": {
+          "type": "string",
+          "description": "Unique session or conversation identifier from the host harness."
+        },
+        "run_id": {
+          "type": "string",
+          "pattern": "^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}$",
+          "description": "Active TPU agent suite run identifier for the current session."
+        }
+      },
+      "required": [
+        "workspace",
+        "package"
+      ],
+      "additionalProperties": false
+    },
+    "raw_input": {
+      "type": "object",
+      "description": "Unmodified original input payload received from the host harness (for diagnostics or unmapped parameters)."
+    },
+    "termination": {
+      "type": "object",
+      "description": "Present for Stop. Why the loop ended, and how many times it has already been resumed.",
+      "properties": {
+        "reason": {
+          "type": "string",
+          "description": "Harness termination reason, verbatim. Only the Google harnesses report one, drawn from Antigravity's TERMINATION_REASON_* enum, e.g. 'NO_TOOL_CALL', 'USER_CANCELED', 'ERROR'."
+        },
+        "error": {
+          "type": "string",
+          "description": "Error text when the loop ended in failure; empty otherwise."
+        },
+        "execution_num": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "How many executions this conversation has had. 1 on the first stop."
+        },
+        "fully_idle": {
+          "type": ["boolean", "null"],
+          "description": "True when no background work is outstanding; null when the harness did not say."
+        }
+      }
+    }
+  },
+  "additionalProperties": false
+}

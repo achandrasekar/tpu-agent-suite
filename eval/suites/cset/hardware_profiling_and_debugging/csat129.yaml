@@ -1,0 +1,59 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT129 from the "Hardware profiling and debugging" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat129
+    prompt: I am using PyTorch/XLA on TPU with SPMD enabled. The test passes a random
+      input tensor with shape (2,4,256,256) and requires_grad=True through three modules.
+      Each module uses copies of its input as the queries,keys, and values for causal
+      Pallas flash attention, followed by a linear layer. The batch dimension is sharded.
+      With scan_layers (use_scan=True), the forward output contains NaNs. Running
+      the same layers in a Python for loop (use_scan=False) produces the expected
+      output. Disabling SPMD also makes the scan version work correctly. Across repeated
+      runs, the scan output varies even though its generated HLO remains unchanged
+      from run to run. What is the smallest change that makes the scan output match
+      the Python loop while keeping scan, SPMD, and Pallas flash attention enabled?
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT129
+      category: Hardware profiling and debugging
+      sub_category: Compilation cache and runtime failures
+      difficulty: Moderate
+      has_code: 'Yes'
+      baseline_result: Stumped
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        The fix should apply the merged change in _scan_impl_flat: multiply every fake carry and xs input by 1 before passing it to fn, while retaining the original fake inputs for parameter mapping. This prevents sharding from replacing those original input data objects during tracing. With scan, SPMD, and Pallas still enabled, the forward result should match the Python loop with atol=1e-3 and rtol=1e-3, without the reported NaNs.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        The response attributes the NaNs to Q/K/V buffer aliasing and recommends cloning those tensors, although the original failing test already clones Q,K, and V. It misses the actual problem: sharding changes the data objects used while tracing scan, breaking their connection to the real inputs. Therefore, Its proposed change does not implement the merged fix.
+      weight: 0.5

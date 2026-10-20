@@ -1,0 +1,7 @@
+{
+  "query": "Explain how a TPU workload is scheduled on GKE: node pools, accelerator and topology selectors, google.com/tpu chip resource requests, taints, and single-host versus multi-host workload structure. Include a minimal sourced Pod fragment, not a full installation guide.",
+  "authoring_request": "Cloud TPU/GKE: simple queries based on GCP pages for content that will not change often",
+  "source_ids": [
+    "tpu-on-gke"
+  ]
+}

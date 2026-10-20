@@ -1,0 +1,5 @@
+{
+  "check_kernel_speedup": {
+    "target_speedup": 1.0
+  }
+}

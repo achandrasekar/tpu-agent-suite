@@ -1,0 +1,97 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT086 from the "TPU Knowledge Q&A" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat086
+    prompt: |-
+      StableHLO vs HLO
+      Is StableHLO a superset, subset or parallell dialect? What problems StableHLO can solve but HLO cannot?
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT086
+      category: TPU Knowledge Q&A
+      sub_category: PyTorch API code and OpenXLA behaviour
+      difficulty: Moderate
+      has_code: 'No'
+      baseline_result: Partially Solved
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        1: Solved (Full Marks)
+        A complete, fully up-to-date, and technically precise answer must hit all three parts of the prompt:
+
+        Superset, Subset, or Parallel Dialect:
+
+        Defines StableHLO as a parallel (peer) dialect designed as a standardized, stable interchange format.
+
+        Explains why it is not simply a subset (introduces versioning infrastructure, mathematical spec, reference interpreter, portability passes).
+
+        Explains why it is not a superset (omits experimental internal XLA opcodes, backend-specific fusions, layout internals).
+
+        Problems StableHLO Solves that HLO Cannot:
+
+        Compatibility Window: Explicitly cites the official 5-year backward and 2-year forward compatibility window via MLIR bytecode serialization and upgrade/downgrade passes.
+
+        Framework-to-Compiler Decoupling: Eliminates the requirement to link against the monolithic XLA C++ repo; acts as an open boundary/ISA.
+
+        Formal Mathematical Specification & Test Suite: Replaces implementation-defined XLA C++ edge cases with an explicit operational spec and reference interpreter.
+
+        Third-Party / Multi-Target Portability: Enables non-XLA compilers (e.g., IREE, custom ASIC/TPU/NPU runtimes) to target a frozen standard.
+
+        Dynamic Shape Standardization: Expresses bounded dynamism and shape operations cleanly within the MLIR type system.
+
+        Category of TPU Knowledge:
+
+        Identifies the category as PyTorch API code and OpenXLA behaviour and briefly justifies it via OpenXLA’s role as the compiler bridge and torch_xla export target.
+        ---------------------------------
+        2: Partially Solved (Candidate's Grade)
+        The candidate/model response falls squarely in this band:
+
+        The model should state that StableHLO is a parallel dialect serving as a portable interchange format, solves HLO's lack of stability by providing formal 5-year backward and 2-year forward compatibility guarantees alongside framework decoupling and a mathematical spec, and belongs to the PyTorch API code and OpenXLA behaviour category.
+
+        Failure Note:
+
+        The response reported an outdated forward compatibility window of 1 month instead of the current 2-year standard. Because long-term version compatibility is the core feature distinguishing StableHLO from HLO, this factual discrepancy prevents a fully solved rating.
+        ---------------------------------
+        3: Stumped (Failed / Inadequate)
+        A response lands in this band if it exhibits fundamental conceptual misunderstandings:
+
+        Incorrectly labeling StableHLO as a strict subset (assuming it is merely "HLO with missing features") or a strict superset (assuming it contains all of XLA plus more ops).
+
+        Failing to explain why HLO cannot serve as a cross-version interchange format (missing compatibility, versioning, or serialization issues).
+
+        Confusing StableHLO with high-level framework front-ends (e.g., confusing it with TorchScript, JAXpr, or TensorFlow SavedModel).
+
+        Misclassifying the TPU domain into unrelated categories (e.g., Hardware fundamentals, Transformer cost modelling, or Roofline and performance modelling).
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        The model stated that StableHLO has a 1-month forward compatibility window rather than the updated 2-year guarantee. Because cross-version compatibility is a defining capability of StableHLO over HLO, this outdated figure precludes a full mark.
+      weight: 0.5

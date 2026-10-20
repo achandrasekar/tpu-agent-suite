@@ -1,0 +1,54 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT076 from the "TPU Knowledge Q&A" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat076
+    prompt: 'On an 8-chip TPU v6e mesh with X=2 andY=4, the same global bf16[504,520]
+      buffer has three legal shard/layout choices: A uses P(''X'', None) with {1,0:T(8,128)(2,1)S(1)},
+      B uses P(None, ''X'') with {0,1:T(8,128)(2,1)S(1)}, and C uses P((''X'',''Y''),None)
+      with {1,0:T(8,128)(2,1)S(1)}. What is the exact per-chip and slice-wide VMEM
+      accounting that ranks A,B,and C from least to most memory?'
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT076
+      category: TPU Knowledge Q&A
+      sub_category: Sharding and parallelism
+      difficulty: Hard
+      has_code: 'No'
+      baseline_result: Partially Solved
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        After sharding and applying the stated layouts:  choice A has local shape [252.520], padded to [256,640]. It uses 327,680 bytes, or 320 KiB, per chip and 2,621,440 bytes, or 2,560 KiB, across the 8-chip slice; choice B has local shape [504,260], padded to exactly [512,264]. It uses 270,336 bytes, or 264 KiB, per chip and 2,162,688 bytes, or 2,112 KiB, across the slice; choice C has local shape  [63,520], padded to [64,640]. It uses 81,920 bytes, or 80 KiB, per chip and 655,360 bytes, or 640 KiB, across the slice. The exact ranking from least to most VMEM is C < B < A for both per-chip and slice-wide memory.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        The response correctly calculates choices A and C and gives the correct ranking, but it does not provide the exact result requested for choice B. It first calculates the correct padded shape [512,264], then incorrectly treats the inner (2,1) tile as a separate 16-element alignment rule and adds [512,272] as another possibility. The (2,1) tile is nested inside the outer T(8,128) tile and does not create an alternative padding requirement. Therefore, reporting B as 264-272 KiB per chip and 2,112-2,176 KiB slice-wide is incorrect.
+      weight: 0.5

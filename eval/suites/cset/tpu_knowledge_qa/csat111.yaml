@@ -1,0 +1,65 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT111 from the "TPU Knowledge Q&A" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat111
+    prompt: |-
+      We are architecting a distributed training framework in JAX for a 70B parameter decoder model across a 256-chip TPU v6e slice. The team is debating how to structure array sharding and device parallelization across the mesh.
+
+      Our tensor shapes are batch size 32, sequence length 8192, hidden dimension 8192, head dimension 128 with 64 heads, operating in bf16 on TPU v6e.
+
+      A tech lead says JAX provides three distinct sharding modes for multi-device execution, each defining a different contract between the user and the XLA compiler regarding array views and communication. What are these three formal sharding modes in JAX, how do they differ regarding global vs. local array semantics and who generates the cross-device collective operations, and when should we choose each mode?
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT111
+      category: TPU Knowledge Q&A
+      sub_category: Sharding & Parallelism
+      difficulty: Hard
+      has_code: 'No'
+      baseline_result: Stumped
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        Solved: Correctly identifies and names JAX's three formal sharding modes:
+        1. Auto mode: The compiler (GSPMD) automatically determines array partitioning across mesh axes; users write standard global arrays and XLA infers communication.
+        2. Explicit mode: The user explicitly defines dimension-to-mesh-axis mappings via NamedSharding and PartitionSpec; arrays retain a global view, but layout is dictated by the user while the compiler generates necessary collectives.
+        3. Manual mode: The user writes local per-device SPMD code (via shard_map / shmap) where array views represent local per-device slices and the user must explicitly author cross-device collective operations (lax.psum, lax.all_gather, lax.all_to_all).
+        Explains trade-offs and selection criteria (Auto for exploration; Explicit for standard production LLMs and FSDP with clean numpy semantics; Manual for custom communication patterns or bypassing GSPMD propagation overhead).
+
+        Partially Solved: Mentions automatic partitioning and manual collectives with shard_map, but fails to distinguish the three formal taxonomy modes (Auto, Explicit, Manual) or confuses them with parallelism strategies (DP, TP, PP).
+
+        Stumped: Fails to name the three formal JAX sharding modes entirely. Confuses sharding modes with model parallelism strategies (writing an essay on Data Parallelism vs Tensor Parallelism) or NamedSharding vs pmap.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        Most critically, the model explicitly hallucinated a legacy superseded API pmap ("Axis-Mapped Vectorized SPMD") as the third formal sharding mode while completely failing to name the correct Explicit mode.
+
+        More generaly the baseline model failed to identify or name JAX's three formal sharding modes (Auto, Explicit, and Manual). Instead, it conflated Auto and Explicit sharding under a single category ("Global-View Automated SPMD" via jax.jit/GSPMD), categorized shard_map as "Local-View Explicit SPMD" rather than Manual mode, and hallucinated the legacy vectorization primitive jax.pmap as the third formal sharding mode ("Axis-Mapped Vectorized SPMD") before pivoting into a generic discussion of model parallelism strategies (DP/TP/FSDP).
+      weight: 0.5

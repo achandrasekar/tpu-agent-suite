@@ -1,0 +1,19 @@
+{
+  "extends": "package.release.json",
+  "name": "tpu-agent-suite-experimental",
+  "display_name": "TPU agent suite experimental",
+  "description": "Experimental build of tpu-agent-suite for testing: everything tpu-agent-suite ships, plus the vLLM optimization skills (benchmark decomposition, roofline and sharding analysis, microbenchmarks, Pallas kernel development, and adversarial review of results). Install it instead of tpu-agent-suite, not beside it.",
+  "add_skills": [
+    "accuracy-check",
+    "change-preflight",
+    "close-gaps",
+    "code-reference",
+    "critical-review",
+    "decompose-optimization",
+    "exit-review",
+    "roofline-analysis",
+    "sharding-strategy",
+    "workload-microbenchmark",
+    "write-tpu-kernels"
+  ]
+}

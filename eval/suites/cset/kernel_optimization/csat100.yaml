@@ -1,0 +1,73 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT100 from the "Kernel optimization" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat100
+    prompt: |-
+      I want to reduce the latency of this GPT-J rotary position update on TPU7x. Please rewrite it as a faster Pallas kernel? The workload uses tensor shaped (4, 2048, 16, 64), with sin_pos and cos_pos each shaped (4,2048,32), all float32. All three are runtime inputs. Keep the existing function signature and output layout, and validate against the reference with rtol=0.00001 and atol=0.00001.
+      import jax
+      import jax.numpy as jnp
+      def get_inputs():
+      import jax
+      import jax.numpy as jnp
+      tensor = jax.random.normal(jax.random.key(42),(4,2048,16,64), dtype=jnp.float32)
+      inv_freq = 1.0 / (10000 ** (jnp.arange(0, 64, 2,dtype=jnp.float32) / 64))
+      angles = jnp.arange(2048, dtype=jnp.float32)[:, None] * inv_freq[None, :]
+      sin_pos = jnp.broadcast_to(jnp.sin(angles)[None, :, :],(4,2048,32))
+      cos_pos = jnp.broadcast_to(jnp.cos(angles)[None, :, :],(4,2048,32))
+      return [tensor, sin_pos, cos_pos],[]
+      def computation(tensor, sin_pos, cos_pos):
+      def rotate_every_two(tensor):
+      rotate_half_tensor = jnp.stack((-tensor[:, :, :, 1::2], tensor[:, :, :, ::2]), axis=-1)
+      rotate_half_tensor = rotate_half_tensor.reshape(rotate_half_tensor.shape[:-2] + (-1,))
+      return rotate_half_tensor
+      def apply_rotary_pos_emb(tensor, sincos):
+      sin_pos, cos_pos = sincos
+      sin_pos = sin_pos[:, :, None, :].repeat(2, 3)
+      cos_pos = cos_pos[:, :, None, :].repeat(2, 3)
+      return (tensor * cos_pos) + (rotate_every_two(tensor) * sin_pos)
+      return apply_rotary_pos_emb(tensor, (sin_pos, cos_pos))
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT100
+      category: Kernel optimization
+      sub_category: Elementwise fusion chains
+      difficulty: Hard
+      has_code: 'Yes'
+      baseline_result: Stumped
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        The expected TPU7x Pallas kernel computes the FP32 rotary update in one fused pass, reusing each runtime sine/cosine pair across the 16 heads and writing each output element once. It keeps even and odd components in separate vector registers during computation without materializing an expanded interleave intermediate, using efficiently packed vector layouts and bounded sequence/head tiles to minimize padding, data rearrangement, and register spills, with independent tiles supporting parallel execution and pipelined transfers. It preserves GPT-J’s adjacent-pair transformation ((a,b) becomes (a.cos-b.sin,b.cos+a.sin)) using the supplied coefficients for each batch and position, while retaining all three runtime inputs, the function signature, and FP32 output shape and layout (4, 2048, 16, 64). It compiles and executes on TPU7x, matches the reference within rtol=1e-5 and atol=1e-5, and delivers a meaningful latency improvement over the compiled JAX reference.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        The model's GPT-7 rotary kernel fails to compile on TPU7x with RESOURCE_EXHAUSTED. It requires 67.74 MB of VMEM against a 63.94 MB limit: 63.74 MB is register allocator spill slots, while the input and output windows occupy only 2.00 MB each. This breakdown points to register pressure from the five dimensional even/odd reshape and subsequent stack/reshape interleaving as the likely cause of the excessive allocation. The kernel never executes, so TPU correctness and speedup could not be evaluated.
+      weight: 0.5

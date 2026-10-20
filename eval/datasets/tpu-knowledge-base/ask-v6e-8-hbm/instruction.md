@@ -1,0 +1,1 @@
+Answer this question about `tpu-v6e-spec`, grounded in the TPU documentation, passing it exactly as written: "How much HBM does a v6e-8 slice have in total, in GB?" Answer clearly, citing any references you can for grounding. Drop a JSON at `/logs/artifacts/answer.json` with keys `answer` and `reference`, for scoring.

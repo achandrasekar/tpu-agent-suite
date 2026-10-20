@@ -1,0 +1,155 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT142 from the "Hardware profiling and debugging" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat142
+    prompt: |-
+      I am profiling a custom matrix multiplication kernel written in JAX Pallas running on a single TensorCore of a TPU v6e. The input tensors are X (8192, 1024) and Y (1024, 4096) in float32, producing an output of shape (8192, 4096). We tile the computation along the M dimension using blocks bm=1024, bk=1024, and bn=4096.
+
+      What we are seeing in the jax.profiler trace is when we turned on the TensorCore performance counters with a 1 µs sampling interval, and the total execution time is sitting at 125.5 µs. The issue in the trace seems to be that the count_sync_wait counter spiking between every single vector store iteration. Because the hardware is constantly stalling on these synchronization barriers, we are severely bottlenecked that is leaving our MXU utilization stranded at a miserable 41%.
+
+      The team did a roofline calculation where they saw the total arithmetic operations are 2 * 8192 * 1024 * 4096 = 68.7 GFLOPs. The memory footprint transferred from HBM across the 8 iterations is approximately 184.5 MB. Over 125.5 us, this equates to roughly 1.47 TB/s, which is close to the 1.6 TB/s peak physical HBM bandwidth of TPU v6e. A colleague insists we have hit an operational intensity cliff and the only option is downcasting everything to bfloat16.
+
+      Another engineer pointed out a hard blocker for using multiple buffering or lookahead pipelining: the memory math simply doesn't work for the core's physical VMEM. Because a (1024, 4096) output tile in float32 takes up 16 MB, and the input tile takes another 16 MB, trying to multi-buffer this will immediately trigger an unrecoverable VMEM OOM.
+
+      To get around the memory limits, they recommended two changes:
+      Shrink the tiles down to bm=128, bk=128, bn=128 to aggressively save VMEM.
+      Transpose Y to (4096, 1024) and use trans_b=True. This forces the systolic array registers to align perfectly with the hardware's physical (8, 128) register sub-lanes.
+
+      I also tried letting the compiler handle it by setting memory_space=pltpu.ANY and throwing pl.prefetch(True) directly into the body function. Unfortunately, Mosaic wasn't having it, the kernel either flat-out failed to compile, or the throughput actually tanked even further.
+
+      import jax
+      from jax import random
+      from jax.experimental import pallas as pl
+      from jax.experimental.pallas import tpu as pltpu
+      import jax.numpy as jnp
+      import numpy as np
+
+      def matmul_pipeline_kernel(x_ref, y_ref, z_ref, *, bm, bk, bn):
+        m, k = x_ref.shape
+        _, n = y_ref.shape
+
+        x_tile_shape = (bm, bk)
+        y_tile_shape = (bk, bn)
+        z_tile_shape = (bm, bn)
+
+        def body_func(x_tile_ref, y_tile_ref, z_tile_ref):
+          k_idx = pl.program_id(2)
+
+          @pl.when(k_idx == 0)
+          def _():
+            with jax.named_scope('init'):
+              z_tile_ref[...] = x_tile_ref[...] @ y_tile_ref[...]
+
+          @pl.when(k_idx > 0)
+          def _():
+
+            with jax.named_scope('acc'):
+              z_tile_ref[...] += x_tile_ref[...] @ y_tile_ref[...]
+
+        pltpu.emit_pipeline(
+            body_func,
+            grid=(m // bm, n // bn, k // bk),
+            in_specs=[
+                pl.BlockSpec(
+                    x_tile_shape,
+                    lambda i, j, k: (i, k),
+                    pipeline_mode=pl.Buffered(buffer_count=1),
+
+                ),
+                pl.BlockSpec(
+                    y_tile_shape,
+                    lambda i, j, k: (k, j),
+                    pipeline_mode=pl.Buffered(buffer_count=1),
+                ),
+            ],
+            out_specs=pl.BlockSpec(
+                z_tile_shape,
+                lambda i, j, k: (i, j),
+                pipeline_mode=pl.Buffered(buffer_count=1),
+            ),
+            trace_scopes=True,
+        )(x_ref, y_ref, z_ref)
+
+      def matmul(x: jax.Array, y: jax.Array, bm: int = 1024, bk: int = 1024, bn: int = 4096) -> jax.Array:
+      m, k = x.shape
+      _, n = y.shape
+      return pl.pallas_call(
+      lambda x_ref, y_ref, z_ref: matmul_pipeline_kernel(x_ref, y_ref, z_ref, bm=bm, bk=bk, bn=bn),
+      out_shape=jax.ShapeDtypeStruct((m, n), x.dtype),
+      )(x, y)
+
+      Why is count_sync_wait stalling the MXU on every tile iteration despite being well below the theoretical compute roofline, is the VMEM OOM concern valid if we pipeline these exact tile dimensions, and how do I restructure this standalone kernel to hit the optimized 88 us runtime on TPU v6e without changing precision or shrinking our block sizes down to 128?
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT142
+      category: Hardware profiling and debugging
+      sub_category: Pipelining and DMA stalls
+      difficulty: Hard
+      has_code: 'Yes'
+      baseline_result: Stumped
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        Stumped: The model output falls into this Stumped category due to memory space lowering errors, VMEM capacity hallucinations, and yielding to the tile-resizing red herring.
+
+        The model output validates the flawed prompt assertion that the exact tile dimensions will trigger a VMEM OOM, hallucinates physical TPU v6e VMEM capacity as 32 MB (instead of 64 MB), and arbitrarily alters the requested block dimensions.
+
+        It introduces compilation bugs by annotating top-level pallas_call inputs and outputs in VMEM memory space, while attempting to allocate a 128 MB tensor into SRAM that can cause an immediate compiler crash.
+
+        The model completely hallucinates compiler APIs. For instance, it tries to force specialized scalar prefetching configurations onto dense pipelines where they don't belong, and it confidently uses prefetching flags that simply do not exist in the framework.
+
+        The model produces bad math and contradicting performance models (achieved compute exceeding memory roofline limits) backed by hallucinated hardware architectural designs.
+
+        Solved:
+
+        The model correctly identifies that count_sync_wait spikes are caused by synchronous DMA wait barriers, explaining exactly why the single-buffered baseline leaves the MXU stranded at a mere 41% utilization.
+
+        The model is able to debunk the fear of a VMEM OOM for our target tile dimensions (bm=1024, bk=1024, bn=4096) by walking through the actual memory math, 4 MB for the X tile, 16 MB for Y, and 16 MB for Z.
+
+        It is able to prove that a pipeline with triple-buffered X-12 MB, a resident single-buffered Y-16 MB, and double-buffered Z-32 MB totals exactly 60 MB. This safely fits under the TPU v6e's hard 64 MiB VMEM ceiling without needing to shrink M dimension.
+
+        It correctly manages to reject the advice to shrink tiles down to 128x128x128, pointing out that doing so would just starve the 256x256 MXU and trigger massive DMA launch overhead.
+
+        The model should also provide a clean, standalone kernel that correctly pairs emit_pipeline with root-level HBM memory specs. It also explicitly passes compiler_params=pltpu.CompilerParams(vmem_limit_bytes=64 * 1024 * 1024) to attempt to bring the runtime to the expected 88 microseconds.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        The model managed to pinpoint the synchronization bottleneck, detected the unnecessary matrix reloads, and rejected the false downcasing suggestion. Rejected the false tile shrinking red herring as well and managed to prune some dead control flow. It however, failed on many other occasions as described below.
+
+        VMEM Hallucination: The model hallucinates that a single TensorCore on TPU v6e provides only 32 MB of physical VMEM, which is a 4x underestimation of actual hardware specification. Due to this assumption, the model assumed that the original tile dimensions provided would trigger an VMEM OOM, and downscaled the block size along M dimension to 512. On TPU v6e, there is 1 TensorCore with 128 MB of dedicated VMEM. Because it downscaled the M dimension to 512. It violated the prompt instruction to preserve block sizes, doubled the pipeline grid iterations from 8 to 16 and added loop scheduling overhead. It should have noted that the user had flawed arithmetic and reasoned a solution onwards.
+
+        Bad Pallas Memory Allocation: In the matmul entry function, the model sets up the outer pl.pallas_call by explicitly pinning both the input and output BlockSpec mappings directly to the TPU's scratchpad memory. In Pallas, inputs and outputs for the root pallas_call must be stored in HBM. Tagging them as pltpu.VMEM instead forces the Mosaic compiler to dump the full, un-tiled tensor directly into on-chip vector memory right at kernel entry. Because the float32 output tensor Z is (8192, 4096), it takes up a massive 128 MB, which is invalid memory annotation that guarantees an immediate compilation failure or hardware crash before the pipeline even runs. The model should have marked the top level pallas specs to HBM memory.
+        PrefetchScalarGridSpec Hallucination: The model hallucinated the wrapping of the top-level call in grid_spec=pltpu.PrefetchScalarGridSpec(num_scalar_prefetch=0, ...), that is a specialized Pallas TPU abstraction meant only for block-sparse operations that load dynamic coordinates or ragged indices into SMEM before any execution happens. Forcing a prefetch count of zero onto a dense matmul is an API misuse that pollutes the compiler's lowering pass, especially since emit_pipeline already manages the pipeline grid internally. The model should have just omitted grid_spec entirely from the outer pallas_call and let the internal emit_pipeline handle the grid traversal.
+
+        Failed to optimize Buffering Depth: The model bottlenecked the pipeline by only using buffer_count=2 and failed to override Mosaic's default memory limits. Double-buffering lacks the depth to fully mask the TPU v6e's DMA descriptor setup latency, leaving transient wait bubbles in the sequencer. Buffer_count=3 is needed to lower the execution time to 88 microseconds. The compiler will also reject the program during static allocation verification because 60 MB tile allocations exceed the Mosaic’s default budget unless the ceiling is manually increased.
+
+        Contradicting Roofline Math: The model hallucinated a mathematical discrepancy by claiming the kernel hits 780.9 TFLOP/s while also acknowledging the workload is hard-capped by a 595.8 TFLOP/s memory roofline. To justify this contradiction, it hallucinated a hardware feature, inventing "separate bidirectional write DMA rings with 1.55 TB/s dedicated write bandwidth." However, the TPU v6e relies on a unified memory controller subsystem with a shared, aggregate HBM bandwidth of 1.64 TB/s across all channels. It completely missed the fundamental understanding of the accelerator's physical hardware architecture.
+      weight: 0.5

@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Serving Benchmark Request",
+  "description": "What an onboarding serving benchmark ran (bench_request.json, returned as output_files.bench_request). Run the same client_args against a changed server and the two summaries differ only by the change.",
+  "type": "object",
+  "required": [
+    "route",
+    "client_args",
+    "server",
+    "results_json"
+  ],
+  "properties": {
+    "route": {
+      "enum": [
+        "beside_server",
+        "port_forward",
+        "sweep"
+      ],
+      "description": "How the client ran."
+    },
+    "client_args": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "serving_benchmark.py's arguments, verbatim (for a sweep, those after `--`), without --base-url and --output-dir."
+    },
+    "server": {
+      "type": "object",
+      "required": [
+        "job_id"
+      ],
+      "description": "The server measured (a sweep's leader): job_id, and when known compute_profile, image, deployments_json, launch_recipe."
+    },
+    "sweep": {
+      "type": "object",
+      "description": "sweep only: what serving_sweep.py run was given besides client_args (sweep_plan, recipe, server_inputs, max_model_len)."
+    },
+    "results_json": {
+      "type": "string",
+      "description": "Path to the client's summary.json (a sweep's merged one)."
+    }
+  },
+  "examples": [
+    {
+      "route": "beside_server",
+      "client_args": [
+        "--engine",
+        "vllm",
+        "--isl-osl",
+        "1024:1024,8192:1024",
+        "--concurrency",
+        "1,8,32,64,128,256",
+        "--seed",
+        "42",
+        "--stop-below-gain-pct",
+        "10"
+      ],
+      "server": {
+        "job_id": "gke-qwen3-32b-serve-7f3c2a",
+        "compute_profile": "v7x-2x2x1",
+        "launch_recipe": "/runs/r/artifacts/tpu-model-onboarding/inference/launch_vllm.sh"
+      },
+      "results_json": "/runs/r/artifacts/tpu-model-onboarding/inference/serving_bench/summary.json"
+    }
+  ]
+}

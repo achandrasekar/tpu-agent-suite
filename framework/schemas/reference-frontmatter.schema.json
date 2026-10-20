@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Reference Frontmatter Schema",
+  "description": "Optional YAML frontmatter of a reference document (references/...). A reference runs in its reader's context; what it declares here is added to every reader by the compiler.",
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Optional display name."
+    },
+    "description": {
+      "type": "string",
+      "description": "Optional one-line summary."
+    },
+    "scripts": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^scripts/"
+      },
+      "description": "Package-relative paths to executable scripts this document uses, under scripts/."
+    },
+    "references": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^references/"
+      },
+      "description": "Package-relative paths to reference documents or directories this document reads, under references/. A directory brings every file under it."
+    },
+    "delegates": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Names of agents or skills this document delegates to."
+    },
+    "host_dependencies": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Python package names this document's scripts need on the host. Unioned by the compiler across the package."
+    },
+    "tpu_dependencies": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Python package names this document's scripts need in the TPU workload environment. Unioned by the compiler across the package."
+    }
+  },
+  "additionalProperties": false
+}

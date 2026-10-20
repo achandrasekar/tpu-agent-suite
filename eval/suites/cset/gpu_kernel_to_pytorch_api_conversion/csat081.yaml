@@ -1,0 +1,117 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT081 from the "GPU Kernel to PyTorch API conversion" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat081
+    prompt: |-
+      We're moving MMCV's points_in_polygons CUDA kernel below to TPU v6e. Provide a complete, runnable pure PyTorch replacement for float 32 points [P,2] and polygons [Q,8], returning float32 [P,Q], that compiles with torch.compile(backend="openxla",fullgraph=True).
+
+      struct point {
+      float x, y;
+      };
+      template <typename scalar_t>
+      global void points_in_polygons_forward_cuda_kernel(
+      const int nthreads, const scalar_t *vertex1, const scalar_t *vertex2,
+      const int rows, const int cols, scalar_t *inside_flag) {
+      CUDA_1D_KERNEL_LOOP(index, nthreads) {
+      int row = index / cols;
+      int col = index % cols;
+      const scalar_t *offset_vertex1 = vertex1 + row * 2;
+      const scalar_t *offset_vertex2 = vertex2 + col * 8;
+
+      point point_[1];
+      point polygon[4];
+
+      point_[0].x = offset_vertex1[0];
+      point_[0].y = offset_vertex1[1];
+
+      polygon[0].x = offset_vertex2[0];
+      polygon[0].y = offset_vertex2[1];
+      polygon[1].x = offset_vertex2[2];
+      polygon[1].y = offset_vertex2[3];
+      polygon[2].x = offset_vertex2[4];
+      polygon[2].y = offset_vertex2[5];
+      polygon[3].x = offset_vertex2[6];
+      polygon[3].y = offset_vertex2[7];
+
+      int nCross = 0;
+      int i, j;
+      float sx, sy, tx, ty, px, py, x;
+      for (i = 0, j = 3; i < 4; j = i, i++) {
+        sx = polygon[i].x;
+        sy = polygon[i].y;
+        tx = polygon[j].x;
+        ty = polygon[j].y;
+
+        px = point_[0].x;
+        py = point_[0].y;
+
+        if (py < min(sy, ty)) continue;
+        if (py > max(sy, ty)) continue;
+
+        if ((sx == px && sy == py) || (tx == px && ty == py)) {
+          break;
+        } else {
+          if ((sy < py && ty >= py) || (sy >= py && ty < py)) {
+            x = sx + (py - sy) * (tx - sx) / (ty - sy);
+            if (x == px) {
+              break;
+            }
+            if (x > px) {
+              nCross++;
+            }
+          }
+        }
+      }
+      if (nCross % 2 == 1) {
+        inside_flag[index] = 1.0;
+      } else {
+        inside_flag[index] = 0.0;
+      }
+      return;
+      }
+      }
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT081
+      category: GPU Kernel to PyTorch API conversion
+      sub_category: CUDA thread-level to PyTorch
+      difficulty: Moderate
+      has_code: 'Yes'
+      baseline_result: Partially Solved
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        A correct response should provide a complete, runnable pure yTorch replacement that accepts float32 points shaped [P,2] and polygons shaped [Q,8] and returns a float32 [P,Q] tensor containing 0.0 or 1.0 for every point-polygon pair. Its results must match the CUDA kernel's ordered four-edge scan, crossing count, and early termination behavior for all inputs, including points exactly on vertices or edge intersections. The implementation must compile as one graph for TPU v6e with torch.compile(backend="openxla",fullgraph=True).
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        The model provides a complete vectorized PyTorch implementation with the requested float32 [P, Q] output  and correctly implements standard parity ray casting for nonboundary points. However, it does not reproduce the CUDA kernel for valid boundary cases. The CUDA kernel scans the four polygon edge in order and stops immediately when the point equals an endpoint or when a computed intersection satisfies x == px, retaining only the crossings counted before that stop. The response instead evaluates all four edges simultaneously and continues counting later crossings. For example, with point [0.0,5.0] and polygon [0.0,0.0,10.0,0.0,10.0,10.0,0.0,10.0], the CUDA kernel stops at the first edge and returns 0.0, while the proposed implementation counts the opposite edge and returns 1.0. It is therefore not an exact replacement.
+      weight: 0.5

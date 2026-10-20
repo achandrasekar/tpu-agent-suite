@@ -1,0 +1,140 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CUDA Kernels Discovery and Onboarding Status Report",
+  "description": "Structured report detailing discovered CUDA/GPU kernels, runtime onboarding status, failure contexts, numerical verification, and TPU kernel optimization recommendations.",
+  "type": "object",
+  "required": [
+    "model_id",
+    "status",
+    "detected_at",
+    "kernels",
+    "tpu_kernel_development_handoff_ready"
+  ],
+  "properties": {
+    "model_id": {
+      "type": "string",
+      "description": "Target Hugging Face model repository identifier or local path."
+    },
+    "mode": {
+      "type": "string",
+      "enum": ["benchmark", "inference"],
+      "description": "Operational onboarding workflow mode."
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "DISCOVERED",
+        "BLOCKED_ON_CUDA_KERNEL",
+        "RUNNING_WITH_FALLBACK"
+      ],
+      "description": "Onboarding lifecycle status."
+    },
+    "failure_context": {
+      "type": "object",
+      "properties": {
+        "stage": {
+          "type": "string",
+          "enum": [
+            "preflight",
+            "unwiring_synthesis",
+            "parity_verification",
+            "compilation",
+            "benchmark_runtime",
+            "inference_daemon_boot",
+            "inference_verification"
+          ]
+        },
+        "error_message": {
+          "type": "string"
+        },
+        "failing_symbol": {
+          "type": "string"
+        },
+        "log_tail": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "fallback_info": {
+      "type": "object",
+      "properties": {
+        "unwired_symbols": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "fallback_implementation": {
+          "type": "string"
+        },
+        "baseline_latency_ms": {
+          "type": "number"
+        },
+        "functional_verification": {
+          "type": "string"
+        },
+        "numerical_parity": {
+          "type": "object",
+          "properties": {
+            "verified": { "type": "boolean" },
+            "max_rel": { "type": "number" },
+            "top1_agreement": { "type": "string" },
+            "verdict": { "type": "string", "enum": ["PASS", "FAIL", "UNVERIFIED"] }
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "detected_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "kernels": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "file",
+          "line",
+          "library",
+          "symbol"
+        ],
+        "properties": {
+          "file": {
+            "type": "string"
+          },
+          "line": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "library": {
+            "type": "string"
+          },
+          "symbol": {
+            "type": "string"
+          },
+          "caller_context": {
+            "type": ["string", "null"]
+          },
+          "playbook": {
+            "type": ["string", "null"]
+          },
+          "playbook_status": {
+            "type": "string",
+            "enum": ["HIT", "MISS"]
+          },
+          "pallas_playbook": {
+            "type": ["string", "null"]
+          }
+        }
+      }
+    },
+    "tpu_kernel_development_handoff_ready": {
+      "type": "boolean",
+      "description": "Whether actionable kernel targets exist for tpu-kernel-development optimization."
+    }
+  }
+}

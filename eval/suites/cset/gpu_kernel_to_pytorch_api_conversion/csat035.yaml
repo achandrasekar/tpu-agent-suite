@@ -1,0 +1,152 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT035 from the "GPU Kernel to PyTorch API conversion" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat035
+    prompt: |-
+      Can you convert the code below to Pytorch that it is OpenXLA compatible and run on TPU clusters:
+
+      // From NVIDIA Technical Blog: "Using CUDA Warp-Level Primitives"
+      // Opportunistic warp-aggregated atomic increment for multiple arbitrary pointers
+      __device__ int atomicAggInc(int *ptr) {
+          int mask = __match_any_sync(__activemask(), (unsigned long long)ptr);
+          int leader = __ffs(mask) - 1; // select a leader
+          int res;
+          if ((threadIdx.x & 0x1f) == leader) { // leader does the update
+              res = atomicAdd(ptr, __popc(mask));
+          }
+          res = __shfl_sync(mask, res, leader); // broadcast result
+          return res + __popc(mask & ((1 << (threadIdx.x & 0x1f)) - 1)); // compute each lane's offset
+      }
+
+      // Complete filtering kernel calling the primitive
+      __global__ void filter_k(int *dst, int *nres, const int *src, int n) {
+          int i = threadIdx.x + blockIdx.x * blockDim.x;
+          if (i >= n) return;
+          if (src[i] > 0)
+              dst[atomicAggInc(nres)] = src[i];
+      }
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT035
+      category: GPU Kernel to PyTorch API conversion
+      sub_category: Warp primitives to PyTorch/OpenXLA
+      difficulty: Hard
+      has_code: 'Yes'
+      baseline_result: Stumped
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        A good response should have the following characters:
+
+        1. Pure Static Shape Preservation (Zero Dynamic Slicing)
+        All intermediate and output tensors maintain fixed, compile-time deterministic dimensions (e.g., shape [N] remains [N], rather than shrinking to [K]).
+
+        Expected: Padded buffers with dedicated fill/pad markers (torch.full_like(src, fill_value)).
+
+        2. Collision-Free, Deterministic Index Permutations
+        Every element (both valid and masked-out lanes) is assigned a strictly unique target index before executing scatter operations.
+
+        Expected: Dual-prefix scans with torch.cumsum (valid elements mapped to [0, ..., valid-1], invalid elements mapped to [valid, ..., N-1]) or any assignment that gives every lane a unique target index before the scatter.
+
+        3. Replacement of SIMT Registers with Tensor-Level Prefix Reductions
+        Register-to-register shuffles (__shfl_sync, __match_any_sync) and bitwise population counts (__popc) are mapped to vector/tensor parallel scans.
+
+        4. Explicit SPMD Collective Synchronization (for Distributed/TPUs)
+        Cluster-level atomics (atomicAdd) are mapped to distributed collective reductions (xm.all_reduce(xm.REDUCE_SUM, ...) or torch.distributed.all_reduce).
+
+        5. Proper XLA Execution Graph Boundary Management
+        The compute path must remain fully asynchronous, avoiding blocking host transfers (.item(), .cpu(), .numpy(), or print statements on device tensors) inside the function.
+
+        The result will fall into the following 3 bands:
+
+        Solved: one committed implementation meeting all five characteristics above
+
+        Partially Solved: at least one solution is mechanically correct, every lane gets a unique target index and output and pad_value come out right, but with non corrupting flaws, dead code, redundant allocations, a host sync in the path, or it hedges between a correct static version and a dynamic one without committing.
+
+        Stumped: no offered solution is correct for TPU. The static attempt assigns colliding target indices so valid data can be destroyed, which is what this run showed, or everything offered leans on dynamic shapes as the core mechanism. Several hedged solutions all wrong is Stumped.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        The model provided 3 solutions. However, there are errors in all of them:
+
+        1. Idiomatic PyTorch / OpenXLA Implementation:
+        a) it is suboptimal for strict OpenXLA / TPU pipelines because the dynamic slice (src[mask]) introduces dynamic-shape recompilation overhead.
+
+        2. TPU-Optimized Static-Shape Implementation (Prefix Scan):
+        It has 2 bugs:
+        1) Critical Bug: Non-Masked Elements Overwrite Valid Compacted Slots
+        Look at how valid_indices is constructed and used with scatter_:
+
+        Python code:
+        =================================================
+        offsets = torch.cumsum(mask.int(), dim=0) - 1
+        valid_indices = torch.clamp(offsets, min=0)
+        ...
+        dst.scatter_(dim=0, index=valid_indices, src=torch.where(mask, src, 0))
+        =================================================
+
+        Let's trace a simple example with src = [-5, 10, -2, 20, 30]:
+
+        mask = [0, 1, 0, 1, 1]
+
+        offsets = [-1, 0, 0, 1, 2]
+
+        valid_indices = [0, 0, 0, 1, 2]
+
+        src_for_scatter = [0, 10, 0, 20, 30]
+
+        When dst.scatter_ executes across dim=0:
+
+        Index 0 is targeted by element 0 (value 0), element 1 (value 10), and element 2 (value 0).
+
+        Because multiple elements share index 0, the write order is unspecified. If element 2 writes after element 1, it overwrites dst[0] with 0, destroying the valid number 10.
+
+        2) Dead Code and Broken pad_value
+        Notice how dst is created and immediately reassigned three times:
+
+        Python code:
+        =================================================
+        dst = torch.full_like(src, fill_value=pad_value) # 1. Created with pad_value
+        ...
+        dst = torch.where(mask, src, pad_value)          # 2. Overwrites #1
+        ...
+        dst = torch.zeros_like(src)                      # 3. Overwrites #2 with zeros
+        =================================================
+        Lines 1 and 2 are dead code.
+
+        Line 3 forces dst to be initialized to 0, meaning if a user specifies pad_value = -1 (or any non-zero value), it is ignored.
+
+        3. Distributed Execution Across TPU Clusters
+        It causes the issues in TPUs:
+        1) Constant Recompilation Storms (TPU HLO Graph Invalidation)
+        a) OpenXLA/TPU compilers generate optimized static hardware machine code for specific tensor dimensions.
+        b) Dynamic tensor slicing (src[mask]) creates a variable output dimension K. Every time a new data batch yields a different K, OpenXLA treats it as an entirely new model graph and triggers an expensive ahead-of-time (AOT) compiler pass, stalling training/inference.
+      weight: 0.5

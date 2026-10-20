@@ -1,0 +1,108 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT103 from the "Kernel optimization" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat103
+    prompt: |-
+      We're serving a DiffLlama (Differential Transformer) model on TPU tpu7x and seeing a heavy HBM bandwidth bottleneck in the DiffLlamaAttention post-attention epilogue right before o_proj, where XLA is emitting multiple separate passes over the activations and doing repeated HBM round trips.
+
+      Can you rewrite the computation block below as a single fused Pallas kernel for tpu7x? We're running with input shapes B=4, S=4096, H=16, D=128 (producing an output of (4, 4096, 8, 256)), using bf16 throughout with the reductions and RMS accumulation in f32 to match the exact mixed-precision behavior of the reference implementation. Because the (B, S, H, D) input layout and (B, S, H // 2, 2 * D) output layout are locked in by the attention kernel and o_proj, don't transpose, concatenate, or split the activations in XLA outside the kernel, don't materialize intermediates to HBM, don't move the normalization off the last axis, and keep the entire epilogue inside a single pallas_call. Test with rtol: 0.01 and atol: 0.05
+
+      # Imports
+      import jax
+      import jax.numpy as jnp
+      # Initialization
+      def get_inputs():
+          dtype = jnp.bfloat16
+          key = jax.random.key(0)
+          k1, k2, k3, k4, k5, k6 = jax.random.split(key, 6)
+          B, S, H, D = 4, 4096, 16, 128
+          attn_output1 = jax.random.normal(k1, (B, S, H, D), dtype=dtype)
+          attn_output2 = jax.random.normal(k2, (B, S, H, D), dtype=dtype)
+          lambda_q1 = jax.random.normal(k3, (D,), dtype=dtype) * 0.1
+          lambda_k1 = jax.random.normal(k4, (D,), dtype=dtype) * 0.1
+          lambda_q2 = jax.random.normal(k5, (D,), dtype=dtype) * 0.1
+          lambda_k2 = jax.random.normal(k6, (D,), dtype=dtype) * 0.1
+          dynamic_args = [attn_output1, attn_output2, lambda_q1, lambda_k1, lambda_q2, lambda_k2]
+          static_args = []
+          return dynamic_args, static_args
+      # Computation
+      def computation(attn_output1, attn_output2, lambda_q1, lambda_k1, lambda_q2, lambda_k2):
+          eps = 1e-5
+          lambda_init = 0.8
+          attn_output = jnp.concatenate([attn_output1, attn_output2], axis=-1)
+          half1, half2 = jnp.split(attn_output, 2, axis=2)
+          lambda_1 = jnp.exp(jnp.sum((lambda_q1 * lambda_k1).astype(jnp.float32), axis=-1)).astype(
+              attn_output1.dtype
+          )
+          lambda_2 = jnp.exp(jnp.sum((lambda_q2 * lambda_k2).astype(jnp.float32), axis=-1)).astype(
+              attn_output1.dtype
+          )
+          lambda_full = lambda_1 - lambda_2 + lambda_init
+          diff_attn = half1 - lambda_full * half2
+          diff_f32 = diff_attn.astype(jnp.float32)
+          var = jnp.mean(diff_f32 * diff_f32, axis=-1, keepdims=True)
+          normed = (diff_f32 * jax.lax.rsqrt(var + eps)).astype(attn_output1.dtype)
+          return (1.0 - lambda_init) * normed
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT103
+      category: Kernel optimization
+      sub_category: Attention
+      difficulty: Hard
+      has_code: 'Yes'
+      baseline_result: Stumped
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        Stumped: The model is stumped whenever the kernel fails to produce a numerically valid (4, 4096, 8, 256) bfloat16 output, whether because the Pallas call fails to lower through the compiler, the chosen tiles overflow VMEM, the block indexing reads or writes out of bounds, or the final values drift outside our 0.01 relative and 0.05 absolute tolerance gates. Hitting any of these failure modes immediately fails our correctness check and aborts the run before we can collect any timing data. Also, if the optimized model fails to beat the reference code, the model solution fails as well.
+
+        Partially Solved:
+        For the model to fail in this category, the kernel should compile cleanly, respect all of our layout invariants, and clear the numerical tolerance gates, but still leave meaningful performance or engineering quality on the table. This happens when the model picks tile sizes that barely touch our 64 MB per-core VMEM capacity, forgets to configure the VMEM budget, recomputes invariant constants on every grid step, misses exact bf16 rounding boundaries, or backs its code with math derivation, baseline assumptions, or speedup claims that do not hold up under scrutiny.
+
+        Solved:
+        The model should deliver a single Pallas kernel whose block specs return proper block indices with the batch axis squeezed, exposing (block_s, 16, 128) bfloat16 input tiles, where each trailing (16, 128) bunch matches one native packed tile, and writing output tiles in our locked layout without any XLA-side transposes, concatenations, or splits. Inside the kernel, loads are immediately upcast to f32 so the 16 to 8 head split lands cleanly on an 8 by 128 vector register boundary, the two output halves then compute their lambda-weighted differential subtraction independently, share a f32 RMS reduction across all features, and write out via two lane-aligned stores without ever materializing a temporary concatenation. The lambda scalar is computed from (1, 128) float32 blocks (or passed via SMEM) while preserving dimensions so it stays on the VPU. And to close it off, the model should use the tiling properly sized for TPU v7, using static sequence blocks of 512 to 1024 across 16 to 32 grid steps with the VMEM limit raised toward our 64 MB per-core budget.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        The optimized code completely failed to be compiled and fails on correctness verdict alone. But, reading through the code, I caught many more discrepancies in the code which I am listing in detail here.
+
+        Wrong Blockspec Index Mapping: The model failed because in the block specifications for every activation and output tensor, the model returned raw element offsets instead of block indices. Because Pallas already scales returned block indices by the block shape, the sequence offset is multiplied by 128 twice, which causes the second sequence step to request rows starting at 16,384 and the third at 32,768 along a sequence axis of only 4,096 elements. Meaning only the first tile of each batch is addressed cleanly. This is an independent bug distinct of any compiler limitation, so even if Mosaic had lowered the kernel body cleanly, 31 out of every 32 tiles would have read from and written to OOB memory, producing garbage outputs or runtime DMA faults and reflecting a wrong understanding of core Pallas indexing.
+
+        Unnecessary In-Kernel Concatenate: Inside the kernel body, the model loaded both (1, 128, 16, 128) bf16 tiles, then concatenated them into a (1, 128, 16, 256) bf16, and split that tensor in half along the 16-element head axis, while also executing the lambda-weighted differential subtraction in bf16 before upcasting to f32. Because bfloat16 packs two rows per sublane with a native 16 by 128 tile, cutting 8 rows along the head dimension performs a sub-tile slice on a narrow data type. Pallas on TPU restricts slicing patterns on sub 32 bit types and expects elementwise math to happen after upcasting to f32, making this packed bf16 sub tile slice the most likely trigger for the Mosaic lowering failure. Even beyond the crash, concatenating first materializes a pointless 1 MB temporary buffer on every grid step and forces unnecessary lane shuffles when the two halves are already independent.
+
+        Lambda Failure:
+        The model also failed because it passed the four lambda q and k vectors into the kernel as 1D bf16 blocks, multiplied them, reduced them to a 0D scalar, cast the result back to bf16, and broadcast it across a 4D bf16 tensor on every single grid step. Because packed 1D vectors, vector-to-scalar extractions, and 0D to 4D broadcast bf16 are all fragile lowering paths in Mosaic, chaining them together introduces a second compilation hazard. While the extra FLOPs are small, recomputing invariant scalar math on every step reflects bad kernel structure.
+
+        Bad Tiling for TPU7x:
+        The model also failed because it tiled the sequence dimension at 128, producing tiny 512 KiB bf16 input tiles across all 128 grid steps, without any configurations of the VMEM limit or performing  any roofline analysis. It also falsely credited the sequence tile for vector unit alignment when the fixed (16, 128) trailing dimensions already cover sublane and lane alignment.
+
+        Wrong Baseline Quantitative analysis: The model also undercounted the tensor memory footprints by x4 by claiming the concatenated (4, 4096, 16, 256) bf16 buffer is around 32 MB and the (4, 4096, 8, 256) halves are 16 MB each, when they are actually 128 MB and 64 MB, while falsely asserting that baseline XLA takes five separate HBM round trips. In reality, XLA already collapses this kernel into one or two fusions, leaving a realistic Pallas speedup of roughly 1.2x to 1.6x rather than a dramatic multi-pass reduction, getting the byte math and baseline behavior wrong would mislead us when sizing VMEM budgets or deciding if a custom kernel is worth maintaining.
+      weight: 0.5

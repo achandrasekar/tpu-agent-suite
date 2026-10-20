@@ -1,0 +1,53 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT159 from the "TPU Knowledge Q&A" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat159
+    prompt: Our TPU v5p decoder uses grouped query attention and greedy speculative
+      decoding, reading weights and the KV cache once per verification call. The drafter's
+      average match rate is stable, but matches cluster within rounds. How should
+      we model throughput to choose the speculation length and explain when larger
+      windows reduce committed tokens per second?
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT159
+      category: TPU Knowledge Q&A
+      difficulty: Moderate
+      has_code: 'No'
+      baseline_result: Partially Solved
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        A correct response computes expected committed tokens as one plus the sum of accepted-prefix probabilities and maximizes this expectation divided by total round time. It uses joint or conditional match probabilities because the average match rate alone cannot describe clustering, and it does not assume clustering necessarily causes earlier saturation. Conditional acceptance need not decrease monotonically. Parallel verification evaluates the drafted window before selecting the accepted prefix; padding overhead is a separate implementation cost. The latency model includes drafting, verification, and overhead, accounting for GQA and the growing computation required by larger windows even when weights and cached KV are read only once. A larger window reduces throughput when its proportional increase  in round time exceeds its proportional gain in expected committed tokens; a numerical optimum requires acceptance and timing data.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        The response correctly models accepted prefixes, correction/bonus tokens, drafting costs, and verification becoming compute bound, However, it applies Jensen's inequality backwards: in its mixture model, E[p^j] >= E[p]^j, contradicting its claim that clustering causes earlier saturation compared with independent matches at the same mean. It also assumes conditional acceptance decreases monotonically, although it can increase after an accepted prefix. Its practical stopping rule also omits expected token yield and any increase in verification time. It incorrectly attributes computation on rejected candidate positions to XLA's static shapes, although parallel verification evaluates the drafted window before selecting the accepted prefix. These errors affect both its explanation and its selection of the speculation length.
+      weight: 0.5

@@ -1,0 +1,76 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT098 from the "Kernel optimization" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat098
+    prompt: |-
+      I am optimizing BEiT inference on TPU7x and want to reduce the latency of its relative position bias computation. Optimize the JAX computation below into a fast Pallas kernel. The inputs are table with shape (2212,16), dtype float32, and position_index with shape (577,577), dtype int32. Keep both arrays as runtime inputs and preserve the function signature and output layout. Test against the reference with rtol=0 and atol=0.
+      from types import SimpleNamespace
+      import jax
+      import jax.numpy as jnp
+      def get_inputs():
+      import jax
+      import jax.numpy as jnp
+      table = jax.random.normal(jax.random.key(42), (2212,16), dtype=jnp.float32)
+      p = jnp.arange(576, dtype=jnp.int32)
+      rows, cols = p // 24, p%24
+      offsets = (rows[:,None] - rows[None, :] +23)*47
+      offsets = offsets + cols[:,None] - cols[None, :]+23
+      position_index = jnp.zeros((577,577), dtype=jnp.int32)
+      position_index = position_index.at[1:,1:].set(offsets)
+      position_index = position_index.at[0,:].set(2209)
+      position_index = position_index.at[:,0].set(2210)
+      position_index = position_index.at[0,0].set(2211)
+      return [table, position_index],[]
+      def computation(table, position_index):
+      self = SimpleNamespace(window_size=(24,24), relative_position_bias_table=table, relative_position_index=position_index)
+      index = self.relative_position_index.reshape(-1)
+      shape = (self.window_size[0] * self.window_size[1] + 1, self.window_size[0] * self.window_size[1] + 1, -1)
+      relative_position_bias = self.relative_position_bias_table[index].reshape(shape)  # WhWw,WhWw,nH
+      return jnp.transpose(relative_position_bias, (2, 0, 1))
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT098
+      category: Kernel optimization
+      sub_category: Data movement
+      difficulty: Moderate
+      has_code: 'Yes'
+      baseline_result: Stumped
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        The expected TPU7x Pallas kernel computes out[h,i,j] = table[position_index[i,j], h], preserving both runtime inputs, their shapes and dtypes, the function signature, and FP32 output layout (16, 577, 577). It reuses the approximately 142 KB bias table in VMEM, streams indices through valid input and output row tiles with safe tail handling, and fuses on-chip gathering with direct head-first output writes to minimize memory traffic and register pressure.
+
+        It also compiles and executes on TPU7x, matches the reference exactly with rtol=0 and atol=0, and delivers a meaningful latency improvement over the compiled JAX reference.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        The model’s optimization fails to compile on TPU7x because its (1,577) block for position_index shaped (577,577) has a second-to-last dimension of 1, which is neither divisible by 8 nor equal to the full dimension of 577. The output block (16, 1, 577) has the same violation, so correcting only the input specification leaves an invalid output specification. The trailing dimension of 577 is valid because it matches the corresponding full array dimension. JAX raises a ValueError before the kernel executes, so exact numerical correctness and speedup could not be evaluated.
+      weight: 0.5

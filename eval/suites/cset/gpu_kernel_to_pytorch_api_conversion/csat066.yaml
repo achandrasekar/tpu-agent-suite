@@ -1,0 +1,239 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT066 from the "GPU Kernel to PyTorch API conversion" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat066
+    prompt: |-
+      We are bringing our Qwen3 Next style hybrid model up on v6e and the linear
+      attention half is the last piece with no TPU path. Decode was easy, one step
+      of the recurrence is just tensor ops. Prefill is where I need you. This
+      Triton kernel is what runs prefill on the GPU fleet, it walks the sequence
+      one timestep at a time and carries the state. I need the same thing as plain
+      PyTorch that OpenXLA compiles for v6e. Our call is fixed, batch 8, T 4096,
+      16 k heads, 32 v heads, head dim 128 both sides, bf16 tensors, scale is
+      1 over sqrt 128, l2 norm on q and k in the kernel is on, beta comes in raw
+      and gets the sigmoid inside, negative eigenvalues off, g comes in
+      precomputed in log space per v head per step, no gk, no gv, no varlen, and
+      sessions chain so h0 comes in and the final state must come back out in
+      float32 exactly like the CUDA path hands it to us. Numbers need to track the
+      GPU build within normal bf16 tolerance, the state math especially, our evals
+      are sensitive to it. Before you ask, every shape here is static, batch is
+      pinned, 4096 is pinned, so the compile once requirement is automatic, that
+      part I am not worried about at all, what I need from you is the recurrence
+      math done right. One thing I do wonder about is all those exp and sigmoid
+      calls in the loop, four thousand of them back to back, does the TPU vector
+      unit chew through transcendentals like that or is that going to be my
+      bottleneck.
+      import warnings
+      import torch
+      import triton
+      import triton.language as tl
+      from fla.ops.utils.op import exp
+      from fla.ops.utils.softplus import softplus
+      from fla.utils import input_guard
+      @triton.heuristics({
+      'USE_G': lambda args: args['g'] is not None,
+      'USE_GK': lambda args: args['gk'] is not None,
+      'USE_GV': lambda args: args['gv'] is not None,
+      'USE_INITIAL_STATE': lambda args: args['h0'] is not None,
+      'STORE_FINAL_STATE': lambda args: args['ht'] is not None,
+      'IS_VARLEN': lambda args: args['cu_seqlens'] is not None,
+      'USE_GATE_IN_KERNEL': lambda args: args['A_log'] is not None,
+      'HAS_DT_BIAS': lambda args: args['dt_bias'] is not None,
+      })
+      @triton.jit(do_not_specialize=['T'])
+      def fused_recurrent_gated_delta_rule_fwd_kernel(
+      q,
+      k,
+      v,
+      g,
+      gk,
+      gv,
+      beta,
+      A_log,
+      dt_bias,
+      o,
+      h0,
+      ht,
+      cu_seqlens,
+      scale,
+      T,
+      H: tl.constexpr,
+      HV: tl.constexpr,
+      K: tl.constexpr,
+      V: tl.constexpr,
+      BK: tl.constexpr,
+      BV: tl.constexpr,
+      USE_G: tl.constexpr,
+      USE_GK: tl.constexpr,
+      USE_GV: tl.constexpr,
+      USE_QK_L2NORM_IN_KERNEL: tl.constexpr,
+      IS_BETA_HEADWISE: tl.constexpr,
+      USE_INITIAL_STATE: tl.constexpr,
+      STORE_FINAL_STATE: tl.constexpr,
+      STATE_V_FIRST: tl.constexpr,
+      IS_VARLEN: tl.constexpr,
+      USE_GATE_IN_KERNEL: tl.constexpr,
+      HAS_DT_BIAS: tl.constexpr,
+      APPLY_BETA_SIGMOID: tl.constexpr,
+      ALLOW_NEG_EIGVAL: tl.constexpr,
+      ):
+      pid = tl.program_id(0)
+      NV = tl.cdiv(V, BV)
+      i_v, i_nh = pid % NV, (pid // NV).to(tl.int64)
+      i_n, i_hv = i_nh // HV, i_nh % HV
+      i_h = i_hv // (HV // H)
+      if IS_VARLEN:
+          bos, eos = tl.load(cu_seqlens + i_n).to(tl.int64), tl.load(cu_seqlens + i_n + 1).to(tl.int64)
+          T = eos - bos
+      else:
+          bos, eos = i_n * T, i_n * T + T
+      o_k = tl.arange(0, BK)
+      o_v = i_v * BV + tl.arange(0, BV)
+
+      p_q = q + (bos * H + i_h) * K + o_k
+      p_k = k + (bos * H + i_h) * K + o_k
+      p_v = v + (bos * HV + i_hv) * V + o_v
+      if USE_G:
+          p_g = g + bos * HV + i_hv
+      if USE_GK:
+          p_gk = gk + (bos * HV + i_hv) * K + o_k
+      if USE_GV:
+          p_gv = gv + (bos * HV + i_hv) * V + o_v
+      if IS_BETA_HEADWISE:
+          p_beta = beta + bos * HV + i_hv
+      else:
+          p_beta = beta + (bos * HV + i_hv) * V + o_v
+
+      p_o = o + (bos * HV + i_hv) * V + o_v
+
+      mask_k = o_k < K
+      mask_v = o_v < V
+      if STATE_V_FIRST:
+          mask_h = mask_v[:, None] & mask_k[None, :]
+      else:
+          mask_h = mask_k[:, None] & mask_v[None, :]
+
+      if STATE_V_FIRST:
+          b_h = tl.zeros([BV, BK], dtype=tl.float32)
+      else:
+          b_h = tl.zeros([BK, BV], dtype=tl.float32)
+      if USE_INITIAL_STATE:
+          if STATE_V_FIRST:
+              p_h0 = h0 + i_nh * K*V + o_v[:, None] * K + o_k[None, :]
+          else:
+              p_h0 = h0 + i_nh * K*V + o_k[:, None] * V + o_v[None, :]
+          b_h += tl.load(p_h0, mask=mask_h, other=0).to(tl.float32)
+
+      for _ in tl.range(0, T):
+          b_q = tl.load(p_q, mask=mask_k, other=0).to(tl.float32)
+          b_k = tl.load(p_k, mask=mask_k, other=0).to(tl.float32)
+          b_v = tl.load(p_v, mask=mask_v, other=0).to(tl.float32)
+          if USE_QK_L2NORM_IN_KERNEL:
+              b_q = b_q / tl.sqrt(tl.sum(b_q * b_q) + 1e-6)
+              b_k = b_k / tl.sqrt(tl.sum(b_k * b_k) + 1e-6)
+          b_q = b_q * scale
+          if IS_BETA_HEADWISE:
+              b_beta = tl.load(p_beta).to(tl.float32)
+          else:
+              b_beta = tl.load(p_beta, mask=mask_v, other=0).to(tl.float32)
+          if APPLY_BETA_SIGMOID:
+              b_beta = tl.sigmoid(b_beta)
+              if ALLOW_NEG_EIGVAL:
+                  b_beta = b_beta * 2
+
+          if USE_G:
+              b_g = tl.load(p_g).to(tl.float32)
+              if USE_GATE_IN_KERNEL:
+                  b_A = tl.load(A_log + i_hv).to(tl.float32)
+                  if HAS_DT_BIAS:
+                      b_g = b_g + tl.load(dt_bias + i_hv).to(tl.float32)
+                  b_g = -exp(b_A) * softplus(b_g)
+              b_h *= exp(b_g)
+
+          if USE_GK:
+              b_gk = tl.load(p_gk, mask=mask_k, other=0).to(tl.float32)
+              if STATE_V_FIRST:
+                  b_h *= exp(b_gk[None, :])
+              else:
+                  b_h *= exp(b_gk[:, None])
+
+          if USE_GV:
+              b_gv = tl.load(p_gv, mask=mask_v, other=0).to(tl.float32)
+              if STATE_V_FIRST:
+                  b_h *= exp(b_gv[:, None])
+              else:
+                  b_h *= exp(b_gv[None, :])
+
+          if STATE_V_FIRST:
+              b_v = b_beta * (b_v - tl.sum(b_h * b_k[None, :], 1))
+              b_h += b_v[:, None] * b_k[None, :]
+              b_o = tl.sum(b_h * b_q[None, :], 1)
+          else:
+              b_v = b_beta * (b_v - tl.sum(b_h * b_k[:, None], 0))
+              b_h += b_k[:, None] * b_v
+              b_o = tl.sum(b_h * b_q[:, None], 0)
+          tl.store(p_o, b_o.to(p_o.dtype.element_ty), mask=mask_v)
+
+          p_q += H*K
+          p_k += H*K
+          p_v += HV*V
+          if USE_G:
+              p_g += HV
+          if USE_GK:
+              p_gk += HV*K
+          if USE_GV:
+              p_gv += HV*V
+          p_beta += HV * (1 if IS_BETA_HEADWISE else V)
+          p_o += HV*V
+
+      if STORE_FINAL_STATE:
+          if STATE_V_FIRST:
+              p_ht = ht + i_nh * K*V + o_v[:, None] * K + o_k[None, :]
+          else:
+              p_ht = ht + i_nh * K*V + o_k[:, None] * V + o_v[None, :]
+          tl.store(p_ht, b_h.to(p_ht.dtype.element_ty), mask=mask_h)
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT066
+      category: GPU Kernel to PyTorch API conversion
+      sub_category: Triton elementwise to PyTorch
+      difficulty: Hard
+      has_code: 'Yes'
+      baseline_result: Partially Solved
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        A good answer corrects the blessed premise first, a Python loop over 4096 steps unrolls into a flat HLO with brutal compile time even though shapes are static, so the loop must become a real compiler loop via torch_xla scan or while_loop with the fp32 state as carry, or a scan over modest static chunks. The math must match the kernel, fp32 throughout with bf16 edges, h0 in and final state out in float32, decay then read then beta correction then rank one update then output, l2 norm with the epsilon inside the sqrt then scale, sigmoid on beta, v heads mapped to k heads by floor division.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        The model preserved every recurrence semantic, fp32 state with the float32 final state contract, correct decay read update output ordering, the floor division GQA mapping, the epsilon inside sqrt l2 norm, and it lifted the transcendentals out of the loop. It failed the load bearing requirement by shipping prefill as a bare Python for over 4096 timesteps and certifying it compile safe, when that trace unrolls into a flat HLO with the long compile times the PyTorch/XLA scan documentation warns about, the fix being torch_xla scan or while_loop so the loop lowers to one XLA While. It reinforced the miss with an invented guarantee that the 16MB carried state stays resident in VMEM across all 4096 steps, citing a 32MB VMEM figure that does not match the documented roughly 128MB on v6e. The response also leaves TPU matmul precision at its default, which rounds FP32 operands to BF16 before multiplication, so keeping the state tensor in FP32 does not by itself preserve the CUDA kernel's FP32 state arithmetic throughout the recurrence.
+      weight: 0.5

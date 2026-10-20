@@ -1,0 +1,200 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Canonical Tool Mappings",
+  "description": "Explicit per-harness tool mappings, matchers, and argument schemas.",
+  "tools": {
+    "read": {
+      "harnesses": {
+        "claude-code": {
+          "tools": ["Read"],
+          "matcher": "Read",
+          "args": { "path": "file_path" }
+        },
+        "antigravity": {
+          "tools": ["view_file"],
+          "matcher": "view_file",
+          "args": { "path": "AbsolutePath" }
+        },
+        "cursor": {
+          "tools": ["Read"],
+          "matcher": "Read",
+          "args": { "path": "file_path" }
+        }
+      }
+    },
+    "write": {
+      "harnesses": {
+        "claude-code": {
+          "tools": ["Write"],
+          "matcher": "Write",
+          "args": { "path": "file_path", "content": "content" }
+        },
+        "antigravity": {
+          "tools": ["write_to_file"],
+          "matcher": "write_to_file",
+          "args": { "path": "TargetFile", "content": "CodeContent" }
+        },
+        "cursor": {
+          "tools": ["Write"],
+          "matcher": "Write",
+          "args": { "path": "file_path" }
+        },
+        "codex": {
+          "tools": ["apply_patch"],
+          "matcher": "Write",
+          "args": { "content": "command" }
+        }
+      }
+    },
+    "edit": {
+      "harnesses": {
+        "claude-code": {
+          "tools": ["Edit"],
+          "matcher": "Edit",
+          "args": { "path": "file_path" }
+        },
+        "antigravity": {
+          "tools": ["replace_file_content", "multi_replace_file_content"],
+          "matcher": "replace_file_content|multi_replace_file_content",
+          "args": { "path": "TargetFile" }
+        },
+        "cursor": {
+          "tools": ["Write"],
+          "matcher": "Write",
+          "args": { "path": "file_path" }
+        },
+        "codex": {
+          "tools": ["apply_patch"],
+          "matcher": "Edit",
+          "args": { "content": "command" }
+        }
+      }
+    },
+    "shell": {
+      "harnesses": {
+        "claude-code": {
+          "tools": ["Bash"],
+          "matcher": "Bash",
+          "args": { "command": "command" }
+        },
+        "antigravity": {
+          "tools": ["run_command"],
+          "matcher": "run_command",
+          "args": { "command": "CommandLine" }
+        },
+        "cursor": {
+          "tools": ["Shell"],
+          "matcher": "Shell",
+          "args": { "command": "command" }
+        },
+        "codex": {
+          "tools": ["Bash"],
+          "matcher": "Bash",
+          "args": { "command": "command" }
+        }
+      }
+    },
+    "search": {
+      "harnesses": {
+        "claude-code": {
+          "tools": ["Grep", "Glob"],
+          "matcher": "Grep|Glob",
+          "args": { "query": "pattern", "path": "path" }
+        },
+        "antigravity": {
+          "tools": ["grep_search", "find_by_name"],
+          "matcher": "grep_search|find_by_name",
+          "args": {
+            "query": ["Query", "Pattern"],
+            "path": ["SearchPath", "SearchDirectory"]
+          }
+        },
+        "cursor": {
+          "tools": ["Grep"],
+          "matcher": "Grep",
+          "args": {}
+        }
+      }
+    },
+    "delegate": {
+      "harnesses": {
+        "claude-code": {
+          "tools": ["Agent"],
+          "matcher": "Agent",
+          "args": {
+            "subagent": "subagent_type",
+            "prompt": ["prompt", "description"]
+          }
+        },
+        "antigravity": {
+          "tools": ["invoke_subagent"],
+          "matcher": "invoke_subagent",
+          "metadata": ["toolAction", "toolSummary"],
+          "args": {
+            "subagents": "Subagents",
+            "subagent": ["Subagents.TypeName", "Subagents.Role"],
+            "prompt": "Subagents.Prompt"
+          }
+        },
+        "cursor": {
+          "tools": ["Task"],
+          "matcher": "Task",
+          "args": {
+            "subagent": "subagent_type",
+            "prompt": "task"
+          }
+        },
+        "codex": {
+          "tools": ["spawn_agent", "Agent"],
+          "matcher": "spawn_agent|Agent",
+          "args": {
+            "subagent": "agent_type",
+            "prompt": "message"
+          }
+        }
+      }
+    },
+    "web_search": {
+      "harnesses": {
+        "claude-code": {
+          "tools": ["WebSearch"],
+          "matcher": "WebSearch",
+          "args": { "query": "query" }
+        },
+        "antigravity": {
+          "tools": ["search_web"],
+          "matcher": "search_web",
+          "args": { "query": ["query", "Query"] }
+        }
+      }
+    },
+    "web_fetch": {
+      "harnesses": {
+        "claude-code": {
+          "tools": ["WebFetch"],
+          "matcher": "WebFetch",
+          "args": { "url": "url" }
+        },
+        "antigravity": {
+          "tools": ["read_url_content"],
+          "matcher": "read_url_content",
+          "args": { "url": ["url", "Url"] }
+        }
+      }
+    },
+    "ask": {
+      "harnesses": {
+        "claude-code": {
+          "tools": ["AskUserQuestion"],
+          "matcher": "AskUserQuestion",
+          "args": { "question": ["question", "prompt"] }
+        },
+        "antigravity": {
+          "tools": ["ask_question"],
+          "matcher": "ask_question",
+          "args": { "questions": "questions" }
+        }
+      }
+    }
+  }
+}

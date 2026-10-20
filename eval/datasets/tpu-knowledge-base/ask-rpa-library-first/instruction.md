@@ -1,0 +1,1 @@
+Answer this question about `kernel-class-attention`, grounded in the TPU documentation, passing it exactly as written: "Is there an existing TPU kernel for ragged paged attention I should benchmark before writing my own?" Answer clearly, citing any references you can for grounding. Drop a JSON at `/logs/artifacts/answer.json` with keys `answer` and `reference`, for scoring.

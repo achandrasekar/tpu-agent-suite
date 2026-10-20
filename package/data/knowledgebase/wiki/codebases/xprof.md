@@ -1,0 +1,48 @@
+---
+title: "xprof (JAX / TensorBoard TPU profiler)"
+type: codebase
+tags: [performance, framework]
+created: 2026-09-04
+updated: 2026-09-04
+sources: 1
+human_reviewed: true
+aliases: ["JAX profiler", "TensorBoard profiler", "Trace Viewer", "Graph Viewer"]
+---
+
+xprof is the TensorBoard profiler plugin that renders traces captured with
+`jax.profiler.trace`: a per-core timeline of XLA ops, the HLO graph, and memory over time.
+Repo: <https://github.com/openxla/xprof> (not yet ingested); the book's walkthrough is the
+only source so far ([scaling-book, Part 9](../sources/2025-scaling-book-profiling.md)).
+
+## Capture and open
+
+```python
+import jax
+with jax.profiler.trace("/tmp/tensorboard"):
+    y = x @ x
+    y.block_until_ready()
+# pip install -U xprof protobuf ; tensorboard --logdir=/tmp/tensorboard
+```
+
+([scaling-book, Part 9](../sources/2025-scaling-book-profiling.md).) Traces can also be shared as Perfetto
+links (Trace Viewer only). PyTorch/XLA capture is *not yet ingested*.
+
+## Tabs
+
+| Tab | Shows | Use |
+|---|---|---|
+| Trace Viewer | timeline per TPU core: top row = XLA ops (HLO names), below = `jax.named_scope`/`named_call`/Python stack | find repeated layer blocks, click an op for source + Graph Viewer link; W/A/S/D navigation |
+| Graph Viewer | the HLO graph with fusions expanded | decode compound ops (e.g. `all-reduce-scatter`), hover for source line |
+| Memory Profile / Viewer | HBM in use over time | OOM debugging, headroom (7.5 GB params, 8.5 GB free in the book's example) |
+
+([scaling-book, Part 9](../sources/2025-scaling-book-profiling.md).) Typically only TPU:0 is inspected
+since all cores run the same program ([scaling-book, Part 9](../sources/2025-scaling-book-profiling.md)).
+
+## See also
+
+- [Profile a TPU program](../playbooks/profile-tpu-program.md) — the procedure
+- [HLO](../concepts/hlo.md) — reading what the ops say; [jax](jax.md)
+
+## Sources
+
+- [How To Scale Your Model, Part 9: Profiling TPU Programs (scaling-book)](../sources/2025-scaling-book-profiling.md)

@@ -1,0 +1,10 @@
+{
+  "measured_flop_rate_gflops": 312992.93,
+  "optimal_flop_rate_gflops": 634481.73,
+  "max_speedup_at_current_ai": 2.03,
+  "peak_memory_usage_gib": 13.9,
+  "memory_capacity_gib": 31.25,
+  "hbm_free_gib": 17.35,
+  "limiting_resource": "hbm_bandwidth",
+  "would_larger_batch_fit": true
+}

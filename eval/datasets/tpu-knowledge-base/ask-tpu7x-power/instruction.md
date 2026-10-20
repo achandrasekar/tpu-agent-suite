@@ -1,0 +1,1 @@
+Answer this question about `tpu7x`, grounded in the TPU documentation, passing it exactly as written: "What is the power draw (TDP) of one TPU7x chip, in watts?" Answer clearly, citing any references you can for grounding. Drop a JSON at `/logs/artifacts/answer.json` with keys `answer` and `reference`, for scoring.

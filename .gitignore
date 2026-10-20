@@ -1,0 +1,40 @@
+# Python & Virtual Environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.eggs/
+
+# Build, Test & OS
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.pytest_cache/
+.ruff_cache/
+.DS_Store
+dist/
+logs/
+jobs/
+job-*/
+scratch/
+.env
+*.env
+.compiled_*
+
+# Harbor run output & datasets
+eval/*/results/
+eval/*/jobs/
+**/.datasets/
+.*datasets/
+
+# Harness state written while running agents from this directory, never a
+# source file.
+.claude/
+
+# Staged evaluation packages for Harbor agents
+.eval_staging/
+
+# Local temporary test directories
+tmp/

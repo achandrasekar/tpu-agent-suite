@@ -1,0 +1,236 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "revision": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Monotonically increasing configuration revision counter."
+    },
+    "default": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Name of the active default compute profile in `profiles`, or null when no profile has been configured yet.",
+      "minLength": 1
+    },
+    "profiles": {
+      "type": "object",
+      "description": "Named compute profiles, each specifying a `backend` and its `params`.",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "backend"
+        ],
+        "properties": {
+          "backend": {
+            "type": "string",
+            "enum": [
+              "local",
+              "gce_tpu_vm",
+              "gke_pod",
+              "gke_job",
+              "gke_xpk"
+            ],
+            "description": "Compute transport to use. 'local' runs on this machine. 'gce_tpu_vm' reaches a Cloud TPU VM via `gcloud ... tpu-vm ssh` (requires tpu_name/zone/project). 'gke_xpk' dispatches multi-node cluster workloads via xpk. 'gke_pod' execs into an already-running TPU pod via kubectl; 'gke_job' creates a single-host TPU Job via kubectl."
+          },
+          "params": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "tpu_name": {
+                "type": "string",
+                "description": "gce_tpu_vm backend: Cloud TPU VM resource name."
+              },
+              "zone": {
+                "type": "string",
+                "description": "gce_tpu_vm and gke_xpk backends: GCP zone of the TPU VM or GKE cluster."
+              },
+              "project": {
+                "type": "string",
+                "description": "gce_tpu_vm and gke_xpk backends: GCP project of the TPU VM or GKE cluster."
+              },
+              "namespace": {
+                "type": "string",
+                "description": "gke_pod and gke_job backends: Kubernetes namespace to work in; unset means default. On gke_job with a queue, the namespace the LocalQueue is in."
+              },
+              "pod": {
+                "type": "string",
+                "description": "gke_pod backend: name of the already-running TPU pod to exec into. Use gke_job to create a workload instead of attaching to one."
+              },
+              "container": {
+                "type": "string",
+                "description": "gke_pod backend (optional): container name within the pod, for multi-container pods."
+              },
+              "image": {
+                "type": "string",
+                "description": "gke_job backend: container image the dispatched Job runs, unmodified. Pin by digest so an upstream rebuild cannot change what a run measures."
+              },
+              "tpu_accelerator": {
+                "type": "string",
+                "description": "gke_job backend: value of the cloud.google.com/gke-tpu-accelerator node label, e.g. tpu7x or tpu-v6e-slice. A wrong value leaves the pod Pending rather than failing."
+              },
+              "tpu_topology": {
+                "type": "string",
+                "description": "gke_job backend: value of the cloud.google.com/gke-tpu-topology node label, e.g. 2x2x1 or 2x2. Single-host only; a multi-host slice needs JobSet dispatch."
+              },
+              "tpu_chips": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "gke_job backend (optional): chips requested per pod. Omit it -- the count is derived from tpu_topology, which is the only value that can be right for every generation (v6e 2x4 is 8 chips, tpu7x 2x2x1 is 4). Set it only to override that. Chips are allocated whole, and a pod that requests none is given no device to open."
+              },
+              "queue": {
+                "type": "string",
+                "description": "gke_job backend (optional): Kueue LocalQueue to admit through. Set only on a cluster that queues admission; unset elsewhere."
+              },
+              "priority": {
+                "type": "string",
+                "enum": [
+                  "",
+                  "medium",
+                  "low",
+                  "very-low"
+                ],
+                "description": "gke_job backend (optional; unset leaves the Job unlabelled and takes the cluster's default): Kueue priority class. Only meaningful alongside queue. Empty means unset: the questions default to \"\" for an optional answer, so the empty string has to validate or every non-Kueue install fails. The driver rejects anything else, because the shared-capacity guide says a workload with an unrecognised priority is refused at submission."
+              },
+              "declared_duration_minutes": {
+                "type": "integer",
+                "description": "gke_job backend (optional): declared runtime in minutes for Kueue suspension enforcement. 0 means unset, which is what the question defaults to; the driver treats it as absent rather than as a zero-minute limit.",
+                "minimum": 0
+              },
+              "kubeconfig": {
+                "type": "string",
+                "description": "gke_job backend (optional): kubeconfig to use instead of the ambient one."
+              },
+              "kube_context": {
+                "type": "string",
+                "description": "gke_job and gke_pod backends (optional): kubectl context passed as --context on every kubectl call. Unset uses whichever context is current."
+              },
+              "shm_size_gb": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "gke_job backend (optional): size in GiB of the memory-backed /dev/shm mounted in every pod; defaults to 128: without it a pod gets the container runtime's 64 MB, which isn't enough scratch space. Without hf_cache_pvc, the model download and compile caches go there too, so it must hold the weights."
+              },
+              "hf_cache_pvc": {
+                "type": "string",
+                "description": "gke_job backend (optional): name of a ReadWriteMany PersistentVolumeClaim, created by a cluster admin in the Job's namespace, mounted at /hf-cache in every pod with HF_HUB_CACHE pointing at it, so model weights download once and later Jobs read them from disk. Leave unset to download into each pod's /dev/shm (shm_size_gb)."
+              },
+              "compile_cache_max_age_days": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "gke_job backend (optional): with hf_cache_pvc, each pod removes, in the background, compile-cache image folders under /hf-cache/compile-cache that no pod has used in this many days, never its own; defaults to 14, and 0 keeps them."
+              },
+              "job_name_prefix": {
+                "type": "string",
+                "description": "gke_job backend (optional): prefix for the name of every Job it creates, e.g. \"agent\" gives agent-job-20260930120000-1a2b3c. At most 30 characters; lowercase letters, digits and '-'."
+              },
+              "cluster_name": {
+                "type": "string",
+                "description": "gke_xpk backend: GKE cluster name for xpk workload creation."
+              },
+              "gcs_bucket": {
+                "type": "string",
+                "description": "gke_xpk backend (optional): GCS bucket URI for logs and artifacts."
+              },
+              "staging_bucket": {
+                "type": "string",
+                "description": "gke_job backend (optional): GCS bucket, optionally with a folder, for `compute run --input/--output` staging via signed URLs or, with pod_service_account, the pod's own token (e.g. gs://my-staging-bucket or gs://my-staging-bucket/staging). Only needed for inputs over 900 KiB or outputs over 1 MiB; smaller files travel without one. Give the bucket a lifecycle rule that deletes objects after a few days: staged files are removed when a run finishes, but a run that dies mid-flight leaves its files behind. Onboarding also stages model checkpoints in this bucket, under checkpoints/; scope the rule to the staging folder (a matchesPrefix condition, e.g. with gs://my-staging-bucket/staging) so it doesn't age those out."
+              },
+              "pod_service_account": {
+                "type": "string",
+                "description": "gke_job backend (optional): Kubernetes service account, in the job's namespace, that every pod runs as on a cluster with Workload Identity. When set, the pod moves staged files with its own token instead of signed URLs, so staging_service_account and staging_service_account_key aren't needed and your own login is enough to upload and download. The account needs roles/storage.objectAdmin on staging_bucket, and the TPU node pool needs --workload-metadata=GKE_METADATA; pods are scheduled only onto nodes that have it."
+              },
+              "staging_service_account": {
+                "type": "string",
+                "description": "gke_job backend (optional): the service account staging acts as when it uploads to staging_bucket and signs its URLs. A person's own login can't sign, so staging uses your login to act as this account (Google calls this impersonation): no key file, and kubectl keeps running as you. You need roles/iam.serviceAccountTokenCreator on it; it needs roles/storage.objectAdmin on staging_bucket. Set this or staging_service_account_key, not both."
+              },
+              "staging_service_account_key": {
+                "type": "string",
+                "description": "gke_job backend (optional): path to a key file for the service account staging uses, for setups with no personal login (e.g. CI). Only staging reads it, so kubectl keeps running as you; pointing $GOOGLE_APPLICATION_CREDENTIALS at the key instead would change who kubectl is. Prefer staging_service_account, which needs no key on disk. Set this or staging_service_account, not both."
+              },
+              "python_interpreter": {
+                "type": "string",
+                "description": "Path to the Python interpreter that runs the workload (e.g. /opt/conda/bin/python). This is the environment holding the model, runtime and accelerator libraries."
+              },
+              "internal_ip": {
+                "type": "boolean",
+                "description": "gce_tpu_vm backend (optional): connect ssh and scp to the TPU VM's internal IP instead of its public one. Only for running from inside Google Cloud on the VM's network (e.g. another VM in its project) when the TPU VM has no public IP or blocks SSH from the internet."
+              },
+              "ml_diagnostics_cluster": {
+                "type": "string",
+                "description": "gce_tpu_vm and gke_job backends (optional): ML Diagnostics is a Google Cloud service that stores TPU profiles and shows them in a web dashboard. This names your team's cluster for it (e.g. projects/my-project/locations/us-central1/clusters/my-cluster) so benchmark profiles are uploaded there; with ml_diagnostics_gcs. Leave unset to keep profiles on disk. Not the same as gke_job's --mldiagnostics flag, which only labels the pod."
+              },
+              "ml_diagnostics_gcs": {
+                "type": "string",
+                "description": "gce_tpu_vm and gke_job backends (optional): the GCS folder that ml_diagnostics_cluster reads profiles from, e.g. gs://my-bucket/profiles."
+              }
+            }
+          }
+        }
+      }
+    },
+    "xprof_interpreter": {
+      "type": "string",
+      "description": "Path to the Python interpreter that runs XProf analysis, when it differs from python_interpreter. The two XProf distributions share a package directory and raise no pip conflict, so a workload environment can silently carry a version whose CLI takes different arguments and omits tools the agents call. Naming the analysis interpreter separately is what stops analysis from running against whichever one happened to install last. Leave empty when one environment serves both."
+    },
+    "trajectory": {
+      "type": "object",
+      "description": "Settings for on-demand trajectory export. Absent means the user has not been asked yet; params.enabled false means they declined.",
+      "properties": {
+        "params": {
+          "type": "object",
+          "properties": {
+            "bucket": {
+              "type": "string",
+              "description": "User-owned GCS bucket receiving trajectory bundles. Empty means no destination is configured, so the export saves nothing."
+            },
+            "user_id": {
+              "type": "string",
+              "description": "Identifier trajectories are filed under. Empty means resolve it at run time from gcloud, then $USER."
+            },
+            "enabled": {
+              "type": "boolean",
+              "description": "Whether session trajectories are shared at all. False, the default, declines export entirely."
+            },
+            "sink": {
+              "type": "string",
+              "enum": ["gcs", "harbor"],
+              "description": "Where a shared trajectory goes: 'gcs' uses the bucket below, 'harbor' uploads to the hub instead. Only one sink is used."
+            },
+            "share_org": {
+              "type": "string",
+              "description": "Harbor organization uploaded sessions are shared with. Applies only when use_harbor is true. Leave blank to keep the upload private."
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "examples": [
+    {
+      "revision": 1,
+      "default": "tpu-vm",
+      "profiles": {
+        "tpu-vm": {
+          "backend": "gce_tpu_vm",
+          "params": {
+            "project": "my-gcp-project",
+            "zone": "us-east5-a",
+            "tpu_name": "node-1"
+          }
+        }
+      },
+      "xprof_interpreter": ""
+    },
+    {
+      "revision": 1,
+      "default": null,
+      "profiles": {}
+    }
+  ]
+}

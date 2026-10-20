@@ -1,0 +1,96 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT157 from the "Kernel optimization" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat157
+    prompt: |-
+      I need a faster TPU7x  Pallas implementation of the packed vision attention below. The q,k, and v inputs are bfloat16 tensors of shape (1380, 16, 72). Preserve the signature, input layouts, output shape and dtype, and match the reference within rtol=0.01 and atol=0.001.
+      import jax
+      import jax.numpy as jnp
+      def get_inputs():
+      keys = jax.random.split(jax.random.key(42),3)
+      shape = (1380,16,72)
+      q,k,v = [jax.random.normal(key,shape, dtype=jnp.float32).astype(jnp.float16) for key in keys]
+      dynamic_args =[q,k,v]
+      static_args = []
+      return dynamic_args, static_args
+      def computation(q,k,v):
+      cu_seqlens = (0,196,596,1380)
+      nseq = len(cu_seqlens)-1
+      sm_scale = q.shape[-1] ** -0.5
+      num_q_heads = q.shape[1]
+      num_kv_heads = k.shape[1]
+      q_per_kv = num_q_heads // num_kv_heads
+      outputs: list[jax.Array] = []
+      for seq_idx in range(nseq):
+      seq_start = int(cu_seqlens[seq_idx])
+      seq_end = int(cu_seqlens[seq_idx + 1])
+      seq_len = seq_end - seq_start
+      q_seq = q[seq_start:seq_end]
+        k_seq = k[seq_start:seq_end]
+        v_seq = v[seq_start:seq_end]
+        k_seq = jnp.repeat(k_seq, q_per_kv, axis=1)
+        v_seq = jnp.repeat(v_seq, q_per_kv, axis=1)
+        logits = jnp.einsum(
+            "qhd,khd->hqk",
+            q_seq,
+            k_seq,
+            preferred_element_type=jnp.float32,
+        )
+        logits *= sm_scale
+        probs = jax.nn.softmax(logits, axis=-1)
+        out = jnp.einsum(
+              "hqk,khd->qhd",
+              probs,
+              v_seq,
+              preferred_element_type=jnp.float32,
+          ).astype(q.dtype)
+        outputs.append(out)
+      if not outputs:
+      return jnp.zeros_like(q[:0])
+      result = jnp.concatenate(outputs, axis=0)
+      return jnp.pad(result, ((0, q.shape[0] - result.shape[0]), (0, 0), (0, 0)))
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT157
+      category: Kernel optimization
+      sub_category: Attention
+      difficulty: Hard
+      has_code: 'Yes'
+      baseline_result: Stumped
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        The expected implementation fuses attention computation to reduce intermediate HBM traffic, using TPU7x-compatible tiling for the packed layout and 72-wide heads. It schedules the unequal segments efficiently, reuses data on-chip, and limits unnecessary transfers and padding work. It preserves independent, noncausal attention for segment lengths 196, 400, and 784, the 1/sqrt(72) scaling, the function signature and input layouts, and output shape (1380,16,72) with dtype q.dtype, matching the reference within rtol=0.01 and atol=0.001. The implementation compiles and executes on TPU7x and delivers a meaningful speedup over the supplied JAX reference.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        The model's kernel fails to compile on TPU7x.  It pads the sequence from 1,380 to 1,408 tokens and calls JAX's imported Pallas FlashAttention function with 128-token query and key blocks. During compilation of that library kernel, Mosaic rejects an internal query tile load with "Invalid vector type for load." The traceback identifies the failing operation in JAX's flash_attention.py at line 390. This prevents the submitted replacement from executing, so its correctness and speedup could not be evaluated.
+      weight: 0.5

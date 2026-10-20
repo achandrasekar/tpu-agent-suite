@@ -1,0 +1,181 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT134 from the "Kernel optimization" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat134
+    prompt: |-
+      We are training a Gemma 2 style 9B decoder on TPU7x and the cross-entropy at the tail of the step is costing more than it should. The lm_head is column sharded, so by the time the loss runs we already have the full logit tensor sitting in HBM, 4 x 1024 x 256000 in bf16, a little over 2 GB, and folding the loss back into the lm_head matmul is not something we can land this quarter. From the op structure XLA walks that tensor at least twice before it even reaches the target lookup, once for the row max and once for the exp sum, and we pay the HBM round trip each time. We want one pass over the logits.
+
+      Optimize the computation below into a Pallas kernel for TPU7x. logits is bf16 of shape (4, 1024, 256000), labels is int32 of shape (4, 1024), and the result is the per-token loss in f32 of shape (4, 1024). Padded positions carry the label -100; those must come back as exactly 0.0, and -100 must never reach the vocabulary axis as an index. The running max and the running sum of exponentials both accumulate in f32 the whole way. The layouts are fixed by the rest of the training step, so you cannot transpose the vocabulary off the last axis, change the (4, 1024) label layout, change the output shape or dtype, or return the mean instead of the per-token vector; our trainer divides by its own token count. Test with rtol=1e-4 and atol=5e-3.
+
+      # Imports
+      import jax
+      import jax.numpy as jnp
+
+      # Initialization
+      def get_inputs():
+          B, S, V = 4, 1024, 256000
+          key = jax.random.key(0)
+          k1, k2, k3 = jax.random.split(key, 3)
+          logits = jax.random.normal(k1, (B, S, V), dtype=jnp.bfloat16) * 2.0
+          labels = jax.random.randint(k2, (B, S), 0, V, dtype=jnp.int32)
+          pad = jax.random.uniform(k3, (B, S)) < 0.05
+          labels = jnp.where(pad, -100, labels).astype(jnp.int32)
+          dynamic_args = [logits, labels]
+          static_args = []
+          return dynamic_args, static_args
+
+      # Computation
+      def computation(logits, labels):
+          x = logits.astype(jnp.float32)
+          m = jnp.max(x, axis=-1, keepdims=True)
+          lse = jnp.squeeze(m, -1) + jnp.log(jnp.sum(jnp.exp(x - m), axis=-1))
+          safe = jnp.where(labels < 0, 0, labels)
+          tgt = jnp.take_along_axis(x, safe[..., None], axis=-1)[..., 0]
+          return jnp.where(labels < 0, 0.0, lse - tgt)
+
+      ----- Failure Note -----
+      The kernel does not compile. The evaluator reports Correctness [False] with no diff and no timing,
+      and the Pallas block mapping check rejects it before lowering: "The Pallas TPU lowering currently
+      requires that the last two dimensions of your block shape are divisible by 8 and 128 respectively,
+      or be equal to the respective dimensions of the overall array. Block spec for args[1] in
+      pallas_call _cross_entropy_kernel ... has block shape (Blocked(block_size=1),
+      Blocked(block_size=16)), array shape (4, 1024)". args[1] is labels. Its BlockSpec is
+      block_shape=(1, block_s) with block_s=16, so the last two block dims are (1, 16) against an array
+      of (4, 1024): 1 is not 4 and not divisible by 8, 16 is not 1024 and not divisible by 128. Both
+      axes fail both branches of the rule. out_specs carries the identical block_shape=(1, block_s)
+      against the same (4, 1024) output and would be rejected on the same grounds.
+
+      The same error text exposes a second, independent defect. It prints the rejected index map as
+      "{ lambda ; a:i32[] b:i32[]. let c:i32[] = mul b 16:i32[] in (a, c) }" -- the lowered form of
+      index_map=lambda b, s: (b, s * block_s). An index_map must return logical block indices, not
+      element offsets. All three index maps in the reply multiply the grid index by the block size:
+      (b, s * block_s, 0) for logits and (b, s * block_s) for labels and the output. With grid=(B,
+      S // block_s) = (4, 64), s runs 0..63 and the only valid block indices on that axis are 0..63, but
+      the map emits 0, 16, 32, ... 1008. Running the delivered kernel under interpret mode at reduced
+      size reproduces the consequence directly: whole bands of the output are never written and come
+      back NaN. Changing only the three index maps to (b, s, 0) and (b, s), and nothing else, brings the
+      same kernel to within 9.537e-07 of the reference.
+
+      The prose and the BlockSpec contradict each other on the central claim. The reply says Pallas
+      "streams the vocabulary axis in SRAM/VMEM chunks (e.g., 2048)", but block_shape=(1, block_s, V) =
+      (1, 16, 256000) asks the pipeline to stage the entire 256000-wide row set in VMEM and then slices
+      it in registers inside the fori_loop. That buffer is 16 x 256000 x 2 = 8,192,000 bytes, and
+      16,384,000 bytes double buffered, against the 16,777,216 byte default scoped VMEM limit -- 97.7%
+      of the budget before the kernel's own f32 temporaries, which add two (16, 2048) f32 arrays
+      (chunk and exp_chunk) at 131,072 bytes each. The vocabulary is not being streamed by the grid; it
+      is being loaded whole.
+
+      Third, the in-kernel gather. lax.dynamic_slice(logits_ref[0], (0, c_start), (block_s, chunk_v))
+      slices on the minor (lane) axis with a traced offset from the fori_loop index, and
+      jnp.take_along_axis(chunk, local_idx[:, None], axis=-1) is a data-dependent gather along the lane
+      axis. Both are patterns Mosaic does not lower on TPU. The block-shape rejection fires first, so
+      this run supplies no evidence either way about them; they are read off the code, not observed.
+
+      Finally, the reply ships a run_tests() that prints "All tests passed successfully (rtol=1e-4,
+      atol=5e-3)". It did not claim to have executed it, and it could not have: the kernel does not
+      reach lowering.
+
+      What it got right, and it is not trivial: the online LogSumExp is textbook correct -- running max
+      m, rescale s * exp(m - new_m), accumulate sum(exp(chunk - new_m)) -- with init_m, init_s and
+      init_target_val all f32 and the whole reduction carried in f32, exactly as the prompt required.
+      safe_labels = jnp.where(labels < 0, 0, labels) keeps -100 off the vocabulary axis, the final
+      jnp.where(labels < 0, 0.0, raw_loss) returns exactly 0.0 at padded positions, chunk_v = 2048
+      divides 256000 evenly (125 chunks), the vocabulary stays on the last axis, and the output is f32
+      (4, 1024). The algorithm is right; the Pallas plumbing is what fails.
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT134
+      category: Kernel optimization
+      sub_category: Reductions and normalisation
+      difficulty: Hard
+      has_code: 'Yes'
+      baseline_result: Stumped
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        A good answer is a single Pallas kernel that streams the vocabulary axis in blocks and carries a running f32 max and a running f32 sum of exponentials across those blocks, so the (4, 1024, 256000) logit tensor is read once instead of once per reduction. It recovers the target logit by masking on the global column index rather than by indexing with the label, returns exactly 0.0 for a label of -100 without using -100 as a vocabulary index, keeps the vocabulary on the last axis, returns f32 of shape (4, 1024), sizes blocks so the f32 temporaries fit in scoped VMEM, and picks a vocabulary block size that divides 256000.
+        The chip decides the grade, using the kernel evaluator at rtol 1e-4 / atol 5e-3.
+        Solved: correct, with a clear wall-time speedup over the XLA reference.
+        Partially Solved: correct and faster, but only slightly, or correct only after several repair attempts.
+        Stumped: does not compile, returns wrong losses, or runs at or below the reference speed (a speedup under 1.0x is a fail even when the output is correct).
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        The kernel does not compile. The evaluator reports Correctness [False] with no diff and no timing,
+        and the Pallas block mapping check rejects it before lowering: "The Pallas TPU lowering currently
+        requires that the last two dimensions of your block shape are divisible by 8 and 128 respectively,
+        or be equal to the respective dimensions of the overall array. Block spec for args[1] in
+        pallas_call _cross_entropy_kernel ... has block shape (Blocked(block_size=1),
+        Blocked(block_size=16)), array shape (4, 1024)". args[1] is labels. Its BlockSpec is
+        block_shape=(1, block_s) with block_s=16, so the last two block dims are (1, 16) against an array
+        of (4, 1024): 1 is not 4 and not divisible by 8, 16 is not 1024 and not divisible by 128. Both
+        axes fail both branches of the rule. out_specs carries the identical block_shape=(1, block_s)
+        against the same (4, 1024) output and would be rejected on the same grounds.
+
+        The same error text exposes a second, independent defect. It prints the rejected index map as
+        "{ lambda ; a:i32[] b:i32[]. let c:i32[] = mul b 16:i32[] in (a, c) }" -- the lowered form of
+        index_map=lambda b, s: (b, s * block_s). An index_map must return logical block indices, not
+        element offsets. All three index maps in the reply multiply the grid index by the block size:
+        (b, s * block_s, 0) for logits and (b, s * block_s) for labels and the output. With grid=(B,
+        S // block_s) = (4, 64), s runs 0..63 and the only valid block indices on that axis are 0..63, but
+        the map emits 0, 16, 32, ... 1008. Running the delivered kernel under interpret mode at reduced
+        size reproduces the consequence directly: whole bands of the output are never written and come
+        back NaN. Changing only the three index maps to (b, s, 0) and (b, s), and nothing else, brings the
+        same kernel to within 9.537e-07 of the reference.
+
+        The prose and the BlockSpec contradict each other on the central claim. The reply says Pallas
+        "streams the vocabulary axis in SRAM/VMEM chunks (e.g., 2048)", but block_shape=(1, block_s, V) =
+        (1, 16, 256000) asks the pipeline to stage the entire 256000-wide row set in VMEM and then slices
+        it in registers inside the fori_loop. That buffer is 16 x 256000 x 2 = 8,192,000 bytes, and
+        16,384,000 bytes double buffered, against the 16,777,216 byte default scoped VMEM limit -- 97.7%
+        of the budget before the kernel's own f32 temporaries, which add two (16, 2048) f32 arrays
+        (chunk and exp_chunk) at 131,072 bytes each. The vocabulary is not being streamed by the grid; it
+        is being loaded whole.
+        The model initialized the running maximum accumulator with a finite number init_m = jnp.full((block_s,), -1e30, dtype=jnp.float32) instead of -jnp.inf.
+
+        Third, the in-kernel gather. lax.dynamic_slice(logits_ref[0], (0, c_start), (block_s, chunk_v))
+        slices on the minor (lane) axis with a traced offset from the fori_loop index, and
+        jnp.take_along_axis(chunk, local_idx[:, None], axis=-1) is a data-dependent gather along the lane
+        axis. Both are patterns Mosaic does not lower on TPU. The block-shape rejection fires first, so
+        this run supplies no evidence either way about them; they are read off the code, not observed.
+
+        Finally, the reply ships a run_tests() that prints "All tests passed successfully (rtol=1e-4,
+        atol=5e-3)". It did not claim to have executed it, and it could not have: the kernel does not
+        reach lowering.
+
+        What it got right, and it is not trivial: the online LogSumExp is textbook correct -- running max
+        m, rescale s * exp(m - new_m), accumulate sum(exp(chunk - new_m)) -- with init_m, init_s and
+        init_target_val all f32 and the whole reduction carried in f32, exactly as the prompt required.
+        safe_labels = jnp.where(labels < 0, 0, labels) keeps -100 off the vocabulary axis, the final
+        jnp.where(labels < 0, 0.0, raw_loss) returns exactly 0.0 at padded positions, chunk_v = 2048
+        divides 256000 evenly (125 chunks), the vocabulary stays on the last axis, and the output is f32
+        (4, 1024). The algorithm is right; the Pallas plumbing is what fails.
+      weight: 0.5

@@ -1,0 +1,6 @@
+{
+  "question_csat006_kv_block": {},
+  "invoked_subagent": {
+    "agents": ["tpu-knowledge-base"]
+  }
+}

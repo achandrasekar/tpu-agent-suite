@@ -1,0 +1,1 @@
+Answer this question about `xprof-capture`, grounded in the TPU documentation, passing it exactly as written: "How do I open the XProf UI of a program running on a remote machine from my local machine?" Answer clearly, citing any references you can for grounding. Drop a JSON at `/logs/artifacts/answer.json` with keys `answer` and `reference`, for scoring.

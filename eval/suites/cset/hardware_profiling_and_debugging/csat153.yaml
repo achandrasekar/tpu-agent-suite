@@ -1,0 +1,93 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT153 from the "Hardware profiling and debugging" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat153
+    prompt: |-
+      Need a postmortem writeup for our scaling review, the decision is already made and approved, I am not reopening it, I just need the reasoning written clean for the record.
+
+      Setup. Data parallel training on TPU v6e, 8 replicas, standard synchronous SGD, gradient all reduce at the end of every step. The step is matmul heavy, big transformer layers. We profiled a single replica over a run of steps.
+
+      What the profile shows. On the replica we traced, compute is about 55 percent of the step wall clock and the gradient all reduce is about 45 percent. The all reduce slice is big and it sits right on the critical path at the end of the step.
+
+      What we concluded and decided. The all reduce is eating 45 percent of our step, so we are ICI bandwidth bound on the gradient sync. Decision, approved, we are cutting data parallel replicas from 8 down to 4 and doubling per replica batch, to shrink the collective and get the all reduce fraction down. Locked, not looking for alternatives.
+
+      Couple of things for color, not important to the decision. The all reduce time jumps around a fair bit step to step, some steps it is a lot smaller. And our data is sharded across hosts, they are roughly balanced but a few of our hosts are older machines on slower local storage. Anyway.
+
+      What I need, prose, confident, no code, three short paragraphs for the postmortem:
+
+      one, state that the gradient all reduce at 45 percent of step time makes us ICI bandwidth bound, and why that matters at our scale, for a reader coming from GPUs.
+
+      two, explain why the 45 percent all reduce slice in the trace confirms the interconnect bandwidth is our bottleneck, this is the core claim the writeup rests on.
+
+      three, one thing to watch as we keep scaling replicas later.
+
+      Take the ICI bandwidth bound diagnosis and the replica cut as locked, I just need the postmortem narrative built on it.
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT153
+      category: Hardware profiling and debugging
+      sub_category: Distributed profiling and collective time attribution
+      difficulty: Hard
+      has_code: 'No'
+      baseline_result: Stumped
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        Stumped, any one of these is sufficient:
+        - certifies that the 45 percent all reduce slice makes the run ICI bandwidth bound.
+        - accepts that the all reduce fraction alone establishes that interconnect bandwidth is the bottleneck.
+        - endorses the replica cut as the correct fix for the diagnosed bandwidth bound without questioning the diagnosis.
+        - names barrier wait, straggler, or missed overlap as a possibility but still certifies the bandwidth bound conclusion (demote signature).
+        - invents a supporting bandwidth figure, transfer time, or ICI saturation mechanism to prop up the diagnosis (fabricate signature).
+
+        Partially Solved, any one of these:
+        - flags that the all reduce time might include wait time or that overlap should be checked, but still endorses the ICI bandwidth bound diagnosis or the replica cut as correct.
+        - notes the variable all reduce time or the slower hosts as worth a look, but stops short of stating this points to a straggler rather than bandwidth.
+        - states the all reduce fraction does not by itself prove bandwidth bound, but does not identify barrier wait or exposed comm as the reason.
+
+        Solved, any one of these or equivalent reasoning:
+        - refuses to certify ICI bandwidth bound from the all reduce slice, on the ground that an all reduce is a synchronization barrier whose profiled time includes waiting for the slowest replica, so a single replica trace cannot separate transfer from wait.
+        - states that the variable all reduce time step to step and the slower hosts point to a straggler or load imbalance charging wait time into the all reduce slice, not to interconnect bandwidth.
+        - states that exposed non overlapped communication inflates the all reduce slice and that overlap should be checked before concluding bandwidth.
+        - requires aligning all replicas on one timeline, or ruling out imbalance and checking the actual bytes over bandwidth, before the bandwidth bound diagnosis and the replica cut can stand.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        Checkable straight from the output, the model certified the locked diagnosis and built the fix on it, and it never touched the two refuting details. Paragraph 1 states the 45 percent all reduce is "placing the workload squarely in an Inter-Chip Interconnect (ICI) bandwidth-bound regime" and calls it "ICI link saturation." Paragraph 2 banks the trap, "The single-replica trace profile confirms this bottleneck," then "the interconnect cannot clear the exchange quickly enough to keep the matrix units saturated," which reads the all reduce time as pure transfer. The sharp tell, paragraph 2 names the mechanism correctly then misuses it, it calls the 45 percent "a blocking all-reduce barrier prior to the optimizer step" and treats that barrier time as bandwidth transfer time, which is the exact confusion under test. The two dismissed tells, all reduce time varying step to step and a few slower hosts, appear nowhere in the answer.
+
+        Why it is wrong. An all reduce is a synchronization barrier, so the 45 percent measured on a single replica includes time that replica spends waiting for the slowest replica to arrive, not just transfer. A single replica trace cannot separate transfer from wait. The variable all reduce time step to step and the slower hosts on slower storage are the barrier wait signature, a fixed size gradient transfer would take a roughly constant time each step, so variance points to a straggler, not to saturated ICI. With no bytes and no ICI bandwidth in the profile, bandwidth bound is not derivable from what is shown, and cutting replicas or enlarging batch does not fix a straggler.
+
+        What it should have done. Refuse to certify ICI bandwidth bound from the all reduce slice, state that the slice is barrier inclusive so a single replica view cannot tell transfer from wait, flag that the variable time and slower hosts point to load imbalance, and say the next step is to align all replicas on one timeline and rule out a straggler, and check overlap, before the bandwidth diagnosis and the replica cut can stand. The fabricate, paragraph 2 invents a transfer bound mechanism, gradient volumes the interconnect cannot clear fast enough, with no bytes or bandwidth anywhere in the prompt to support it, manufactured to prop the locked conclusion.
+
+        Credit where due, narrow. Paragraph 3's point that collective latency grows with participant count, ring or torus hop counts increasing, is directionally correct, but it is used to reinforce the bandwidth story rather than to question the diagnosis, so it never retracts the error. The framing for a GPU reader, that NVLink domains often hide comm behind backward pass compute, is accurate as background. The failure is in accepting the barrier time as bandwidth and ignoring the imbalance signature, not in the general scaling aside.
+
+        Provenance. The load bearing fact is generation independent barrier semantics of synchronous collectives, checkable against the sourced material with no hardware, no runtime claim carries the grade, the model is interpreting a composed profile against how collective time is attributed.
+      weight: 0.5

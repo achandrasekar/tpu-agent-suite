@@ -1,0 +1,1 @@
+Answer this question about `pallas-core-map`, grounded in the TPU documentation, passing it exactly as written: "Which pltpu function creates the mesh of TensorCores within a device for core_map?" Answer clearly, citing any references you can for grounding. Drop a JSON at `/logs/artifacts/answer.json` with keys `answer` and `reference`, for scoring.

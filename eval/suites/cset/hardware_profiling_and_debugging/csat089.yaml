@@ -1,0 +1,94 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT089 from the "Hardware profiling and debugging" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat089
+    prompt: |-
+      I am integrating a custom TorchTPU Pallas kernel into my PyTorch 2.0 training loop for a TPU v6e pod. To get maximum performance across the rest of the model, I am wrapping my training step with `@torch.compile(backend='openxla')`.
+
+      My Pallas kernel handles a custom MoE gating mechanism. However, when I run the compiled training loop, the script completely crashes during the TorchDynamo tracing phase.
+
+      Here is the exact code block that causes the crash:
+
+      import torch
+      from torch_xla.experimental.pallas import pallas_call, BlockSpec
+      import jax.numpy as jnp
+
+      def custom_gating_kernel(x_ref, out_ref):
+          # Pallas kernel logic
+          out_ref[...] = x_ref[...] * 0.5
+
+      @torch.compile(backend='openxla')
+      def run_moe_gating(x: torch.Tensor):
+          # x shape: (batch_size, hidden_dim) e.g., (1024, 256)
+
+          # Calculate grid size based on batch size (block size of 128)
+          batch_size = x.size(0)
+          grid_b = batch_size // 128
+
+          # Python control flow dependent on batch size
+          if batch_size > 512:
+              multiplier = 2.0
+          else:
+              multiplier = 1.0
+
+          out = pallas_call(
+              custom_gating_kernel,
+              out_shape=torch.empty_like(x),
+              in_specs=[BlockSpec(lambda i, j: (i, j), (128, 256))],
+              out_specs=BlockSpec(lambda i, j: (i, j), (128, 256)),
+              grid=(grid_b, 1) # CRASH HAPPENS HERE
+          )(x)
+
+          return out * multiplier
+
+      The error traceback points directly to the `pallas_call` invocation, stating:
+      `TypeError: grid must be a tuple of ints, got tuple containing torch.SymInt`
+
+      A teammate told me that `pallas_call` is fundamentally opaque to TorchDynamo. They said Dynamo tries to trace into the JAX kernel but fails, and that I must remove `@torch.compile` and instead manually register the kernel using `torch.library.custom_op("mylib::gating", mutates_args=())` with a `register_fake` implementation so Dynamo knows how to bypass it.
+
+      Is my teammate correct? Why exactly is TorchDynamo crashing on the `grid` argument, and what is the exact idiomatic PyTorch fix to keep `@torch.compile` enabled while safely passing this dynamic batch size into the Pallas kernel?
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT089
+      category: Hardware profiling and debugging
+      sub_category: TorchDynamo tracing
+      difficulty: Hard
+      has_code: 'Yes'
+      baseline_result: Partially Solved
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        The model should recognize that TorchDynamo cannot trace opaque JAX/Pallas functions directly because it passes SymInts and FakeTensors that the Pallas compiler cannot process. It should validate the teammate's approach, recommending the use of torch.library.custom_op and register_fake to allow Dynamo to bypass the kernel. Crucially, the model should recognize that the Python if statement on batch_size does NOT cause a graph break, but rather correctly installs a shape guard in Dynamo, and it should not suggest rewriting it to torch.where. Bonus points if the model catches the composed/hallucinated torch_xla.experimental.pallas import path and corrects it.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        Gemini 3.7 Flash is Partially Solved. It correctly identified that Dynamo cannot trace Pallas/JAX directly (due to SymInt/FakeTensor incompatibilities) and provided the canonical torch.library.custom_op with register_fake solution (Solution 2) to preserve the compiled graph. It also brilliantly caught the composed traps in the prompt (correcting the hallucinated torch_xla.experimental.pallas import to make_kernel_from_pallas). However, it lost points for a Dynamo control-flow hallucination: it incorrectly claimed that a Python if on x.size(0) causes a graph break and must be replaced by torch.where. In reality, Dynamo natively supports if statements on SymInts by installing a shape guard. It also pushed @torch.compiler.disable as the "recommended" solution, which is suboptimal. (Note: 3.1 Pro failed completely by relying heavily on graph breaks and recompilations).
+      weight: 0.5

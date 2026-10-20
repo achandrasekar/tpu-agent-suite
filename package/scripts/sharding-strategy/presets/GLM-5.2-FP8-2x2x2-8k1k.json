@@ -1,0 +1,23 @@
+{
+  "_comment": "GLM-5.2-FP8 on a 2x2x2 slice (8 chips / 16 cores / 2 hosts), ISL 8192 / OSL 1024, unified serving. The CELL only -- the question. Every architecture pin, numerics site and hardware constant comes from the roofline config named below and is deliberately NOT restated here: one checkpoint, one authority.",
+  "name": "GLM-5.2-FP8-2x2x2-8k1k",
+
+  "roofline_config": "../../roofline-analysis/configs/glm-5.2-fp8-8k1k-2x2x2.json",
+
+  "_comment_topology": "Named in chips. Overrides the roofline config's `hardware.slice_dims`; a mismatch in the derived core count is a hard error rather than a silent reshape.",
+  "topology": "2x2x2",
+  "d2d": true,
+
+  "workload": {"isl": 8192, "osl": 1024},
+
+  "_comment_operating_point": "ONE operating point, shared by every sharding, so the combined chart is like-for-like. concurrency is fleet-wide (--max-concurrency); the two knobs are per DP engine, exactly as vLLM takes them. Keep concurrency a multiple of the largest DP so engines stay balanced. Sweeps of concurrency and mnbt are not implemented in this report yet; a list here is refused.",
+  "concurrency": 256,
+  "max_num_batched_tokens": 1024,
+  "max_num_seqs": 256,
+
+  "_comment_dispatch_bound": "OFF, and that is a decision rather than a default. The GLM-5.2 bound is recorded as topk x DP x mnbt <= 65536, but the source comment's arithmetic only closes at topk=4 while config.json says 8, so the factor is unread (U-260909-17). Off, a proposed shape may fault a SparseCore; on at too small a factor it silently excludes the winner. At mnbt 1024 the cap binds at DP=16 under topk=8 and nowhere under topk=4.",
+  "dispatch_bound": {"enabled": false, "topk": 8, "max_dispatch": 65536,
+                     "note": "factor unresolved -- U-260909-17"},
+
+  "role": "unified"
+}

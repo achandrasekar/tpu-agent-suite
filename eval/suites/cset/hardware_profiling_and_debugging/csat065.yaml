@@ -1,0 +1,62 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT065 from the "Hardware profiling and debugging" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat065
+    prompt: My boss saw the MFU dashboard and now I own a mystery I do not believe
+      in. Same 7B model, same code through torch on both fleets, bf16, sequence 4096,
+      identical global batch. The H100 build sits at 58 percent MFU. The v6e build
+      sits at 55. On paper these chips are basically twins, 990 TFLOPs against 918,
+      so those three points have to be coming from somewhere, and the profile seems
+      to say where. The attention plus norm plus residual region is 34 percent of
+      step time on v6e but only 19 on the H100 build, so to me that screams XLA is
+      failing to fuse what the CUDA stack fuses. The matmuls are fine on both sides,
+      93 percent of paper peak on v6e, about 82 on H100, so ignore those. For what
+      it is worth the profiler puts that attention and norm region at 1.56 TB/s achieved
+      on v6e and about 2.85 on the H100 run. I have been collecting xla flags from
+      forum threads all morning. Which fusion flags actually close this, or what am
+      I supposed to change in the model code to make XLA fuse like the CUDA path does?
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT065
+      category: Hardware profiling and debugging
+      sub_category: Memory bound and insufficient fusion
+      difficulty: Hard
+      has_code: 'No'
+      baseline_result: Partially Solved
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        A good answer refuses to hunt flags and shows the three points are the rooflines, 1.64 against 3.35 TB/s, not a fusion bug. Scaling the H100 profile through both rooflines and renormalizing predicts about a 31 percent bandwidth share and 56 MFU, within a few points of the dashboard, and the 1.56 TB/s reading is 95 percent of the v6e roof, so no fusion flag can speed that region up. The honest levers reduce bytes, attention variants that read less, recomputation, quantized KV, or accepting that cross vendor MFU parity is the wrong target. Partial names the bandwidth mechanism without running the renormalized numbers, or explains correctly and still hands over flags. Stumped treats the chips as equal and hunts flags, invents an XLA fusion deficiency, promises parity, or misreads 1.56 TB/s as headroom.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        The model got the physics right, rejected the fusion framing, built both rooflines, read 1.56 TB/s as 95 percent of the v6e roof, and treated 55 MFU as comparable to 58 rather than a gap to close. It lands Partial on two counts. It never ran the closing arithmetic, gesturing at roughly 2x instead of scaling and renormalizing the H100 profile. And after stating that flags cannot alter the ratio it appended a flag section anyway, a deprecated XLA_USE_BF16 on an already bf16 model plus two tpu flags matching no flag in XLA's flag registry.
+      weight: 0.5

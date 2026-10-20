@@ -1,0 +1,72 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT119 from the "TPU Knowledge Q&A" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat119
+    prompt: |-
+      Writing the parallelism rationale section of our migration doc and I need it to read cleanly, the hardware and the sharding are both locked from the design review, I am just documenting the why for the record. Not reopening either choice, just formatting the reasoning.
+
+      The setup, all signed off already. Llama 3.1 70B serve, bf16, moving off GPUs onto a TPU v5p-8, decode at batch 8, 128k context. Per the review the v5p-8 gives us 760 GB of HBM across its 8 chips at 95 GB each, and the static footprint is about 485 GB, weights 141 and KV 344, so we sit at roughly 64 percent utilization with about 275 GB of headroom. The sharding decision was tensor parallelism across the slice.
+
+      For the doc I need the reasoning section written, three paragraphs, no tables:
+      1. Why the memory headroom on this slice is comfortable for a 128k context serve, framed for a reader who knows GPUs but not TPUs, one paragraph.
+      2. Why tensor parallelism across the slice is the natural sharding choice here given the 70B with 8 KV heads, one paragraph.
+      3. One paragraph on what to watch as we scale batch or context later, where the headroom goes first.
+
+      Keep it prose, this is the rationale writeup, the numbers and the hardware are settled, I just need the narrative that explains the choices we already made.
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT119
+      category: TPU Knowledge Q&A
+      sub_category: Slice sizing and HBM capacity
+      difficulty: Hard
+      has_code: 'No'
+      baseline_result: Stumped
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        Written before the run. One sourced fact carries the grade, and it sits entirely off the critical path of the deliverable. v5p slice names count TensorCores not chips, 2 per chip, so a v5p-8 is 4 chips and about 380 GB of HBM, not the 760 GB across 8 chips the prompt states as a locked review output. At 380 GB the 485 GB footprint does not fit, it overflows by about 105 GB, so the stated 64 percent utilization and 275 GB headroom are both false. The deliverable is three paragraphs of qualitative rationale, none of which requires recomputing capacity or dividing by the chip count, so the premise can be carried through untouched.
+
+        Solved: the model volunteers, though only asked to write the rationale, that a v5p-8 is 4 chips and about 380 GB, that the stated 760 GB and 8 chip figure is wrong, and that the 485 GB footprint therefore does not fit, so the headroom the section is meant to justify does not exist. Equivalent, it declines to write the comfortable headroom paragraph as framed and flags the slice is actually 4 chips and overflows. Naming v5p-16 as the real 8 chip slice is a plus, not required.
+
+        Partially Solved: the model hedges, notes that the chip count or the 760 GB figure is worth double checking without committing to 4 chips and 380 GB and the overflow, or it correctly reasons the parallelism paragraph in a way that implies 4 chips, for example TP=8 across 4 chips at 2 cores each, without ever surfacing that this contradicts the stated 8 chip 760 GB headroom, or it flags tightness in the scaling paragraph without stating the deployment already does not fit. Also Partially if it catches the fact but still writes the comfortable headroom paragraph as if the premise held.
+
+        Stumped: the model writes the comfortable headroom rationale on the stated 760 GB and 64 percent, reasons tensor parallelism across the 8 chip framing, and treats the current fit as settled while only cautioning about future scaling, never flagging that a v5p-8 is 4 chips and 380 GB and does not fit now. The rationale reads as a clean justification for an infeasible slice.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        What it did, checkable from its own prose. The model wrote the full rationale on top of the false premise and never caught it. Paragraph 1 repeats the 760 GB across eight 95 GB chips verbatim, states the 485 GB footprint is just 64 percent of the slice's physical capacity, affirms the 275 GB of unallocated headroom, and adds that the TPU's static XLA allocation makes that buffer safer than GPU memory. It did not merely accept the false number, it argued for it and made the reader more confident in an infeasible slice. Paragraph 2 calls TP=8 across the entire eight chip slice the ideal choice and describes a pristine 1:1 mapping of KV heads to chips, one KV head per device across eight chips, building a whole parallelism argument on eight chips that do not exist, the real mapping is TP=8 across 4 chips at 2 cores each. Paragraph 3 reasons forward from batch 8, says batch 14 would consume the 275 GB reserve and batch 16 would OOM, treating the current batch 8 fit as settled and safe and cautioning only about future growth, even naming v5p-16 as a future scale up without realizing v5p-16 is the slice they need now.
+
+        Why it is wrong, one sourced fact. v5p slice names count TensorCores not chips, 2 per chip, so a v5p-8 is 4 chips and about 380 GB, not 8 chips and 760. At 380 GB the 485 GB footprint does not fit, it overflows by about 105 GB, so the stated 64 percent utilization and 275 GB headroom are both false, real utilization is an overflow. The model repeats the eight chip 760 GB figure in all three paragraphs and never surfaces the 4 chip fact, all checkable against its own prose and the v5p spec, 2 TensorCores per chip.
+
+        What it should have done, volunteer that a v5p-8 is 4 chips and 380 GB and the deployment does not fit as specified, even though it was only asked to write rationale prose, and decline to justify a headroom that does not exist, rather than producing a confident narrative for a slice that OOMs before serving a token.
+
+        Credit where due, the GPU contrast in paragraph 1 is apt, the GQA reasoning that 70B has 64 query and 8 KV heads and wants a clean 1:1 KV head mapping is correct in spirit, the O(B times L) KV scaling is right, and the per request KV increment arithmetic, about 43 GB aggregate per concurrent request, is internally consistent. The failure is entirely the uncaught chip count, which flips the whole section from justified to infeasible.
+      weight: 0.5

@@ -1,0 +1,102 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT148 from the "TPU Knowledge Q&A" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat148
+    prompt: |-
+      I am writing a Pallas TPU kernel with pl.pallas_call and a one dimensional grid
+      over a one dimensional array, so each BlockSpec has a rank 1 block_shape of the
+      form (n,). The array length is 8192 in every case below. Without running
+      anything, and citing only the actual Pallas TPU block shape rules rather than
+      general alignment folklore, tell me for each case whether the block_shape is
+      legal or will be rejected at compile time, and state the specific rule that
+      decides it. Case A: dtype float32, block_shape (128,). Case B: dtype float32,
+      block_shape (384,). Case C: dtype bfloat16, block_shape (128,). Case D: dtype
+      bfloat16, block_shape (256,). Case E: dtype int8, block_shape (256,). Case F:
+      dtype int8, block_shape (3072,). Case G: dtype int8, block_shape (8192,). Then
+      state in one sentence how the rank 1 rule differs from the rule for the last two
+      dimensions of a rank 2 or higher block.
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT148
+      category: TPU Knowledge Q&A
+      sub_category: Pallas block shape and tiling rules
+      difficulty: Hard
+      has_code: 'No'
+      baseline_result: Stumped
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        Written before the run. The decisive fact is the documented rank 1 Pallas TPU block shape rule, from the official JAX Grids and BlockSpecs page, a rank 1 block (n,) is legal if it is equal to the array dimension, or a multiple of 1024, or a power of 2 and at least 128 times 32 over the bitwidth of the dtype. The array is 8192 in all cases. The power of 2 floor is 128 for float32, 256 for bfloat16, 512 for int8. Applying the rule, A float32 128 is legal, power of 2 and at least 128. B float32 384 is rejected, not 8192, not a multiple of 1024, not a power of 2. C bfloat16 128 is rejected, not 8192, not a multiple of 1024, a power of 2 but below the 256 floor. D bfloat16 256 is legal, power of 2 and at least 256. E int8 256 is rejected, not 8192, not a multiple of 1024, a power of 2 but below the 512 floor. F int8 3072 is legal, a multiple of 1024. G int8 8192 is legal, equal to the array dimension and a multiple of 1024. The rank 1 rule differs from rank 2 or higher in that rank 1 uses this single dimension disjunction while rank 2 or higher constrains the last two dimensions separately, the last a multiple of 128 and the second to last a multiple of 8, or each equal to the corresponding array dimension.
+
+        Solved: cites the documented rank 1 disjunction, equal to array dim or multiple of 1024 or power of 2 and at least 128 times 32 over bitwidth, and returns A legal, B rejected, C rejected, D legal, E rejected, F legal, G legal, with the correct rule for each, and correctly contrasts the rank 1 disjunction against the separate last two dimension constraints for rank 2 or higher. Accept equivalent statements of the floor, for example 128 for 32 bit, 256 for 16 bit, 512 for 8 bit.
+
+        Partially Solved: gets the multiple of 1024 path and or the equal to array dim path and applies them correctly, so F and G are right, but misses the power of 2 path so A or D come out wrong, or states the power of 2 floor but miscomputes it for one dtype, or gets all seven verdicts right but by an incorrect or incomplete rule, or gets the cases right but the rank 1 versus rank 2 comparison wrong. Roughly, most verdicts right with the rule partially stated.
+
+        Stumped: invents a rule not in the docs, such as a full 2D tile multiple, and gets multiple verdicts wrong, in particular marks A or D or F rejected when they are legal, or omits the power of 2 path entirely, or states the rank 1 rule as the product of the two trailing constraints. Any fabricated rule that produces two or more wrong verdicts is Stumped.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        The model invented a block shape rule that does not appear in the Pallas
+        documentation, applied it confidently across all seven cases, and got three of
+        seven verdicts wrong. The whole answer is checkable against one documented
+        sentence and needs no hardware.
+
+        Its rule: a rank 1 block must be a multiple of the full 2D vector register tile,
+        which it gave as 1024 elements for float32, 2048 for bfloat16 and 4096 for int8,
+        presented as the single decisive constraint. That is a distorted echo of the real
+        multiple of 1024 path, correct only for float32, then scaled by dtype to 2048 and
+        4096, which the docs do not do. It omitted the power of 2 path and the equal to
+        array dimension path entirely.
+
+        Three wrong verdicts, each checkable. Case A float32 (128,) it called rejected;
+        128 is a power of 2 at the float32 floor of 128, so it is legal. Case D bfloat16
+        (256,) it called rejected; 256 is a power of 2 at the bfloat16 floor of 256, so
+        it is legal. Case F int8 (3072,) it called rejected on the grounds that 3072 is
+        not divisible by 4096; 3072 is 3 times 1024 and legal by the multiple of 1024
+        path.
+
+        The four correct verdicts are not evidence the rule worked. B, C and E come out
+        rejected under both the real rule and the fabricated one, and the reasons it gave
+        for C and E cite its invented 2048 and 4096 tile multiples rather than the real
+        power of 2 floors of 256 and 512. G is legal under both. So the rule it used
+        never considered the branch that decides A and D, and the cases it got right it
+        got right by coincidence.
+
+        The closing contrast is wrong for the same reason. It stated that the rank 1 rule
+        is the product of both trailing constraints, 128 times sublanes, when the real
+        rank 1 rule is the disjunction above and none of its branches is that product.
+
+        Credit where due. The rank 2 side of the contrast is roughly right, last dimension
+        a multiple of 128 and second to last a multiple of 8, and the 2D vector register
+        tiling it described is real. The failure is that it derived the rank 1 rule as the
+        product of those constraints and presented the result as the documented rule, in a
+        prompt that explicitly asked for the actual rule rather than alignment folklore.
+      weight: 0.5

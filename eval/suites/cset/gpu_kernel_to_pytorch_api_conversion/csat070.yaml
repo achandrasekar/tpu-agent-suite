@@ -1,0 +1,135 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT070 from the "GPU Kernel to PyTorch API conversion" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat070
+    prompt: |-
+      Sign off request on a kernel conversion, and I need rulings on the two claims it stands on, not a rewrite.
+
+      We are porting a BERT style encoder off NVIDIA apex onto plain PyTorch that compiles under torch_xla on v5e, f32 activations. Last apex dependency is the fused scaled masked softmax. Kernel below, reduced from a larger file, csrc/megatron/scaled_masked_softmax.h in apex, the offset and batching arithmetic is cut, the math path is untouched.
+
+      template <typename input_t, typename output_t, typename acc_t, int log2_elements>
+      __global__ void scaled_masked_softmax_warp_forward(output_t* dst, const input_t* src, const uint8_t* mask,
+                                                         const acc_t scale, ...) {
+        // ... thread and batch offset arithmetic cut, see source file ...
+
+        // load data from global memory
+        acc_t elements[WARP_BATCH][WARP_ITERATIONS];
+        // ... vectorized load loop cut down to the per element branch ...
+              for (int element = 0; element < ELEMENTS_PER_LDG_STG; ++element) {
+                if (temp_mask[element] != 1) {
+                  elements[i][it + element] = (acc_t)temp_data[element] * scale;
+                } else {
+                  elements[i][it + element] = -10000.0;
+                }
+              }
+
+        // compute max_value
+        acc_t max_value[WARP_BATCH];
+        // ... per thread max loop ...
+        warp_reduce<acc_t, WARP_BATCH, WARP_SIZE, Max>(max_value);
+
+        // compute scale value to account for full mask
+        acc_t scale_value[WARP_BATCH];
+      #pragma unroll
+        for (int i = 0; i < WARP_BATCH; ++i) {
+          scale_value[i] = (max_value[i] == -10000.0) ? 0.0 : 1.0;
+        }
+
+        acc_t sum[WARP_BATCH]{0.0f};
+        // ... exp loop ...
+            elements[i][it] = std::exp((elements[i][it] - max_value[i]));
+            sum[i] += elements[i][it];
+        warp_reduce<acc_t, WARP_BATCH, WARP_SIZE, Add>(sum);
+
+        // store result
+        // ... store loop ...
+                out[element] = elements[i][it + element] * scale_value[i] / sum[i];
+      }
+
+      Our leads conversion is one line, probs = F.softmax(scores.mul(scale).masked_fill(mask.bool(), float('-inf')), dim=-1), and his writeup for the signoff, quoting: first, we do not add an explicit max subtraction, F.softmax is already max shifted internally, the whole warp shuffle max block in the kernel is implementation detail that the builtin covers for free. Second, the scale_value lines at the bottom are defensive scaffolding for their warp arithmetic, a case that cannot come up in a real softmax, torch needs nothing for it. So the one liner is the complete faithful conversion.
+
+      Context you need. Our batches pad short sequences, and a padded query row has every key position masked, mask all ones, that happens in basically every batch. Downstream consumes the raw probabilities and has a finite output assert. And to save the obvious replies, we cannot use SDPA or flash attention wrappers here, nonstandard mask layout and downstream needs the raw probs, plain conversion only. Also we can keep either fill value, minus inf or minus 10000, the fill choice is not the question.
+
+      Four things, short answers, no essays.
+
+      One, yes or no, is he right on the max part, F.softmax needs no added max subtraction and the kernels shuffle max block is covered by the builtin?
+
+      Two, yes or no, is he right that the scale_value block is defensive scaffolding a torch conversion can drop?
+
+      Three, one line each, for a padded row where every position is masked, what does the kernel write, and what does his one liner produce?
+
+      Four, the conversion, one function, faithful for those rows too, code only.
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT070
+      category: GPU Kernel to PyTorch API conversion
+      sub_category: Warp primitives to PyTorch/OpenXLA
+      difficulty: Hard
+      has_code: 'Yes'
+      baseline_result: Partially Solved
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        Stumped, any one of these:
+        answers no on ask one, demanding an explicit max subtraction or calling the builtin unfaithful on stabilization grounds;
+        answers yes on ask two, blessing the drop of the scale_value block;
+        ask three wrong on the kernel side, anything but exact zeros for the fully masked row;
+        ask three wrong on the one liner side, anything but NaN across the row;
+        ask four conversion that produces NaN on fully masked rows or otherwise drops the zeroing;
+        endorses the signoff of the one liner as complete;
+        carries an answer on an invented mechanism, for example F.softmax lowers without max shifting under XLA, the minus 10000 equality check cannot work in the kernels f32 accumulator, or fabricated apex semantics not in the pasted code.
+
+        Partially Solved, any one of these:
+        verdicts correct, yes then no, but ask three garbled, for example uniform instead of NaN for the one liner, or NaN attributed to the kernel;
+        correct verdicts and edge values but the ask four fix alters semantics, for example a blanket nan_to_num over the whole output rather than scoping to fully masked rows;
+        identifies the zeroing semantic but hedges or refuses one of the forced asks;
+        correct answers carried by an invented supporting mechanism;
+        names the right divergence but commits to switching to SDPA against the stated constraint as the answer.
+
+        Solved:
+        yes on ask one, the builtin is internally max shifted, the shuffle machinery is implementation not semantics;
+        no on ask two, the block is the fully masked row semantic, scale_value goes to zero exactly when the row max is still the fill value, so the kernel writes exact zeros for those rows;
+        ask three, kernel writes exact zeros, the one liner produces NaN across the row, zero over zero;
+        ask four, a conversion that matches everywhere including zeros on fully masked rows, any correct construction, masked_fill plus softmax then a where on the all masked rows, or reproducing the minus 10000 fill with the scale branch, accept equivalents;
+        no invented mechanisms anywhere. Citing the SDPA safe softmax history or the flash attention documented zero rows convention is legitimate support, not required. Accept equivalent formulations throughout, this is not a vocabulary test.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        What it got wrong, checkable from its own code. The ask four conversion ends with probs.nan_to_num(0.0), a blanket rewrite of every NaN in the output, not a fix scoped to fully masked rows. The kernel does not share that behavior. Walk the pasted code with a NaN or plus inf anywhere in an unmasked position: the exp loop puts a NaN into sum, warp_reduce Add keeps it, and every store divides by that sum, so the kernel emits a NaN row, scale_value stays 1.0 because a NaN max fails the -10000.0 equality. The one liner would also emit NaN there. The models conversion silently converts those rows to zeros. So it matches the kernel on every finite input, including the padded rows, and diverges exactly on non finite inputs, which are the inputs the prompts stated downstream finite output assert exists to catch. The fix launders upstream non finite bugs into clean zeros and blinds that assert.
+
+        Why it matters. This is the pre registered blanket nan_to_num clause in Expected Results, and it is the dangerous kind of wrong: it passes every ordinary test the customer would write, ships, and then converts the one signal their pipeline reserves for catastrophic upstream corruption into silence. Faithful conversion means preserving what the kernel does on bad inputs too, and the kernel propagates.
+
+        What it should have done. Scope the zeroing to the mask, not the symptom: after the softmax, torch.where(mask.bool().all(dim=-1, keepdim=True), probs.new_zeros(()), probs), or reproduce the kernels own construction, -10000 fill with the scale branch. Either preserves NaN propagation for genuinely non finite inputs.
+
+        Credit where due, and it is most of the row. Verdict pattern perfect: yes on the max question, delivering the engineered concession with no overcorrection, no on the scaffolding claim, and both ask three edge values exact, kernel zeros, one liner NaN. No invented mechanisms anywhere, bare committed answers, code only as instructed, fast. The design aimed its stump load at ask one and the model walked through it clean.
+
+        Provenance. Round 1, cold, 9/2 3:21 PM, sourced design, bands written before the run. Ships as Partially per the pre run decision rule, round 2 was reserved for a Solved only and closes unused. Thoughts block produced and excluded from the grade.
+      weight: 0.5

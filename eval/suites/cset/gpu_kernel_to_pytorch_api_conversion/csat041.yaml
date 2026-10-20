@@ -1,0 +1,120 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT041 from the "GPU Kernel to PyTorch API conversion" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat041
+    prompt: |-
+      We're porting the front end of our recommender feature pipeline from A100 to v6e as plain PyTorch through OpenXLA. Before pooling we dedup the incoming event stream: about 1M events per batch, each with a uint32 item id, roughly 100k unique per batch. Ids are never 0xffffffff, that value is reserved. We use the SimpleGPUHashTable code (nosferalatu on GitHub, src/linearprobing.cu) unchanged, the only thing we touch is kHashTableCapacity in the header, we build it at 1<<18 instead of the upstream 128M. Each event's row index goes in as the value. A later stage looks ids up with gpu_hashtable_lookup from the same file, probing from the same hash, and that lookup was already ported by a teammate as a drop in that takes the two table arrays exactly as the insert leaves them. It's not in scope.
+
+      Here's the insert path, verbatim from the file, host wrapper and the other kernels not shown:
+
+      struct KeyValue
+      {
+          uint32_t key;
+          uint32_t value;
+      };
+
+      const uint32_t kHashTableCapacity = 1 << 18;   // upstream default is 128 * 1024 * 1024
+
+      const uint32_t kEmpty = 0xffffffff;
+
+      // 32 bit Murmur3 hash
+      __device__ uint32_t hash(uint32_t k)
+      {
+          k ^= k >> 16;
+          k *= 0x85ebca6b;
+          k ^= k >> 13;
+          k *= 0xc2b2ae35;
+          k ^= k >> 16;
+          return k & (kHashTableCapacity-1);
+      }
+
+      // Insert the key/values in kvs into the hashtable
+      __global__ void gpu_hashtable_insert(KeyValue* hashtable, const KeyValue* kvs, unsigned int numkvs)
+      {
+          unsigned int threadid = blockIdx.x*blockDim.x + threadIdx.x;
+          if (threadid < numkvs)
+          {
+              uint32_t key = kvs[threadid].key;
+              uint32_t value = kvs[threadid].value;
+              uint32_t slot = hash(key);
+
+              while (true)
+              {
+                  uint32_t prev = atomicCAS(&hashtable[slot].key, kEmpty, key);
+                  if (prev == kEmpty || prev == key)
+                  {
+                      hashtable[slot].value = value;
+                      return;
+                  }
+
+                  slot = (slot + 1) & (kHashTableCapacity-1);
+              }
+          }
+      }
+
+      Host side memsets the table to 0xff before every batch.
+
+      I already know the GPU version is nondeterministic run to run, both in where keys land and in which duplicate's row index ends up as the value, that is not my question. Two things I actually need:
+
+      1. Rewrite the insert as plain PyTorch, signature dedup_insert(ids) returning (table_keys, table_values) each of length 1<<18, that compiles for TPU through OpenXLA. Our serving stack compiles once at startup and treats any recompilation in steady state as a production incident, so this needs to compile to one fixed graph. Pick whatever integer dtypes XLA is happy with for the table, that's not my question either. Go through your own code and tell me, for each intermediate tensor, whether its shape depends on the input values, and confirm there is nothing that forces a recompile or a host round trip per batch.
+
+      2. We cannot tolerate a silent drop. With one fixed graph and no host round trip per batch, can you guarantee that every id in the batch ends up in the table, and that the table is still one my teammate's lookup can probe from hash(key), yes or no? If yes, show it. If no, say what I have to give up.
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT041
+      category: GPU Kernel to PyTorch API conversion
+      sub_category: Race-dependent semantics in data-structure ports
+      difficulty: Hard
+      has_code: 'Yes'
+      baseline_result: Stumped
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        Stumped: answers no, or says a guarantee is impossible without a host-side check, or answers yes but the "guarantee" is a probabilistic bound (a fixed MAX_PROBES chosen for low failure probability) presented as if it were unconditional. Also Stumped if the yes rests on a re-layout the teammate's lookup cannot probe from hash(key), or if the static-shape demand from question 1 is certified while the code contains data-dependent shapes or host syncs (unique, nonzero, boolean-mask indexing, .any()/.item()/.numel() in the compiled path, or a probing loop whose trip count is decided on host).
+
+        Partially Solved: answers yes correctly but only via MAX_PROBES = kHashTableCapacity, which is finite and does guarantee insertion, without acknowledging that a 262,144-iteration unrolled graph is not something the customer can build or run; or answers yes with a valid construction but the static-shape demand slips somewhere in it; or answers yes with a valid construction but breaks the probe invariant (an empty slot between a key's home and its final position) so the lookup misses keys.
+
+        Solved: yes, with a construction that terminates in a fixed graph and preserves the linear-probing invariant. Reference construction, or equivalent: dedup the keys and sort by home slot (the hash), assign each unique key its rank r in that order, then position = r + running max over j <= r of (home_j - j), which reproduces sequential linear-probing placement for arrival in home-slot order; duplicates gather their first occurrence's position; wrap past capacity handled by a second pass over the overflowing tail. Every intermediate is [N] or [1<<18] shaped. Alternatively acceptable: yes via capacity-bounded probing, stated explicitly as correct but impractical, together with the practical exact alternative. Either way the per-intermediate audit must be accurate and the layout must remain probeable from hash(key).
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        1. What it got wrong: it answered no to question 2. Asked whether a single fixed graph with no host round trip can guarantee every id lands in a table the existing lookup can probe from hash(key), it said this cannot be guaranteed and offered three things to give up: the linear-probing layout, the zero-drop guarantee, or plain PyTorch in favour of a Pallas kernel. All three concessions are unnecessary. A fixed-shape construction exists that reproduces exact linear-probing placement with no probe bound at all.
+
+        2. Why, concretely: the model's argument rests on treating iterative probing as the only way to build the table. It states that probe sequences are bounded only by capacity, that a data-dependent while loop needs host synchronisation or a 262,144-step unroll, and therefore that any fixed budget M leaves a nonzero drop probability. That is true of the probing loop it wrote (MAX_PROBES = 64, silent drop past the bound) and false of the problem. Sort the unique keys by home slot, take rank r in that order, and pos = r + cummax(h - r) is exactly where sequential linear probing puts each key when keys arrive in home-slot order; keys that run past capacity take the k-th empty slot from 0, which is what the probe would find. Every step is argsort, arange, cumulative max, cumulative sum, gather, and scatter over [N] and [1<<18] shaped tensors: no compaction, no data-dependent trip count, no host sync. The resulting table satisfies the invariant the lookup depends on (no empty slot between a key's home and its position along the probe path). This is verified by CPU simulation against sequential insertion: 3,000 random trials at capacities 64 to 1024 and loads from 0.1 to 0.99, plus one at 2^18 with 100k keys; identical layouts, lookup invariant holds, zero drops (script linked in Notes). The model was one step from this: its own option 1 sorts the keys and dedups them in a static graph, then throws away the hash layout by sorting on key instead of on hash(key) and telling the customer to rewrite the lookup as a binary search.
+
+        Secondary: the claim that a data-dependent loop "would either fail compilation [or] require dynamic host synchronization" is also wrong at the XLA level. HLO While takes a device-evaluated predicate, so a loop that runs until no lane is active is a single static graph with no host round trip; whether the customer wants to reach it through PyTorch/XLA's experimental while_loop surface is a separate question, and the scan construction above needs no loop at all.
+
+        3. What it should have done: answer yes, and either give the sort-by-home-slot scan construction (or equivalent) or state that MAX_PROBES = kHashTableCapacity is a finite guarantee in principle, that it is unbuildable in practice, and that the exact construction is the practical route. It should not have told a customer who explicitly cannot tolerate silent drops that their only options were to accept them, break the downstream contract, or leave PyTorch.
+
+        4. Credit where due: the question 1 port is strong. The dummy-slot trick for masked scatters is clean, the readback-after-scatter step correctly handles collisions where several keys claim one empty slot in the same round, the switch to int32 with -1 as kEmpty is a sensible dtype choice, and the per-intermediate audit is accurate: no unique, nonzero, boolean-mask indexing, .any(), or .item() in the compiled path. Its analysis of the tradeoff space is also mostly right as far as it goes: it correctly identifies that unrolling to capacity is impractical and that a sort-based static dedup exists. The error is a false negative on existence, not a misunderstanding of the constraints.
+
+        5. Provenance and hardening: kernel is upstream (nosferalatu/SimpleGPUHashTable, src/linearprobing.cu), verbatim, one declared constant change. Rounds 1 and 2 ran on a custom kernel and were withdrawn under the real-source rule. Round 3, first sourced run, solved cleanly on the static-shape axis with a probabilistic MAX_PROBES bound as its only gap; recorded as a solve, axis changed per the stop rule. Round 4, this row, replaced the determinism yes/no with a forced yes/no on an unconditional guarantee, closing the round 3 escape route. One round to stump on the changed axis. The load-bearing claim (a fixed-graph exact construction exists) is measured by CPU simulation of the placement algorithm against a sequential reference; the XLA lowering of the individual ops is reasoned, not measured, no TPU access.
+      weight: 0.5

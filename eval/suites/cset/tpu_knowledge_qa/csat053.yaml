@@ -1,0 +1,75 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT053 from the "TPU Knowledge Q&A" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat053
+    prompt: My PyTorch/XLA code is recompiled too many times so it hurts the performance.
+      What should I do?
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT053
+      category: TPU Knowledge Q&A
+      sub_category: PyTorch API code and OpenXLA behaviour
+      difficulty: Moderate
+      has_code: 'No'
+      baseline_result: Partially Solved
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        While the model provides solid foundational guidance on eliminating dynamic shapes and eager synchronizations, Step 5 relies on outdated debugging instructions and should be modernized around PT_XLA_DEBUG_LEVEL (introduced in PyTorch/XLA 2.4).
+
+        Specifically, it should recommend Level 2 Granular Diagnostics:
+
+        export PT_XLA_DEBUG_LEVEL=2
+        export PT_XLA_DEBUG_FILE="/tmp/pt_xla_debug.txt"
+
+        What Level 2 Diagnostics Deliver:
+                Compilation Cause vs. Execution Cause Analysis: At Level 2, PyTorch/XLA actively instruments graph lifecycle transitions. It tags every graph dispatch with its root trigger (e.g., Manual mark_step, DataLoader barrier, or Premature tensor access prior to mark_step).
+                Pinpointing Graph Thrashing: During healthy training, the log shows paired [Compilation Cause] + [Execution Cause] tags only for the initial warmup steps. If [Compilation Cause] continuously appears after warmup, it isolates the exact Python frame and operation triggering graph invalidation.
+                Auto-Metrics & Aten Fallbacks: Level 2 automatically summarizes the metrics report and flags aten:: fallback counters, pinpointing operations forced back onto the host CPU. (Level 1 skips the execution analysis and only reports compilation triggers).
+
+        Replacing deprecated flags with PT_XLA_DEBUG_LEVEL=2 equips developers with concrete stack traces and causal attribution, eliminating the guesswork behind why graphs and shapes are mutating.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        The general optimization recommendations for mitigating recompilation storms are solid. However, Step 5 provides outdated debugging advice:
+
+        Deprecated Flag: PT_XLA_DEBUG was superseded in PyTorch/XLA 2.4 by PT_XLA_DEBUG_LEVEL.
+
+        Missing Granular Diagnostics (LEVEL=2): Rather than just printing metrics, developers should configure PT_XLA_DEBUG_LEVEL=2. At level 2, the runtime emits comprehensive tracing information—including exact graph execution details, dynamic graph compilation triggers, and graph hash mismatches—directly revealing why a particular frame was invalidated and recompiled.
+
+        A modernized Step 5 should specify:
+
+        # Enable verbose PyTorch/XLA compiler diagnostics (v2.4+)
+        export PT_XLA_DEBUG_LEVEL=2
+        export XLA_METRICS_FILE=/tmp/xla_metrics.txt
+
+        This prints the graph hash comparisons and IR differences directly to the log stream, allowing developers to immediately spot dynamic shape mutations and device syncs instead of manually guessing from aggregate counter deltas.
+      weight: 0.5

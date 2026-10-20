@@ -1,0 +1,14 @@
+# Host dependencies for agent tool execution, schemas, and GCP/HF client access.
+docstring-parser>=0.16
+duckdb>=1.0.0
+google-cloud-aiplatform>=1.40.0
+google-cloud-bigquery>=3.20.0
+google-cloud-storage>=2.10.0
+huggingface_hub>=0.24.0
+matplotlib>=3.7
+pandas>=2.0.0
+pydantic>=2.0.0
+pyyaml>=6.0
+tpu-info>=0.7.1
+vertexai>=1.0.0
+xprof>=2.24.0

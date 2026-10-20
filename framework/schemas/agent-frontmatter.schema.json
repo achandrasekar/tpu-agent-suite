@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Agent Frontmatter Schema",
+  "description": "JSON Schema specification for TPU agent suite agent Markdown YAML frontmatter.",
+  "type": "object",
+  "required": [
+    "name",
+    "description"
+  ],
+  "properties": {
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+      "description": "Canonical lowercase agent name, matching the .md filename."
+    },
+    "description": {
+      "type": "string",
+      "description": "Explanation of the agent role and routing conditions."
+    },
+    "tools": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Declared canonical tools ('read', 'write', 'edit', 'search', 'shell', 'web_search', 'web_fetch') or package scripts/mcp servers."
+    },
+    "delegates": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Names of subagents this agent is allowed to route work to."
+    },
+    "scripts": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^scripts/" },
+      "description": "Package-relative paths to executable scripts this document uses, under scripts/."
+    },
+    "references": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^references/" },
+      "description": "Package-relative paths to reference documents or directories this document reads, under references/. A directory brings every file under it."
+    },
+    "accepts": {
+      "type": "string",
+      "description": "Package-relative path to input contract JSON schema."
+    },
+    "produces": {
+      "type": "string",
+      "description": "Package-relative path to output contract JSON schema."
+    },
+    "effort": {
+      "enum": ["low", "medium", "high", "xhigh", "max"],
+      "description": "How much the agent thinks, where the harness lets an agent definition set it (Claude Code). Other harnesses run the agent at their default."
+    },
+    "host_dependencies": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Python package names this document's scripts need on the host. Unioned by the compiler across the package."
+    },
+    "tpu_dependencies": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Python package names this document's scripts need in the TPU workload environment. Unioned by the compiler across the package."
+    }
+  },
+  "additionalProperties": false
+}

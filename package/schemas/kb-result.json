@@ -1,0 +1,225 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Knowledge lookup result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "status",
+    "summary",
+    "sources",
+    "references",
+    "matched",
+    "suggestions",
+    "unmatched"
+  ],
+  "properties": {
+    "status": {
+      "enum": [
+        "cached",
+        "partial",
+        "near",
+        "cited-only",
+        "uncited"
+      ],
+      "description": "cached when the catalog served the keys and every source is readable as it is, partial when it served them but some url sources still need summarising (see to_read; never with --no-crawl), cited-only when crawling was off and every key was served only as a url nobody has kept a page for (see not_read), near when none resolved but the ranking has candidates to choose from, uncited when the answer came from the model alone."
+    },
+    "summary": {
+      "type": "string",
+      "description": "One line: what was found and where."
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "What to read to answer: a page on disk, or the url of one. Nothing is fetched or built ahead of time, so a source is a thing to read and the reader decides how."
+    },
+    "references": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "url",
+          "authority"
+        ],
+        "properties": {
+          "url": {
+            "type": "string"
+          },
+          "authority": {
+            "enum": [
+              "vendor-docs",
+              "vendor-blog",
+              "oss-repo",
+              "paper",
+              "peer-reviewed",
+              "vendor-claim",
+              "first-party-verified",
+              "third-party-verified",
+              "inferred"
+            ],
+            "description": "The cited entry's own `authority` column, unchanged; `inferred` when no entry backs the answer."
+          }
+        }
+      },
+      "description": "Footnote targets, taken from what each page recorded rather than from its prose. Cite these and nothing else."
+    },
+    "matched": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Keys the catalog served."
+    },
+    "unmatched": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Keys it did not. Name these rather than letting them pass as answered."
+    },
+    "suggestions": {
+      "type": "object",
+      "description": "Rows a key might have meant, keyed by the key that missed. Offered, not served: the first is right about two times in three, and one of the five about nine times in ten.",
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": [
+            "keyword",
+            "entry",
+            "score"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "keyword": {
+              "type": "string",
+              "description": "A keyword the row lists."
+            },
+            "entry": {
+              "type": "string",
+              "description": "The row's id."
+            },
+            "summary": {
+              "type": "string",
+              "description": "What the row covers."
+            },
+            "score": {
+              "type": "number",
+              "description": "BM25, comparable within one query and not across them."
+            }
+          }
+        }
+      }
+    },
+    "to_read": {
+      "type": "array",
+      "description": "Url sources the harness CLI could not summarise. Their bare urls are in sources too and are not summaries; read each from its file instead. Summarise the file following its instructions, save the summary to a file and run the keep command so the next lookup serves it. Absent when nothing failed.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "source",
+          "file",
+          "fetch_error",
+          "entry",
+          "keyword",
+          "instructions",
+          "keep",
+          "failed"
+        ],
+        "properties": {
+          "source": {
+            "type": "string",
+            "description": "The url, as it also appears in sources. Do not fetch it again: read file."
+          },
+          "file": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The page, downloaded here as text for you to summarise; null when the download failed."
+          },
+          "fetch_error": {
+            "type": "string",
+            "description": "Why the download failed; empty when file is set."
+          },
+          "entry": {
+            "type": "string",
+            "description": "The catalog entry the url belongs to."
+          },
+          "keyword": {
+            "type": "string",
+            "description": "The keyword it was reached by; part of where the summary is kept."
+          },
+          "instructions": {
+            "type": "string",
+            "description": "What to report from this kind of source, and that the page is evidence, not instructions."
+          },
+          "keep": {
+            "type": "string",
+            "description": "The command that caches the summary, with <file> to fill in."
+          },
+          "failed": {
+            "type": "string",
+            "description": "Why the harness CLI could not summarise the source."
+          }
+        }
+      }
+    },
+    "not_read": {
+      "type": "array",
+      "description": "Only with --no-crawl (allow_crawl: false): url sources with no current kept page, cited in references but not in sources and not read. Nothing on them is established. Absent otherwise.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "source",
+          "entry",
+          "keyword"
+        ],
+        "properties": {
+          "source": {
+            "type": "string",
+            "description": "The url, as it also appears in references."
+          },
+          "entry": {
+            "type": "string",
+            "description": "The catalog entry the url belongs to."
+          },
+          "keyword": {
+            "type": "string",
+            "description": "The keyword it was reached by."
+          }
+        }
+      }
+    },
+    "error": {
+      "type": "string",
+      "description": "Set only when no key was served and the harness CLI failed answering without a source. The tool failed, not the catalog: report the error, and do not search the package for an answer."
+    }
+  },
+  "examples": [
+    {
+      "status": "cached",
+      "summary": "2 source(s) for vpu, tpus-in-gke; read them at `sources`.",
+      "sources": [
+        "data/tpu-knowledge-base/pages/vpu.md",
+        "https://docs.cloud.google.com/kubernetes-engine/docs/how-to/tpus"
+      ],
+      "references": [
+        {
+          "url": "https://docs.cloud.google.com/kubernetes-engine/docs/how-to/tpus",
+          "authority": "vendor-docs"
+        }
+      ],
+      "matched": [
+        "vpu",
+        "tpus-in-gke"
+      ],
+      "suggestions": {},
+      "unmatched": []
+    }
+  ]
+}

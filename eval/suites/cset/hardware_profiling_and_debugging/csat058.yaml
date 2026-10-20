@@ -1,0 +1,114 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT058 from the "Hardware profiling and debugging" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat058
+    prompt: |-
+      I am integrating a custom Pallas kernel into my PyTorch/XLA training loop (PyTorch 2.6, torch_xla 2.6) on a TPU v6e pod. To get maximum performance across the rest of the model, I am wrapping my training step with torch.compile(backend='openxla').
+
+      My Pallas kernel handles a custom MoE gating mechanism. However, when I run the model, my training step time jumps from 0.8 seconds to over 45 seconds per step! The PyTorch profiler shows CPU-TPU host syncs and constant "TorchDynamo Graph Breaks" occurring near my Pallas kernel execution.
+
+      A teammate told me that TorchDynamo doesn't natively trace JAX/Mosaic primitives inside Pallas integrations. They said I need to decorate my Pallas kernel function with @torch.compiler.allow_in_graph and set export TORCH_XLA_ENABLE_PALLAS_TRACING=1 to force Dynamo to fuse the Pallas call into the main OpenXLA graph.
+
+      Is my teammate correct? Why is torch.compile struggling with this custom kernel causing 45-second step times, and what is the exact idiomatic PyTorch/XLA fix to get this custom Pallas kernel to execute seamlessly inside a compiled graph?
+
+      My Code
+      Python
+      import torch
+      import torch_xla.core.xla_model as xm
+      from torch_xla.experimental.custom_kernel import jax_import_guard, make_kernel_from_pallas
+      jax_import_guard()
+      import jax
+      import jax.numpy as jnp
+      from jax.experimental import pallas as pl
+
+      def my_pallas_kernel(x_ref, o_ref):
+          o_ref[...] = jnp.tanh(x_ref[...])
+
+      def gate(x):
+          return pl.pallas_call(
+              my_pallas_kernel,
+              out_shape=jax.ShapeDtypeStruct(x.shape, x.dtype),
+          )(x)
+
+      # Wrap the Pallas kernel for PyTorch/XLA
+      pallas_gate = make_kernel_from_pallas(gate, lambda x: [(x.shape, x.dtype)])
+
+      class CustomMoEGate(torch.nn.Module):
+          def forward(self, x):
+              # x: (1024, 128) in bfloat16
+              if x.size(0) > 512:
+                  # Graph breaks suspected here!
+                  return pallas_gate(x)
+              return x
+
+      model = CustomMoEGate().to(xm.xla_device())
+      compiled_model = torch.compile(model, backend='openxla')
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT058
+      category: Hardware profiling and debugging
+      sub_category: TorchDynamo tracing
+      difficulty: Hard
+      has_code: 'Yes'
+      baseline_result: Partially Solved
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        A correct answer rejects TORCH_XLA_ENABLE_PALLAS_TRACING as not a PyTorch/XLA setting, and explains that torch.compiler.allow_in_graph only lets Dynamo record the function call without inspecting its body; it does not give Dynamo or XLA any support that is missing for make_kernel_from_pallas, which traces the kernel with JAX and dispatches it through torch_xla._XLAC._xla_tpu_custom_call. The fix registers the kernel as a PyTorch custom operator (torch.library.custom_op with a register_fake shape/dtype implementation, available from PyTorch 2.4) that calls the user's existing pallas_gate, keeping their make_kernel_from_pallas and pl.pallas_call code and using no non-existent torch_xla module, flag or API. It does not claim the x.size(0) > 512 branch causes the graph break (Dynamo installs a shape guard), and it does not present host transfers or per-step recompilation as the established cause of the slowdown without evidence from the profile.
+        Solved: rejects the flag, explains allow_in_graph correctly, and gives a custom-op fix with register_fake that wraps the user's existing kernel using only APIs that exist in PyTorch 2.6 / torch_xla 2.6.
+        Partially Solved: rejects the flag and proposes the custom-op route, but uses a non-existent module or API, replaces the user's working wrapper with invalid code, misstates what allow_in_graph does, or asserts the if-branch or an unsupported host-transfer/recompilation mechanism as the cause.
+        Stumped: endorses the flag or allow_in_graph as the fix, or offers no traceable registration at all.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        Partially Solved on Gemini 3.7 Flash. It answers the teammate question correctly on both counts:
+        TORCH_XLA_ENABLE_PALLAS_TRACING "is fictional: PyTorch/XLA does not have this environment variable", and
+        allow_in_graph "tells TorchDynamo to skip Python bytecode analysis and insert a call directly into the FX
+        graph" but is "insufficient on its own". The registration it gives is the supported one and is genuinely
+        traceable: @torch.library.custom_op("custom_xla::pallas_gate", mutates_args=()) with a register_fake returning
+        torch.empty_like(x), wrapping the user's own _raw_pallas_gate = make_kernel_from_pallas(gate, lambda x:
+        [(x.shape, x.dtype)]) with the list form intact and pl.pallas_call untouched, inventing no torch_xla module,
+        flag or API. It also declines the red herring, noting "Static control flow is traced cleanly by TorchDynamo".
+        Where it falls short is the cause of the slowdown. Section 2 states that moving between a compiled graph and
+        eager execution "requires a full host-device synchronization barrier" with "intermediate tensors to
+        materialize on the host/device", that "JAX/XLA often recompiles the kernel or incurs runtime dispatch overhead
+        on every single training step", and concludes "The ~45-second latency is the signature cost of repeated XLA
+        recompilation and host-TPU sync roundtrips". None of that is drawn from the profile described in the prompt,
+        which reports host syncs and graph breaks and says nothing about recompilation. The recompilation claim is
+        also attached to the wrong mechanism: in torch_xla 2.6, trace_pallas only consults its payload cache under
+        use_cache, make_kernel_from_pallas does not pass use_cache when it forwards to trace_pallas, and the file
+        carries a "TODO: Maybe we can cache the payload for the same input." note above that wrapper. The kernel is
+        therefore re-lowered through jax.jit(...).lower(...).compiler_ir() on every call whether or not Dynamo breaks
+        the graph, and because the response's custom op still calls _raw_pallas_gate at runtime, that per-call
+        lowering survives its own fix - which it nonetheless presents as collapsing the work into a "complete TPU
+        graph". Credit: the flag rejection, the allow_in_graph reading, the static-shape analysis of the if-branch,
+        and the TORCH_LOGS="graph_breaks,recompiles" verification step are all correct.
+      weight: 0.5

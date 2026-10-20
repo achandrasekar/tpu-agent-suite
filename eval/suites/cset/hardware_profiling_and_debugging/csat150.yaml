@@ -1,0 +1,75 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT150 from the "Hardware profiling and debugging" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat150
+    prompt: |-
+      I'm running the following script on a v3-8 TPU VM with the tpu-vm-pt-1.10 runtime, the 20220413 nightly builds of torch,torch vision,and torch_xla, and libtpu==0.1==0.1.dev20220408. It fails with the error below. Can you explain the failure and show how to fix it while preserving the collective operations and their results?
+      import torch
+      import torch_xla.core.xla_model as xm
+      import torch_xla.distributed.xla_multiprocessing as xmp
+      def _mp_fn(index):
+      world_size = xm.xrt_world_size()
+      t1 = torch.ones(1024, device=xm.xla_device())
+      t2 = xm.all_gather(t1).flatten()
+      t3 = xm.all_reduce(xm.REDUCE_SUM, t2)
+      t4 = xm.reduce_scatter(xm.REDUCE_SUM, t3, scale=1.0, scatter_dim=0, shard_count=world_size)
+      t5 = t4.sum()
+      xm.mark_step()
+      print(f"t5: {t5}")
+      if name == "main":
+      xmp.spawn(_mp_fn, args=(), nprocs=8)
+      Reported error:
+      ronghanghu@t1v-n-f1525942-w-0:~$ python3 test_all_gather_all_reduce_reduce_scatter.py
+      2022-04-15 06:57:23.387994: E tensorflow/core/framework/op_kernel.cc:1676] OpKernel ('op: "TPURoundRobin" device_type: "CPU"') for unknown op: TPURoundRobin
+      2022-04-15 06:57:23.388052: E tensorflow/core/framework/op_kernel.cc:1676] OpKernel ('op: "TpuHandleToProtoKey" device_type: "CPU"') for unknown op: TpuHandleToProtoKey
+      2022-04-15 06:57:33.186197: E tensorflow/core/tpu/kernels/tpu_compilation_cache_external.cc:113] during context [post-optimization]: HloModule has a mix of layout constrained and unconstrained AllReduce instructions.
+      2022-04-15 06:57:33.186250: F tensorflow/core/tpu/kernels/tpu_program_group.cc:86] Check failed: xla_tpu_programs.size() > 0 (0 vs. 0)
+      https://symbolize.stripped_domain/r/?trace=7feaf5dfd03b,7feaf5dfd0bf,7fea3683ebcf,7fea30eb3922,7fea30e71ebd,7fea30ec1db0,7fea30ec18ae,7fea2cd23ed3,7fea323651b8,7fea362f08a0,7fea362f2633,7fea36807cb1,7fea368074e0,7fea367ef8cb,7feaf5d9f608&map=a
+      7d53509d90e6515f49ac71c94546cafe5812b54:7fea283df000-7fea396d4e30
+
+      *** SIGABRT received by PID 302216 (TID 303572) on cpu 1 from PID 302216; stack trace: ***
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT150
+      category: Hardware profiling and debugging
+      sub_category: Compilation cache and runtime failures
+      difficulty: Moderate
+      has_code: 'Yes'
+      baseline_result: Partially Solved
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        The answer should explain that the reported build combines pinned AllReduce and unpinned ReduceScatter operations, producing incompatible layout constraints during compilation. The subsequent assertion about zero compiled TPU programs follows that compilation failure. A correction should prevent this conflict while preserving all three collectives and their reduction semantics. One supported remedy is to upgrade to a compatible build containing PR #3511, or backport it, and explicitly set pin_layout=False on all three operations; the original nightly does not accept these arguements. Separating the conflicting collectives into different graphs is also a reasonable workaround. For eight ranks, all-gather produces 8192 ones, all-reduce changes each value to 8, and reduce-scatter leaves 1024 values of 64 per rank. The final sum should therefore be 65536.0 on every rank, with the reported compilation error resolved. The merged PR fix is linked.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        The model correctly identifies the mixed-layout compilation problem, explains how lazy execution combines the collectives into one graph, and gives the correct expected result of 65536.0. However, it reverses the relevant layout policies: in the reported build, all_reduce was layout-pinned. while reduce_scatter was unpinned. This misidentifies which operation introduces each side of the conflict. Its propsed xm.mark_step() boundaries are still a plausible workaround because they separate the pending computations without changing the collective operations or their arithmetic.
+      weight: 0.5

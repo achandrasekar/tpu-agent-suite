@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CUDA Unwiring Request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "model_id",
+    "cuda_kernels_report",
+    "target"
+  ],
+  "properties": {
+    "model_id": {
+      "type": "string",
+      "description": "Hugging Face model repository ID to unwire."
+    },
+    "cuda_kernels_report": {
+      "type": "string",
+      "description": "Fully expanded path to the preflight cuda_kernels_report.<model_slug>.json of this model."
+    },
+    "target": {
+      "enum": [
+        "server",
+        "benchmark"
+      ],
+      "description": "Which workflow will import the patches module."
+    },
+    "max_attempts": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 5,
+      "description": "Forward-pass attempts before returning blocked."
+    },
+    "run_id": {
+      "type": "string"
+    }
+  },
+  "examples": [
+    {
+      "model_id": "state-spaces/mamba-2.8b-hf",
+      "cuda_kernels_report": "/home/user/.tpu-agent-suite/runs/20260923T120000Z-000000000000/artifacts/cuda_kernels_report.state-spaces--mamba-2.8b-hf.json",
+      "target": "server",
+      "max_attempts": 5,
+      "run_id": "20260923T120000Z-000000000000"
+    }
+  ]
+}

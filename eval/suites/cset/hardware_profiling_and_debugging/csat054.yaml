@@ -1,0 +1,64 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT054 from the "Hardware profiling and debugging" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat054
+    prompt: 'I am stuck on a nasty TPU serving regression in SGLang-JAX, and the obvious
+      explanation does not fit the profile. I am running MiMo-V2-Flash on TPU v6e-64
+      with dp=4, 2048-token chunked pre-fill, and random 16K-input/1K-output requests
+      at concurrency 32. The two runs differ only in whether radix caching is enabled.
+      Radix cache disabled: 534.71 output tok/s, 15.7 s median TTFT, and 44.54 Ms
+      median TPOT; Radix cache enabled: 207.32 output tok/s, 65.2 s median TTFT, and
+      90.96 Ms median TPOT. Radix-cache operations account for just 0.09 s across
+      200 calls, so their direct cost does not explain the regression. The scheduling
+      traces are also strange: with caching disabled, pre-fill work commonly advances
+      on all four data-parallel ranks in the same round; with caching enabled, only
+      one rank advances per round, with the active rank rotating, even though the
+      configured prefill limit has not been exhausted. What single implementation
+      fault best explains this entire pattern, including how it causes the TTFT, TPOT,
+      and throughput regressions, what the smallest safe correction is, and what runtime
+      check would decisively confirm the diagnosis.'
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT054
+      category: Hardware profiling and debugging
+      sub_category: Pipelining and DMA stalls
+      difficulty: Hard
+      has_code: 'No'
+      baseline_result: Partially Solved
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        A strong answer should identify that, during chunked prefill, the scheduler compares the untruncated 16,384-token extend length with the remaining global budget rather than the 2,048-token current-round chunk. After rank 0 admits one chunk,14,336 tokens remain, so rank 1 is falsely rejected and the scheduler stops, serializing prefill to one DP rank per round. It should explain that the cache toggle merely exposes  a different admission path, rule out direct radix-cache overhead, and connect the serialization to reduced DP utilization, higher TTFT and TPOT, and lower throughput. The smallest safe correction is to restrict the full length budget guard to non-chunked prefill. A decisive check should confirm that four 16K requests on DP=4 each admit a 2,048-token chunk in the same round after the correction. The referenced merged solution is linked.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        The response correctly identified the source fault and safe correction, but it slightly overstated parts of the performance explanation.Four-way prefill serialization does not guarantee an exact 4x TTFT increase, and the available evidence does not prove that SPMD synchronization alone caused the TPOT increase. The pattern where all four ranks admit 2,048 tokens in the same round is expected only in the controlled four-request, not in every production scheduling round.
+      weight: 0.5

@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Hook Output Schema",
+  "description": "JSON Schema specification for universal lifecycle hook responses returned via stdout by developer hook scripts.",
+  "type": "object",
+  "properties": {
+    "decision": {
+      "type": "string",
+      "enum": [
+        "allow",
+        "deny",
+        "retry"
+      ],
+      "default": "allow",
+      "description": "Control-flow decision. In PreToolUse, 'allow' executes the tool while 'deny' prevents execution. In PostToolUse, 'allow' accepts the result while 'deny' aborts the turn. In SubagentStop, 'allow' accepts the subagent completion while 'deny' rejects the subagent deliverable. In SessionStart, 'allow' accepts session initialization while 'deny' blocks session startup. In Stop, 'retry' resumes the execution loop instead of letting it end; 'allow' lets it end. In SessionEnd the session is already over and cannot be resumed; 'allow' is the only decision."
+    },
+    "reason": {
+      "type": "string",
+      "description": "Human-readable explanation of why the action, result, session start, or subagent completion was denied or blocked."
+    },
+    "message": {
+      "type": "string",
+      "description": "Optional notification banner or user-facing status message displayed in the agent interface."
+    },
+    "context": {
+      "type": "string",
+      "description": "Optional context or instruction text injected into the LLM conversation prompt."
+    },
+    "followup_message": {
+      "type": "string",
+      "description": "Optional follow-up message or feedback directed to the subagent instructing correction or retry."
+    },
+    "updated_args": {
+      "type": "object",
+      "description": "Optional modified tool arguments dictionary to substitute before tool execution (PreToolUse only)."
+    },
+    "run_id": {
+      "type": "string",
+      "pattern": "^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}$",
+      "description": "Deterministic run namespace identifier initialized or adopted by this hook."
+    },
+    "updated_output": {
+      "description": "Optional modified or redacted tool output to substitute in the agent conversation (PostToolUse only)."
+    }
+  },
+  "additionalProperties": false
+}

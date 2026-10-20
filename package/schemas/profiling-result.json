@@ -1,0 +1,647 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "profiling-result.json",
+  "title": "tpu-diagnostics Result",
+  "description": "Output deliverable for the tpu-diagnostics agent. What the package owns is typed and closed: the status, the failure reason, the run id, artifact paths, the traces read and the wrapper around each metric. What XProf owns is passed through untouched: metric names, values, its own status and reason strings, provenance and op tables. XProf's tools and outputs change between nightlies, and the pin is a floor, so a schema that named them would reject a correct result from the next one.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "status",
+    "summary",
+    "run_id"
+  ],
+  "status_requires": {
+    "reported": [
+      "profiling_report_artifact",
+      "xprof_version",
+      "traces"
+    ],
+    "failed": [
+      "failure_reason"
+    ]
+  },
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": [
+        "reported",
+        "invalid_input",
+        "needs_input",
+        "failed"
+      ],
+      "description": "'reported' means every requested trace was read -- and captured first, when the request carried a workload -- and the report was written, including when some fields came back unavailable (e.g. a trace captured without LLO debug info): that is XProf's answer, carried per metric, not a failure. Whether a capture happened is recorded per trace in `captured`, not in the status. 'invalid_input' means the request named no traces and no workload, or a trace that does not exist. 'needs_input' means a capture needs something only the caller has. 'failed' means the work did not reach an answer for every trace requested; traces that were read may still be listed. Named for what this agent produces rather than a generic 'completed', like every stage result. The report, the XProf version and the traces are owed by 'reported' alone, declared in `status_requires` and enforced by the runtime, because this validator has no conditional keywords."
+    },
+    "summary": {
+      "type": "string",
+      "description": "What was read or captured and how, the headline finding -- including any comparison between traces -- and for any other status what went wrong or what is needed."
+    },
+    "run_id": {
+      "type": "string",
+      "pattern": "^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}$",
+      "description": "The run id the request carried, verbatim."
+    },
+    "profiling_report_artifact": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Path of the written report: the request's `report_path`, or the default under the run's artifacts."
+    },
+    "xprof_version": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Distribution and version that produced the numbers (e.g. 'xprof 2.24.0'). Every metric is only meaningful against it."
+    },
+    "traces": {
+      "type": "array",
+      "description": "One entry per trace read: the requested ones in request order, then the one this call captured, if any. Every metric belongs to the trace it was measured on, so a comparison carries one set per trace.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "captured"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The trace actually read, after auto-discovery resolved a logdir to a session."
+          },
+          "session_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The XProf session read."
+          },
+          "label": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The caller's name for the trace, echoed from the request, or the agent's for one it captured."
+          },
+          "captured": {
+            "type": "boolean",
+            "description": "True only for the trace this call captured from the request's `workload`. A supplied trace is never replaced by a capture."
+          },
+          "metrics": {
+            "type": "object",
+            "description": "One entry per requested field, keyed by the name the caller asked for, present on every trace. Values are copied exactly as the tool reported them -- including a tool's own 'N/A' string -- and `null` only when no tool measured the quantity at all. Never an estimate. Holds exactly the requested fields: XProf's status, reason and provenance qualify a metric from inside it and are never metrics of their own, so the metric wrapper's own key names are reserved here.",
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "value",
+                "source_tool"
+              ],
+              "properties": {
+                "value": {
+                  "type": [
+                    "number",
+                    "string",
+                    "boolean",
+                    "object",
+                    "array",
+                    "null"
+                  ],
+                  "description": "Exactly what the tool returned for this field, or a value computed from what it returned."
+                },
+                "source_tool": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "The XProf subcommand the value came from, every one of them for a computed value, or 'none' when no tool measured it."
+                },
+                "unit": {
+                  "type": "string",
+                  "description": "The unit, only when the tool names one (a key suffix such as '_ms' or '_gib' counts)."
+                },
+                "tool_status": {
+                  "type": "string",
+                  "description": "XProf's own status for this value when it returned one (e.g. 'UNAVAILABLE', 'NO_DATA'), verbatim. Not an enum: upstream adds statuses."
+                },
+                "tool_reason": {
+                  "type": "string",
+                  "description": "XProf's own reason for that status (e.g. 'LLO_DATA_ABSENT'), verbatim. Not an enum: upstream adds reasons."
+                },
+                "provenance": {
+                  "type": "string",
+                  "description": "Where the tool says the value came from, verbatim (e.g. XProf's flops provenance). Tells the caller when a utilization is a lower bound, as it is whenever custom calls carry no cost model."
+                },
+                "note": {
+                  "type": "string",
+                  "description": "One or two sentences a caller needs in order to read the value correctly: why it is a lower bound, which tools disagree about it, or the formula behind a computed value. Never a second value for the field."
+                }
+              }
+            },
+            "properties": {
+              "value": {
+                "enum": [],
+                "description": "Reserved: `value` belongs inside a metric, not beside it."
+              },
+              "source_tool": {
+                "enum": [],
+                "description": "Reserved: `source_tool` belongs inside a metric, not beside it."
+              },
+              "unit": {
+                "enum": [],
+                "description": "Reserved: `unit` belongs inside a metric, not beside it."
+              },
+              "tool_status": {
+                "enum": [],
+                "description": "Reserved: `tool_status` belongs inside a metric, not beside it."
+              },
+              "tool_reason": {
+                "enum": [],
+                "description": "Reserved: `tool_reason` belongs inside a metric, not beside it."
+              },
+              "provenance": {
+                "enum": [],
+                "description": "Reserved: `provenance` belongs inside a metric, not beside it."
+              },
+              "note": {
+                "enum": [],
+                "description": "Reserved: `note` belongs inside a metric, not beside it."
+              }
+            }
+          },
+          "levers": {
+            "type": "array",
+            "description": "The bottlenecks on this trace, biggest first, ranked by their share in the phase that matters for the caller's metric: decode unless the caller asked about time to first token. tpu-agent routes on the first one. The share is measured; the kind and next step are the agent's judgement.",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "summary",
+                "share_pct",
+                "source_tool"
+              ],
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "kernel-block",
+                    "exposed-collective",
+                    "sharding-overhead",
+                    "load-imbalance",
+                    "host-critical-path",
+                    "recompilation-padding",
+                    "scheduler-batching",
+                    "memory-capacity",
+                    "other"
+                  ],
+                  "description": "Bottleneck category for this lever, named by cause rather than by op type, or 'other' when none fits."
+                },
+                "summary": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "One line on what the cost is. For a `kernel-block` with no `source_file`, also why the file could not be traced."
+                },
+                "share_pct": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 100,
+                  "description": "Percentage of step time spent on it, in `phase` when there is one. Divided by 100, it is a study arm's `share`."
+                },
+                "source_tool": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "The XProf subcommand `share_pct` came from, every one of them for a computed share."
+                },
+                "phase": {
+                  "type": "string",
+                  "enum": [
+                    "prefill",
+                    "decode",
+                    "mixed",
+                    "prefill_only",
+                    "prefill_heavy",
+                    "balanced",
+                    "decode_heavy",
+                    "decode_only"
+                  ],
+                  "description": "For a serving workload, the steps `share_pct` was measured on."
+                },
+                "pct_of_roofline": {
+                  "type": "number",
+                  "minimum": 0,
+                  "description": "How close it runs to its hardware limit, as a percentage of peak HBM or ICI bandwidth or of peak compute, whichever limits it. Absent when no tool measures it."
+                },
+                "trace_name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "For a `kernel-block`, the op's name as the tool printed it."
+                },
+                "source_file": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "For a `kernel-block`, the file the server runs for it: of the kernels the dispatcher in the op's stack frame can build, the one whose name format produces `trace_name` exactly, with the launch flags only breaking ties. For a server whose code is only in its image, the host copy of that file under `<work>/served_kernel/`, made by the `introspect_kernel.py` job that copied the dispatcher. The copy is for reading. When the harness runs on the target, the kernel's imports from its own package load the image's installed modules, so only this file's edits take effect. The same value as the `source_file` of the `hot_ops` row for `trace_name`. Absent rather than guessed when it could not be traced. tpu-agent passes it to tpu-kernel-development as `base_kernel_path`."
+                },
+                "next_step": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "The change most likely to cut this cost, such as a serving flag to try or a kernel to tune."
+                }
+              }
+            }
+          },
+          "tool_outputs": {
+            "type": "array",
+            "description": "The raw output of each XProf call made on this trace, saved under the run's artifacts, in the tool's own shape.",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "tool",
+                "artifact"
+              ],
+              "properties": {
+                "tool": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "The XProf subcommand."
+                },
+                "artifact": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Path of its saved output."
+                }
+              }
+            }
+          },
+          "read_duration_seconds": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Wall time spent reading this trace. A large trace is slow to read, not broken; this keeps the two apart."
+          },
+          "coverage": {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "What the trace holds, so a caller knows what an op ranking was taken over. A trace of one device in eight, or one where only one device carries op names, ranks ops over that device alone; an empty list means the agent found none, and an omitted key that it could not tell. On a TP-8 v7x vLLM server the trace held devices 0 and 1 with 247,140 and 210,501 XLA op occurrences, with RPA attention on device 0 alone, and devices 2-7 with none: `op_event_counts` and `note` carry what a list of devices cannot.",
+            "properties": {
+              "devices_traced": {
+                "type": "array",
+                "description": "Every host and device the trace holds a timeline for, named as XProf names them.",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "devices_with_op_events": {
+                "type": "array",
+                "description": "The subset of `devices_traced` that carries XLA op events, not just steps.",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "op_event_counts": {
+                "type": "object",
+                "description": "XLA op occurrences per device in `devices_with_op_events`, keyed by the same device names: the sum of `count` over the event-aggregation rows for the device's plane, excluding hardware performance-counter events (`VF_CHIP_*`, `*COUNTER*`). Not the number of rows, which counter events can inflate a hundredfold. A device with a small fraction of the busiest device's occurrences is sparse rather than covered, and `note` says so.",
+                "additionalProperties": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "note": {
+                "type": "string",
+                "description": "What the caller needs to read the coverage correctly: which devices are sparse rather than covered, or which tensor-parallel groups no traced device belongs to."
+              }
+            }
+          },
+          "load": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "sent"
+            ],
+            "description": "For a trace captured from a running server: the traffic sent between `/start_profile` and `/stop_profile`, and what the server itself reported while it ran. A trace shows the shapes of each call but not how many of its sequence slots were live or how long their contexts were, and those values move a kernel's time: on v6e the same 16-slot decode call took 53 us with 4 live sequences and 108 us with 16. tpu-agent copies this into the kernel request's `served_calls` case for the trace, so tpu-kernel-development's harness takes those values from the capture rather than from an assumption. Absent for a trace that was not captured from a server.",
+            "properties": {
+              "sent": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Exactly what was sent: the benchmark command as it was run, or the number of requests, their concurrency, and their input and output lengths. The caller's `load` when it gave one, as it was executed rather than as it was asked for."
+              },
+              "runtime_values": {
+                "type": "object",
+                "description": "What the server's own metrics endpoint reported over the capture window -- e.g. requests running and waiting, prompt and generation token counts -- keyed by the metric names it printed and copied as it printed them: for a gauge, the readings taken while the load ran (or their minimum, median and maximum); for a counter, the change across the window. Omitted when the server exposes no metrics endpoint. Never estimated, and never derived from the load: `sent` already carries what was asked for, and this carries what the server did with it."
+              }
+            }
+          },
+          "hot_ops": {
+            "type": "array",
+            "description": "One row per op in the report's top list, and per custom call whatever its rank: where it comes from in the source and what XLA fused it with. A kernel name is not a source location, and an op fused with its neighbours is not a free-standing kernel target, so a caller that picks a target from this list needs both. Values are copied from the tools as they reported them.",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "trace_name",
+                "source_tool",
+                "fusion",
+                "fused_with"
+              ],
+              "properties": {
+                "trace_name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "The op's name as the trace shows it."
+                },
+                "hlo_op": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "The HLO instruction it executes."
+                },
+                "source": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "The `file:line` the HLO op metadata carries, verbatim, or 'empty in trace' when it carries none. Never a file found by searching the code for the op's name."
+                },
+                "source_file": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "For a custom call: the kernel file the server runs for it, traced the way a `kernel-block` lever's `source_file` is, and the same value on every row that kernel produced. A Pallas trace name carries the call's shapes, so one kernel's decode and prefill calls -- or the two calls a layer makes to it -- appear under different names; this is what ties them together, and tpu-agent collects a kernel's served calls by it. Absent rather than guessed when it could not be traced."
+                },
+                "per_call_us": {
+                  "type": [
+                    "number",
+                    "string"
+                  ],
+                  "description": "Device time per call, in microseconds, as the tool reported it."
+                },
+                "fusion": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The fusion the op belongs to in the compiled graph, or null when XLA did not fuse it. Always present, so a row copies into kernel-request's `fusion_context` as it is; when no tool could tell, null with a `note` saying so."
+                },
+                "fused_with": {
+                  "type": "array",
+                  "description": "The other ops in that fusion, or [] when the op is not fused. Always present, for the same reason. A kernel that replaces this op becomes a fusion boundary and loses them.",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "call_shapes": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "operands",
+                    "outputs"
+                  ],
+                  "description": "For a custom call (a Pallas or Mosaic kernel): the dtype and shape of each operand and each output, in order, copied from the HLO instruction text the tool printed for the call, with the layout suffix in braces when the text prints one -- e.g. `s32[256]{0}`, `bf16[8,16,4,2,128]{4,3,2,1,0}`. The layout is the memory order and tiling the compiler gave the operand. A harness builds its arrays from the dtype and dimensions and cannot set it, but where layouts do not match XLA inserts retile copies, so it is kept on record for comparing a harness with production: kept rather than dropped, since it cannot be recovered later. They are the sizes of the call the server actually made, which a harness for that kernel has to reproduce; restated in prose they get lost (a 16-token decode bucket read back as 16 sequences). Shapes only: array values such as sequence counts and lengths are not in a trace. Absent when the tool printed no instruction text.",
+                  "properties": {
+                    "operands": {
+                      "type": "array",
+                      "description": "Operand shapes, in the order the instruction lists them.",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "outputs": {
+                      "type": "array",
+                      "description": "Output shapes, in order; one entry for a single output, one per element for a tuple.",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    }
+                  }
+                },
+                "source_tool": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Every XProf subcommand the row's values came from."
+                },
+                "note": {
+                  "type": "string",
+                  "description": "What a caller needs to read the row correctly."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "failure_reason": {
+      "type": "string",
+      "enum": [
+        "trace_not_found",
+        "trace_empty_or_partial",
+        "capture_failed",
+        "xprof_unavailable",
+        "read_timeout"
+      ],
+      "description": "Why the work did not reach an answer. Package-owned, so closed: 'trace_not_found' (with 'invalid_input'), a supplied trace that is empty or partial -- never replaced by a capture --, a capture that failed or wrote no trace, a missing, conflicting or too-old XProf distribution (`summary` carries the command for the user to run; a caller relays it and never installs XProf itself), or a read that genuinely could not finish -- not merely a slow one."
+    },
+    "error_message": {
+      "type": "string",
+      "description": "The raw tool output or stack trace behind a status other than 'reported', naming the trace it concerns."
+    }
+  },
+  "examples": [
+    {
+      "status": "reported",
+      "summary": "Read session 2026_09_21_12_30_00 in 41s. The step is 38% idle on the TensorCore, dominated by infeed; MXU utilization is a lower bound because two custom calls carry no cost model.",
+      "run_id": "20260921T120000Z-abcdef012345",
+      "profiling_report_artifact": "/runs/20260921T120000Z-abcdef012345/artifacts/3/tpu_profiling_report.md",
+      "xprof_version": "xprof 2.24.0",
+      "traces": [
+        {
+          "path": "/runs/20260921T120000Z-abcdef012345/artifacts/3/tensorboard/plugins/profile/2026_09_21_12_30_00",
+          "session_id": "2026_09_21_12_30_00",
+          "captured": false,
+          "read_duration_seconds": 41,
+          "metrics": {
+            "duty_cycle_percent": {
+              "value": "99.4%",
+              "source_tool": "get_kpi_metrics",
+              "unit": "%"
+            },
+            "mxu_utilization_percent": {
+              "value": "26.7%",
+              "source_tool": "get_kpi_metrics",
+              "unit": "%",
+              "provenance": "opaque_custom_call",
+              "note": "Lower bound: two custom calls carry no cost model."
+            },
+            "peak_hbm_gib": {
+              "value": "N/A",
+              "source_tool": "get_kpi_metrics"
+            },
+            "tc_idle_ms_average": {
+              "value": "1.86",
+              "source_tool": "get_overview",
+              "unit": "ms"
+            }
+          },
+          "tool_outputs": [
+            {
+              "tool": "get_kpi_metrics",
+              "artifact": "/runs/20260921T120000Z-abcdef012345/artifacts/tpu-diagnostics/3/get_kpi_metrics.json"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "status": "reported",
+      "summary": "Captured the Pallas flash-attention workload on v6e with LLO debug info registered and read it in 9s: one kernel holds 99.9% of device time at 1.5389 ms per step, stall-bound rather than compute- or memory-bound.",
+      "run_id": "20260921T120000Z-abcdef012345",
+      "profiling_report_artifact": "/runs/20260921T120000Z-abcdef012345/artifacts/iter2/profile_summary.md",
+      "xprof_version": "xprof 2.24.0",
+      "traces": [
+        {
+          "path": "/runs/20260921T120000Z-abcdef012345/artifacts/tpu-diagnostics/capture/plugins/profile/2026_09_29_18_37_25",
+          "session_id": "2026_09_29_18_37_25",
+          "label": "flash-attention",
+          "captured": true,
+          "read_duration_seconds": 9,
+          "coverage": {
+            "devices_traced": [
+              "/device:TPU:0",
+              "/device:TPU:1"
+            ],
+            "devices_with_op_events": [
+              "/device:TPU:0",
+              "/device:TPU:1"
+            ],
+            "op_event_counts": {
+              "/device:TPU:0": 247140,
+              "/device:TPU:1": 210501
+            },
+            "note": "Both halves of chip 0 carry op timelines; the RPA attention kernel runs on device 0 only."
+          },
+          "hot_ops": [
+            {
+              "trace_name": "flash_attention_fwd",
+              "hlo_op": "custom-call.3",
+              "source": "empty in trace",
+              "per_call_us": 1538.9,
+              "fusion": null,
+              "fused_with": [],
+              "call_shapes": {
+                "operands": [
+                  "bf16[1,16,4096,128]{3,2,1,0}",
+                  "bf16[1,16,4096,128]{3,2,1,0}",
+                  "bf16[1,16,4096,128]{3,2,1,0}"
+                ],
+                "outputs": [
+                  "bf16[1,16,4096,128]{3,2,1,0}"
+                ]
+              },
+              "source_tool": "get_hlo_stats, get_top_hlo_ops",
+              "note": "The HLO op metadata carries no source line for this custom call."
+            }
+          ],
+          "metrics": {
+            "alu_utilization_percent": {
+              "value": {
+                "vector_alu_utilization_percent": 2.86,
+                "scalar_unit_utilization_percent": 6.94
+              },
+              "source_tool": "get_kernel_utilization",
+              "unit": "%"
+            },
+            "step_time_ms": {
+              "value": 1.5389,
+              "source_tool": "get_avg_step_time",
+              "unit": "ms",
+              "note": "get_kpi_metrics reads '0.00' because the workload emits no step markers."
+            }
+          }
+        }
+      ]
+    },
+    {
+      "status": "reported",
+      "summary": "Run A has the shorter step: 233.82 ms against 312.40 ms. Both ran on TPU v6 Lite. The trace of run B was captured without LLO debug info, so its Pallas kernel reads as one opaque block.",
+      "run_id": "20260921T120000Z-abcdef012345",
+      "profiling_report_artifact": "/runs/20260921T120000Z-abcdef012345/artifacts/tpu-diagnostics/report.md",
+      "xprof_version": "xprof 2.24.0",
+      "traces": [
+        {
+          "path": "/workspace/profiles/run-a/plugins/profile/2026_08_17_22_58_50",
+          "label": "A",
+          "captured": false,
+          "metrics": {
+            "step_time_ms": {
+              "value": "233.82",
+              "source_tool": "get_kpi_metrics",
+              "unit": "ms"
+            },
+            "alu_utilization_percent": {
+              "value": null,
+              "source_tool": "none"
+            }
+          }
+        },
+        {
+          "path": "/workspace/profiles/run-b/plugins/profile/2026_08_18_09_12_03",
+          "label": "B",
+          "captured": false,
+          "metrics": {
+            "step_time_ms": {
+              "value": "312.40",
+              "source_tool": "get_kpi_metrics",
+              "unit": "ms"
+            },
+            "alu_utilization_percent": {
+              "value": null,
+              "source_tool": "get_llo_analysis",
+              "tool_status": "UNAVAILABLE",
+              "tool_reason": "LLO_DATA_ABSENT"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "status": "reported",
+      "summary": "Read the serving trace in 63s and ranked it by decode steps, since the caller cares about per-token latency. The tensor-parallel all-reduce is the biggest bottleneck at 26% of decode step time, ahead of the paged-attention kernel at 21%.",
+      "run_id": "20260921T120000Z-abcdef012345",
+      "profiling_report_artifact": "/runs/20260921T120000Z-abcdef012345/artifacts/tpu-diagnostics/report.md",
+      "xprof_version": "xprof 2.24.0",
+      "traces": [
+        {
+          "path": "/runs/20260921T120000Z-abcdef012345/artifacts/2/tensorboard/plugins/profile/2026_10_01_09_14_02",
+          "captured": false,
+          "read_duration_seconds": 63,
+          "metrics": {
+            "step_time_ms": {
+              "value": "18.42",
+              "source_tool": "get_kpi_metrics",
+              "unit": "ms"
+            }
+          },
+          "levers": [
+            {
+              "kind": "exposed-collective",
+              "summary": "Tensor-parallel all-reduce after each attention and MLP block, not overlapped with compute.",
+              "share_pct": 26,
+              "source_tool": "get_top_hlo_ops",
+              "phase": "decode",
+              "next_step": "Benchmark tensor parallelism 4 against the current 8."
+            },
+            {
+              "kind": "kernel-block",
+              "summary": "Ragged paged attention, decode variant.",
+              "share_pct": 21,
+              "source_tool": "get_kernel_stats",
+              "phase": "decode",
+              "pct_of_roofline": 27,
+              "trace_name": "RPAd-p256-b8-q1-k3584",
+              "source_file": "vllm_torchtpu/kernels/experimental/batched_rpa/kernel.py",
+              "next_step": "Tune its block sizes for decode: it reaches 27% of peak HBM bandwidth."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "status": "failed",
+      "summary": "The supplied trace holds a session with no device events. It was not replaced by a capture: re-send it once the run is re-profiled.",
+      "run_id": "20260921T120000Z-abcdef012345",
+      "failure_reason": "trace_empty_or_partial",
+      "error_message": "get_overview returned no steps for /runs/20260921T120000Z-abcdef012345/artifacts/3/tensorboard, session 2026_09_21_12_30_00"
+    }
+  ]
+}

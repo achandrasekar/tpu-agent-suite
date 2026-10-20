@@ -1,0 +1,11 @@
+{
+  "copy": [
+    "data/knowledgebase"
+  ],
+  "workspace_memory": [
+    {
+      "marker": "knowledgebase",
+      "content": "data/knowledgebase/CONTRACT.md"
+    }
+  ]
+}

@@ -1,0 +1,136 @@
+{
+  "_provenance": {
+    "model_pins": "model/architecture/glm/5_2.md, read 2026-09-09",
+    "hardware": {
+      "gen": "cell choice",
+      "slice_dims": "cell choice",
+      "d2d": "knowledge base hw-tpu-7x via tpu-knowledge-base (https://docs.cloud.google.com/tpu/docs/tpu7x, checked 2026-10-06): two chiplets per chip",
+      "d2d_bw": "knowledge base hw-tpu-7x via tpu-knowledge-base (https://docs.cloud.google.com/tpu/docs/tpu7x, checked 2026-10-06): die-to-die link 6x a 1D ICI link (200 GB/s bidirectional) = 600 GB/s one way",
+      "ici_bw": "knowledge base hw-tpu-7x via tpu-knowledge-base (https://docs.cloud.google.com/tpu/docs/tpu7x, checked 2026-10-06): 1200 GB/s bidirectional per chip over 6 links = 100 GB/s per link one way",
+      "hbm_bw": "knowledge base hw-tpu-7x via tpu-knowledge-base (https://docs.cloud.google.com/tpu/docs/tpu7x, checked 2026-10-06): 7380 GB/s per chip / 2",
+      "hbm_capacity": "knowledge base hw-tpu-7x via tpu-knowledge-base (https://docs.cloud.google.com/tpu/docs/tpu7x, checked 2026-10-06): 192 GiB per chip / 2",
+      "peak_fp8": "knowledge base hw-tpu-7x via tpu-knowledge-base (https://docs.cloud.google.com/tpu/docs/tpu7x, checked 2026-10-06): 4614 TFLOP/s per chip / 2",
+      "peak_bf16": "knowledge base hw-tpu-7x via tpu-knowledge-base (https://docs.cloud.google.com/tpu/docs/tpu7x, checked 2026-10-06): 2307 TFLOP/s per chip / 2",
+      "mxu_min_dim": "assumed: package rule, model/common/REQUIREMENTs.md s MXU; not stated by the knowledge base",
+      "vmem_bytes": "JAX tpu_info.py via tpu-knowledge-base (https://raw.githubusercontent.com/jax-ml/jax/fe025ad74d5a1641d9b82f7cea126593ecff68a8/jax/_src/tpu_info.py, retrieved 2026-10-06): SparseCore 16 vector subcores x 512 KiB = 8 MiB",
+      "kernel_efficiency": "modelling choice: 1.0 gives a ceiling",
+      "hop_latency": "assumed: 1.0 us, the collective.py default every earlier run used; not stated by the knowledge base and not measured separately. Measured fixed cost per collective on j-484cd4c0 is 13.5 us (collective.py)",
+      "peak_vpu_bf16": "assumed: peak_bf16 / 16; not stated by the knowledge base, not measured",
+      "peak_vpu_fp32": "assumed: peak_bf16 / 64; not stated by the knowledge base, not measured",
+      "d2d_hop_latency": "assumed: equal to hop_latency, the value every earlier run used; not stated by the knowledge base, not measured",
+      "ici_contention": "assumed: the two chiplets of a package share its ICI links equally (COLLECTIVE.md); not stated by the knowledge base",
+      "memory_utilization": "vLLM --gpu-memory-utilization; 0.92 carried from the previous roofline.py default, not verified against the server launch",
+      "resident_overhead_gb": "assumed: estimate of compiled graphs and workspace beyond weights; not measured"
+    },
+    "numerics": "user-supplied sheet 2026-09-22 (12 cells); NOT re-derived from the checkout. indexer_w_proj{,_act}=bf16 is the sheet's 'Indexer Weights Proj = w16a16', which the K/Q projections (w8a8) do not share.",
+    "cell": "[128K] reference-sheet cell: T=1024 prefill, 128K context, NO sharding (tp1/dp1, EP off) -- the shape the user's spreadsheet prices. Validated: Full Indexer Dense Layer 2.2749 ms/layer against the sheet's 2.2715 (0.15%); dense weights 382.50 MiB/layer and KV 88.00/72.00 MiB/layer exact.",
+    "chunking": "ISL 130,048 + OSL 1,024 = 131,072 (128K) total. decode_first attends over the prompt (130,048); decode_last over the full 131,072. mnbt=1024 derives prefill tokens=1024/batch=1 and decode batch=tokens=1024."
+  },
+  "model": {
+    "name": "GLM-5.2-FP8",
+    "layers": 78,
+    "dense_layers": 3,
+    "indexer_layers": 21,
+    "indexer_freq": 4,
+    "indexer_offset": 3,
+    "hidden": 6144,
+    "heads": 64,
+    "kv_lora_rank": 512,
+    "q_lora_rank": 2048,
+    "qk_nope_head_dim": 192,
+    "qk_rope_head_dim": 64,
+    "v_head_dim": 256,
+    "indexer_heads": 32,
+    "indexer_head_dim": 128,
+    "indexer_topk": 2048,
+    "indexer_cache_bytes_per_token": 128,
+    "sparse_attention_strategy": "gathered",
+    "moe_dispatch_strategy": "hierarchical_ag",
+    "dense_fused_activation": false,
+    "moe_fused_activation": true,
+    "dense_ffn": 12288,
+    "n_experts": 256,
+    "topk": 8,
+    "expert_ffn": 2048,
+    "n_shared_experts": 1,
+    "shared_ffn": 2048,
+    "vocab": 154880,
+    "tie_embeddings": false
+  },
+  "numerics": {
+    "default": "bf16",
+    "sites": {
+      "weights": "fp8",
+      "moe_weights": "fp8",
+      "kv_cache": "fp8",
+      "indexer_cache": "fp8",
+      "kv_write": "bf16",
+      "indexer_write": "bf16",
+      "indexer_indices": "int32",
+      "act_in": "fp8",
+      "act_out": "bf16",
+      "attn_qk": "bf16",
+      "attn_av": "bf16",
+      "indexer_qk": "fp8",
+      "indexer_av": "bf16",
+      "indexer_w_proj": "bf16",
+      "indexer_w_proj_act": "bf16",
+      "tp_allreduce": "bf16",
+      "expert_dispatch": "fp8",
+      "expert_collect": "bf16",
+      "router_logits": "fp32",
+      "dcp_gather": "fp32"
+    }
+  },
+  "hardware": {
+    "gen": "v7x",
+    "slice_dims": [
+      2,
+      2,
+      2
+    ],
+    "d2d": true,
+    "d2d_bw": 600000000000.0,
+    "ici_bw": 100000000000.0,
+    "hbm_bw": 3690000000000.0,
+    "hbm_capacity": 103079215104,
+    "peak_fp8": 2307000000000000.0,
+    "peak_bf16": 1153500000000000.0,
+    "mxu_min_dim": 256,
+    "vmem_bytes": 8388608,
+    "kernel_efficiency": 1.0,
+    "hop_latency": 1e-06,
+    "peak_vpu_bf16": 72093750000000.0,
+    "peak_vpu_fp32": 18023437500000.0,
+    "d2d_hop_latency": 1e-06,
+    "ici_contention": 2.0,
+    "memory_utilization": 0.92,
+    "resident_overhead_gb": 4.0
+  },
+  "sharding": {
+    "tp": 1,
+    "dp": 1,
+    "pp": 1,
+    "pcp": 1,
+    "dcp": 1,
+    "ep": false,
+    "sp": false
+  },
+  "phases": [
+    {
+      "name": "prefill",
+      "kv_len": 130048,
+      "mnbt": 1024
+    },
+    {
+      "name": "decode_first",
+      "kv_len": 130048,
+      "mnbt": 1024
+    },
+    {
+      "name": "decode_last",
+      "kv_len": 131072,
+      "mnbt": 1024
+    }
+  ]
+}

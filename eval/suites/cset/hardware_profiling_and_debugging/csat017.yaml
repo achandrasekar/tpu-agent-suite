@@ -1,0 +1,79 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT017 from the "Hardware profiling and debugging" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat017
+    prompt: |-
+      On TPU v6e-4 with JAX 0.8.1, jaxlib 0.8.1, and libtpu 0.0.30, the first execution with an empty persistent compilation cache succeeds, while a second process using the same cache directory fails. What is actually wrong, how would you confirm the diagnosis, and what is the safest code-level mitigation?
+
+      import jax
+      import jax.numpy as jnp
+      import numpy as np
+      from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
+      mesh = Mesh(np.array(jax.devices()[2:4]).reshape(1, 2), ("data", "tensor"))
+      @jax.jit
+      def heavy(x, ws_a, ws_b):
+      h = x
+      for i in range(8):
+      h = jnp.einsum("bs,sh->bh", h, ws_a[i])
+      h = jax.nn.silu(h)
+      h = jnp.einsum("bh,hd->bd", h, ws_b[i])
+      return jnp.sum(h * h, axis=-1)
+      def shard(arr, spec):
+      return jax.device_put(arr, NamedSharding(mesh, spec))
+      x = shard(jnp.zeros((1024, 2048), jnp.bfloat16), P(None, "tensor"))
+      ws_a = [shard(jnp.zeros((2048, 4096), jnp.bfloat16), P(None, "tensor")) for _ in range(8)]
+      ws_b = [shard(jnp.zeros((4096, 2048), jnp.bfloat16), P("tensor", None)) for _ in range(8)]
+      heavy(x, ws_a, ws_b).block_until_ready()
+      print("DONE")
+      #Cold run writes a 5.1 MB cache entry and prints DONE. The second run crashes as shown below:
+      jax.errors.JaxRuntimeError: INTERNAL: Core halted unexpectedly:
+      Assertion args: 0x00000001 0x00000001 0x00000000
+      INTERNAL: Accelerator device halted prematurely, perhaps due to an on-device check-failure.
+      Node 0 halted unexpectedly at tag:pc TensorCoreSequencer:1:0x145
+      (from TensorCoreSequencer:1:0x275):
+      schecklt: Invalid logical z: enhanced-barrier-parent-phase-1 no HLO mapping
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT017
+      category: Hardware profiling and debugging
+      sub_category: Compilation cache and runtime failures
+      difficulty: Moderate
+      has_code: 'Yes'
+      baseline_result: Partially Solved
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        The source issue's published workaround, implemented in the linked solution PR, is to skip persistent compilation caching for affected engines using nonzero device subsets.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        The response correctly identified the persistent compilation cache and the [2,3] physical device subset as the central interaction. However, it incorrectly recommends using a separate cache directory for each device set as an option. The source reproducer fails when [2,3] reloads the cache entry that [2,3] itself created, so cache directory isolation does not prevent the crash. The response also presents a specific cache-key and barrier-rebinding mechanism  as confirmed fact, although the source explicitly states that the relevant libtpu internals are unknown. The diagnosis is substantially correct,  but the mitigation and root cause explanation are not fully correct and reliable.
+      weight: 0.5

@@ -1,0 +1,346 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "kernel-request.json",
+  "title": "Kernel optimization request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "prompt",
+    "run_id",
+    "base_kernel_path"
+  ],
+  "properties": {
+    "prompt": {
+      "type": "string",
+      "description": "What to optimize, in the caller's words. The loop still reads this for anything the typed fields below do not capture."
+    },
+    "run_id": {
+      "type": "string",
+      "pattern": "^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}$",
+      "description": "Session run id, assigned at session start and passed verbatim. Required: every result this loop returns and every artifact it writes carries the value, and a subagent never sees SessionStart, so the delegation is its only source. Started directly the loop allocates its own, but then nothing delegates to it and this contract does not apply."
+    },
+    "base_kernel_path": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Path to the input this run is derived from -- a JAX or PyTorch source, or, when `input_language` is `specification`, a written description of the computation to build. A CUDA file is not one of them; it belongs in `reference_paths`. Required, whichever of those it is: a request that names no file is one the loop cannot act on, and it is better refused here than discovered three stages later when planning has nothing to read. Optimizing a file the caller did not name is worse than refusing, because the speedup reported would be real and about something no one asked for. A path rather than an artifact descriptor because the input comes from outside the run -- it is the caller's file, not something the run produced, and the only caller holds `read` alone and so cannot compute a digest or register an artifact."
+    },
+    "input_language": {
+      "type": "string",
+      "enum": [
+        "jax",
+        "pallas",
+        "pytorch",
+        "specification"
+      ],
+      "description": "What the file at `base_kernel_path` is. Supply it when the caller knows; omit it and the loop classifies the input deterministically rather than guessing. `jax` is the path the loop has always taken -- the file becomes the baseline unchanged. `pallas` names an existing Pallas kernel to make faster; a Pallas kernel is already JAX, so it takes the `jax` path and the run records it as `jax`. `pytorch` and `specification` each add a front-end phase that produces the baseline and a gate that checks it. `specification` means the file is prose describing the computation rather than code: the loop synthesizes a baseline from it and then STOPS for the user to approve that baseline, because an agent writing the file the run is scored against is the one case no downstream gate can catch. `cuda` is deliberately absent: CUDA is accepted only through `reference_paths`, never as the primary -- see that field."
+    },
+    "reference_paths": {
+      "type": "array",
+      "description": "Independent implementations of roughly the same computation -- typically a CUDA kernel -- supplied so the planner can mine them for design ideas. A reference is never executed, never measured, and never compared against: it reaches the planner only as a triaged ideas ledger. This is the only slot CUDA may occupy. Converting CUDA to JAX and then to Pallas measured worse than planning natively with the CUDA source as context, so a CUDA `base_kernel_path` is refused: name the JAX or PyTorch module being converted as the primary and list the `.cu` here.",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "reference_mode": {
+      "type": "string",
+      "enum": [
+        "torchax",
+        "llm_port"
+      ],
+      "description": "How the JAX reference is obtained from a PyTorch primary. `torchax` converts the module mechanically, so there is no mistranslation risk, but it needs a torch/torchax pin this package's TPU requirements deliberately do not carry. `llm_port` has an agent write the port and gates it against captured golden values; it is the default, because it needs no extra dependency."
+    },
+    "target_op": {
+      "type": "string",
+      "description": "The operation the kernel implements, e.g. 'flash attention' or 'rms norm'. tpu-kernel-development uses it to check whether a library such as Tokamax already ships a TPU kernel for it."
+    },
+    "slot": {
+      "type": "string",
+      "pattern": "^k[0-9]{2,}$",
+      "description": "The slot an earlier `kernel-result` for this kernel returned, to resume that kernel explicitly. Omit it on a first request. Without it the loop matches on `base_kernel_path` and `target_op`, normalized, which catches a relative-versus-absolute path or a change of case but not a renamed op: \"RPA\" for \"ragged paged attention\" would start a fresh slot. A slot this session never handed out, or one whose kernel is a different file, is refused as `invalid_input`."
+    },
+    "library_kernel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "module",
+        "decision"
+      ],
+      "description": "A decision about a library kernel for this op, from the caller. Its presence skips the library check.",
+      "properties": {
+        "module": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The library call, as the check named it, e.g. 'tokamax.ragged_dot' or 'tokamax.dot_product_attention(implementation=\"mosaic\")'."
+        },
+        "url": {
+          "type": "string",
+          "description": "Where the kernel's source lives, as the check cited it."
+        },
+        "decision": {
+          "type": "string",
+          "enum": [
+            "use",
+            "build"
+          ],
+          "description": "'use' runs one iteration that calls the library kernel, checks it against the baseline and measures it. 'build' runs the normal loop, with the library kernel as the one to beat."
+        }
+      }
+    },
+    "fusion_context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fusion",
+        "fused_with"
+      ],
+      "description": "What XLA fuses the target with in the served graph, copied from the profiling result's `hot_ops` row for it. A kernel is a fusion boundary: replacing an op XLA fused with its neighbours costs that fusion, and a kernel 1.2x faster in isolation has measured slower end to end for exactly that reason. With this the plan either takes the fused neighbours into the kernel or counts the lost fusion against its expected gain. Omit it when no profile of the served workload exists.",
+      "properties": {
+        "fusion": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The fusion the target op belongs to, as the profiling result names it, or null when XLA did not fuse it."
+        },
+        "fused_with": {
+          "type": "array",
+          "description": "The other ops in that fusion, as the profiling result names them.",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The target op's `file:line` from the profiling result, or 'empty in trace'."
+        },
+        "per_call_us": {
+          "type": [
+            "number",
+            "string"
+          ],
+          "description": "The target op's per-call device time in the served workload, from the profiling result: the production number the base kernel's harness time should be checked against."
+        },
+        "profiling_report": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Path of the profiling report the row came from."
+        }
+      }
+    },
+    "served_calls": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cases"
+      ],
+      "description": "The calls the served workload makes to the target, copied from the profiling result: one case per call to the target kernel in each capture -- every `hot_ops` row whose `source_file` is the kernel's, so a capture with decode and prefill steps, or with two calls per layer, gives a case for each. The kernel-worker builds its test harness from these, so the loop measures the calls the server makes rather than shapes reconstructed from prose -- a run whose harness timed 4096-token prefill calls and 16-sequence decode calls, against a server making 2048-token and 16-slot ones, tuned its block sizes for calls the server never makes. Omit it when no profile of the served workload exists.",
+      "properties": {
+        "cases": {
+          "type": "array",
+          "description": "One entry per `hot_ops` row for a call to the target kernel, in the order the profiling result lists the traces and their rows.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "label",
+              "call_shapes"
+            ],
+            "properties": {
+              "label": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Which call the case is: the trace's `label` (its phase when it has none) followed by the row's `trace_name`."
+              },
+              "phase": {
+                "type": "string",
+                "enum": [
+                  "prefill",
+                  "decode",
+                  "mixed"
+                ],
+                "description": "For a serving workload, the steps the call belongs to, as the trace's lever for the row's `trace_name` reports it. Absent when no lever names the row."
+              },
+              "call_shapes": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "operands",
+                  "outputs"
+                ],
+                "description": "The target's `call_shapes` from the profiling result's `hot_ops` row for this capture, copied as they are -- layout suffix included when the row has one.",
+                "properties": {
+                  "operands": {
+                    "type": "array",
+                    "description": "Operand shapes, in the order the instruction lists them.",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "outputs": {
+                    "type": "array",
+                    "description": "Output shapes, in order; one entry for a single output, one per element for a tuple.",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                }
+              },
+              "per_call_us": {
+                "type": [
+                  "number",
+                  "string"
+                ],
+                "description": "The target's per-call device time in this capture, from the same `hot_ops` row: the production device time of this call."
+              },
+              "share_pct": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 100,
+                "description": "The share of step time in this phase of the trace's lever for the row's `trace_name`, as the profiling result reports it. The planner weighs the cases by it; absent when no lever names the row, and such a case is kept correct and not regressed but not weighed."
+              },
+              "load": {
+                "type": "string",
+                "minLength": 1,
+                "description": "The traffic the capture ran under -- the trace's `load.sent` when the profiler captured it from a running server, otherwise in the caller's words, e.g. 'in/out 2048/256, concurrency 32' -- so the harness can choose the lengths the shapes do not carry."
+              },
+              "runtime_values": {
+                "type": "object",
+                "description": "Values a trace cannot show, as the server reported them during the capture: requests running and waiting, prompt and generation token counts -- from which the harness takes live sequences per call and context lengths. Copied verbatim from the profiling result trace's `load.runtime_values`, keyed by the metric names the server printed. Omit when that trace has none, rather than estimate: the harness records its own assumptions for whatever is missing."
+              }
+            }
+          }
+        },
+        "profiling_report": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Path of the profiling report the cases came from."
+        }
+      }
+    },
+    "serving_config": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "deployments_json"
+      ],
+      "description": "The configuration the server runs, copied from the onboarding result's `output_files` as the paths it returned. The kernel-worker reads these files when it builds the test harness: they fix what the call shapes alone do not -- the maximum context length (and so the pages per sequence), the parallelism (and so the heads each device holds), the dtypes and the attention backend -- and they say which serving flags were left at the engine's defaults. Omit it when the target is not served through tpu-model-onboarding.",
+      "properties": {
+        "deployments_json": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The onboarding result's `output_files.deployments_json`, verbatim."
+        },
+        "launch_recipe": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The onboarding result's `output_files.launch_recipe`, verbatim, when it returned one."
+        }
+      }
+    },
+    "max_iterations": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 5,
+      "description": "Iteration budget. The loop's only stop condition: it runs until iteration reaches this count. There is deliberately no time or target-speedup budget here, because no such stop condition is implemented -- declaring one would promise an exit the loop cannot take."
+    },
+    "atol": {
+      "type": "number",
+      "minimum": 0,
+      "default": 0.01,
+      "description": "Absolute tolerance the optimized kernel must match the baseline within. Half of the success criteria, and previously discoverable only by reading the loop's prose."
+    },
+    "rtol": {
+      "type": "number",
+      "minimum": 0,
+      "default": 0.01,
+      "description": "Relative tolerance the optimized kernel must match the baseline within."
+    }
+  },
+  "examples": [
+    {
+      "prompt": "Optimize the flash attention kernel at work/base.py for v6e.",
+      "run_id": "20260914T120000Z-000000000000",
+      "base_kernel_path": "work/base.py",
+      "target_op": "flash attention",
+      "max_iterations": 5,
+      "atol": 0.01,
+      "rtol": 0.01
+    },
+    {
+      "prompt": "Make vLLM's head_dim-64 ragged paged attention kernel faster for gpt-oss-20b serving on TPU7x.",
+      "run_id": "20260914T120000Z-000000000000",
+      "base_kernel_path": "work/kernel_hd64.py",
+      "input_language": "pallas",
+      "target_op": "ragged paged attention (head_dim 64, sinks, sliding window)",
+      "serving_config": {
+        "deployments_json": "/runs/20260914T120000Z-000000000000/artifacts/tpu-model-onboarding/inference/deployments.json",
+        "launch_recipe": "/runs/20260914T120000Z-000000000000/artifacts/tpu-model-onboarding/inference/launch_vllm.sh"
+      },
+      "fusion_context": {
+        "fusion": null,
+        "fused_with": [],
+        "source": "empty in trace",
+        "per_call_us": 45.26,
+        "profiling_report": "/runs/20260914T120000Z-000000000000/artifacts/tpu-diagnostics/report.md"
+      },
+      "served_calls": {
+        "cases": [
+          {
+            "label": "decode / RPA-HD_64-bq_16-bkvp_16-p_256",
+            "phase": "decode",
+            "call_shapes": {
+              "operands": [
+                "s32[]",
+                "s32[256]",
+                "s32[4096]",
+                "s32[257]",
+                "s32[3]",
+                "s32[3]",
+                "s32[4]",
+                "s32[6]",
+                "bf16[8,16,4,2,128]"
+              ],
+              "outputs": [
+                "bf16[8,16,4,2,128]",
+                "bf16[3558,256,4,2,128]"
+              ]
+            },
+            "per_call_us": 45.26,
+            "share_pct": 11.2,
+            "load": "in/out 2048/256, concurrency 32"
+          },
+          {
+            "label": "prefill / RPA-HD_64-bq_128-bkvp_16-p_256",
+            "phase": "prefill",
+            "call_shapes": {
+              "operands": [
+                "s32[]",
+                "s32[256]",
+                "s32[4096]",
+                "s32[257]",
+                "s32[3]",
+                "s32[3]",
+                "s32[4]",
+                "s32[6]",
+                "bf16[8,2048,4,2,128]"
+              ],
+              "outputs": [
+                "bf16[8,2048,4,2,128]",
+                "bf16[3558,256,4,2,128]"
+              ]
+            },
+            "per_call_us": 1332.3,
+            "share_pct": 41.4,
+            "load": "in/out 2048/1, concurrency 64"
+          }
+        ],
+        "profiling_report": "/runs/20260914T120000Z-000000000000/artifacts/tpu-diagnostics/report.md"
+      }
+    }
+  ]
+}

@@ -1,0 +1,55 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT015 from the "TPU Knowledge Q&A" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat015
+    prompt: |-
+      I am profiling a standard LLaMA-style RoPE (Rotary Position Embedding) operation in JAX on TPU v6e (bf16). The RoPE logic applies sine and cosine element-wise multiplications and additions to my Query and Key tensors.
+
+      When I look at my XLA profile, the RoPE operation has 0% MXU utilization and is entirely bottlenecked by the Vector Processing Unit (VPU). It's taking significantly longer than my dense projection layers! I padded all my dimensions to multiples of 128 to ensure MXU alignment, but XLA still refuses to schedule the sine, cosine, and element-wise multiplications on the MXU (which has 393 TFLOPs).
+
+      Why is XLA forcing this operation onto the incredibly slow VPU instead of the MXU, and what specific `jax.lax` or dimension-padding trick do I need to use to force RoPE to execute on the MXU?
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT015
+      category: TPU Knowledge Q&A
+      sub_category: Hardware fundamentals / TPU vs GPU translation
+      difficulty: Moderate
+      has_code: 'No'
+      baseline_result: Stumped
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        The model should reject the false premise of forcing element-wise math onto the MXU. It should explain that the TPU MXU is a systolic array designed exclusively for contractions/dot-products and cannot perform element-wise transcendentals. It must advise against converting RoPE into a dense matrix multiplication due to severe compute/memory inefficiency, and instead provide the optimal VPU approach (precomputing sin/cos, ensuring bf16 dtype, and leveraging XLA fusion).
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        Gemini 3.7 Flash was stumped as it fell into the trap and provided a complete jax.lax.dot_general block-diagonal implementation to force RoPE onto the MXU, creating a 64x compute overhead on sparse zero tiles. However, Gemini 3.1 Pro Preview passed: it firmly rejected the false premise, explained why the MXU physically cannot execute element-wise math without severe sparsity penalties, and provided the correct VPU memory-bandwidth optimization checklist and fusion-friendly implementation.
+      weight: 0.5

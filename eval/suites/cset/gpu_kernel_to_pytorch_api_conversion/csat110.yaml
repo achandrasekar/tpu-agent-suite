@@ -1,0 +1,93 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT110 from the "GPU Kernel to PyTorch API conversion" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat110
+    prompt: |-
+      We've been migrating our Gated DeltaNet / Flash-Linear-Attention inference pipeline over to an NVIDIA H100 (SM90) cluster, and we are hitting a wall with Triton kernel crashes during serving. As noted in fla-org/flash-linear-attention issues #196 and #734, Triton 3.x is throwing illegal address and compiler assertion errors on Hopper inside the chunk cumsum utility kernel.
+      We need to completely replace _chunk_local_cumsum_scalar_kernel with an idiomatic PyTorch implementation that we can run under torch.compile(fullgraph=True, mode="max-autotune").
+      Here is the problem: our naive PyTorch prototypes keep failing in our serving pipeline. When real inference requests hit the service (typically inputs like g with shape [4, 32, 8103] in bfloat16 on cuda:0 coming out of the head projection layers, with chunk size BT=64), our code either blows up with PyTorch runtime errors during tensor reshaping, or the reverse scan mode causes horrible memory bandwidth stalls and latency spikes compared to forward scan.
+      Here is the original Triton kernel from fla/ops/utils/cumsum.py:
+      @triton.jit
+      def _chunk_local_cumsum_scalar_kernel(
+      s,
+      o,
+      T,
+      BT: tl.constexpr,
+      REVERSE: tl.constexpr,
+      ):
+      i_t = tl.program_id(0)
+      i_bh = tl.program_id(1)
+      o_i = tl.arange(0, BT)
+      m_s = (i_t * BT + o_i) < T
+      b_s = tl.load(s + i_bh * T + i_t * BT + o_i, mask=m_s, other=0.0)
+      if REVERSE:
+      b_o = tl.cumsum(b_s, axis=0, reverse=True)
+      else:
+      b_o = tl.cumsum(b_s, axis=0)
+      tl.store(o + i_bh * T + i_t * BT + o_i, b_o, mask=m_s)
+      How do I rewrite this kernel into a clean, production-grade PyTorch function that replaces the Triton implementation and runs efficiently under torch.compile(fullgraph=True, mode="max-autotune")?
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT110
+      category: GPU Kernel to PyTorch API conversion
+      sub_category: Triton Elementwise to PyTorch
+      difficulty: Moderate
+      has_code: 'Yes'
+      baseline_result: Partially Solved
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        (Solved) To achieve the solved rating the model should do the following:
+
+        Dynamic Compilation: It must compile natively with dynamic shapes, meaning absolutely zero graph breaks, no autotune recompiles, and no Python control flow tripping up our symbolic dimensions. All padding and remainder slicing must be expressed symbolically (or via torch._dynamo.mark_dynamic) without Python if/else control flow on tensor shapes.
+
+        API Compatibility: It needs to maintain the exact Flash-Linear-Attention API (including scaling factors, sequence bounds, and head-first layouts). We should be able to patch this directly into live serving pipelines without breaking any signatures.
+
+        Zero-Copy & Fused Operations: No redundant memory allocations. It needs to fuse scaling and scanning into a single Inductor kernel, ensuring latency stays identical across both forward and backward passes. Fusing scaling and prefix scanning into a single Inductor kernel pass, accumulates in float32 for numerical stability and avoides redundant full-tensor HBM allocations.
+
+        (Stumped) If the model falls into any of these traps or gets it wrong, we will rate it stumped:
+
+        Memory Stalling: A model is completely stumped if it implements reverse cumulative sum using native tensor flips along the inner dimension. Reversing strides destroys memory coalescing, disables 128-bit vectorized memory load instructions, and causes memory bandwidth stalls on modern GPU architectures.
+
+        Dynamic Length Reshapes: The model fails completely if it attempts direct multidimensional reshaping without accounting for trailing remainder tokens. When sequence lengths are not perfectly divisible by the chunk size, naive reshaping triggers runtime dimension mismatch errors.
+
+        Hard Dimension crashes: Using .view() or .reshape() that crashes whenever sequence length T is not cleanly divisible by chunk size BT.
+
+        Numerical Drift: A stumped output runs cumulative sums directly in bfloat16. Because bfloat16 provides only seven mantissa bits, sequential accumulation across chunks rapidly accumulates rounding drift, deviating severely from hardware-level single-precision register accumulation.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        Hardcoded Sequence Dimension and Recompilation storms: The model was compiled with a static sequence length and a Python conditional check that causes graph breaks. Furthermore, evaluating the padding with a standard Python if statement forces Dynamo to resolve the condition at trace time, burning that specific sequence length directly into the compiled graph. In production, where sequence lengths vary constantly, this combination triggers a catastrophic "recompilation storm." On our Hopper GPUs under maximum autotune, TorchInductor spends up to a minute profiling kernels for every single new length it encounters. This triggers massive inference timeouts and violates our zero-tolerance policy for eager fallback.
+
+        Missing API Parameters: The model output failed to keep essential scaling and cumulative sequence length arguments. The upstream Flash-Linear-Attention library passes an explicit scaling constant into the kernel during linear attention and gated delta calculations, meaning the produced code breaks these assumptions. Because of thighs wrapper failure to accept the scale argument used by the host library, executing Gated DeltaNet or Kimi Delta Attention triggers a fatal unexpected keyword argument exception on the initial forward pass, completely preventing inference deployment. Also, due to the parameters dropped rather than throwing exceptions, the gate values would bypass multiplication by reciprocal of ln of the tow. This would lead to incorrect decay values downstream, corruption model generation.
+
+        Memory Allocation issues: To handle uneven chunk divisions, the model relied on global functional padding. This operation allocates a completely new intermediate tensor in HBM and performs an eager copy of the entire batch and head dimensions before computation begins, adding memory overhead and allocator contention. Allocating brand-new padded buffers on every head projection stresses the GPU caching allocator and saturates memory bandwidth. In high-concurrency serving pipelines where memory bandwidth is the primary bottleneck, this extra data movement degrades throughput.
+      weight: 0.5

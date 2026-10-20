@@ -1,0 +1,472 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT067 from the "GPU Kernel to PyTorch API conversion" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat067
+    prompt: |-
+      Our SmoothQuant int8 stack is the last thing pinning us to the A100 pool and
+      I have been told to get it onto v6e this sprint. Everything upstream already
+      produces the exact tensors the CUDA build feeds this wrapper. Activations
+      are quantized per token asymmetric, so int8 A with a float32 scale per row
+      and an int32 zero point per row. Weights are int8 per channel symmetric with
+      float32 scales, stored column major the way the library wants. Bias comes in
+      bf16 and the output is bf16. Real shapes are 1024 by 4096 against 4096 by
+      11008. I need the two integer entry points in the file below as plain
+      PyTorch that OpenXLA compiles for TPU, the symmetric one and the azp one,
+      ignore the fp8 and moe stuff, and it has to be the real thing. Our accuracy
+      team signs off by diffing the int32 accumulator our debug build exposes
+      against the CUTLASS path, exact match in the integer domain, then the bf16
+      output within normal tolerance. The azp piece you can skip thinking about,
+      it is just an offset, subtract the zero point from A before the matmul and
+      you are done, what I mostly need replaced is the dispatch and the scaling
+      glue. Also curious what all the sm version branching even becomes on your
+      side. Compiles once, runs steady in serving, nothing bouncing back to the
+      host.
+      #include <cuda.h>
+      #include <cudaTypedefs.h>
+      #include <torch/csrc/stable/tensor.h>
+      #include "libtorch_stable/torch_utils.h"
+      #include "libtorch_stable/cutlass_extensions/common.hpp"
+      void cutlass_scaled_mm_sm75(torch::stable::Tensor& c,
+      torch::stable::Tensor const& a,
+      torch::stable::Tensor const& b,
+      torch::stable::Tensor const& a_scales,
+      torch::stable::Tensor const& b_scales,
+      std::optionaltorch::stable::Tensor const& bias);
+      void cutlass_scaled_mm_sm80(torch::stable::Tensor& c,
+      torch::stable::Tensor const& a,
+      torch::stable::Tensor const& b,
+      torch::stable::Tensor const& a_scales,
+      torch::stable::Tensor const& b_scales,
+      std::optionaltorch::stable::Tensor const& bias);
+      void cutlass_scaled_mm_sm89(torch::stable::Tensor& c,
+      torch::stable::Tensor const& a,
+      torch::stable::Tensor const& b,
+      torch::stable::Tensor const& a_scales,
+      torch::stable::Tensor const& b_scales,
+      std::optionaltorch::stable::Tensor const& bias);
+      #if defined ENABLE_SCALED_MM_SM90 && ENABLE_SCALED_MM_SM90
+      void cutlass_scaled_mm_sm90(torch::stable::Tensor& c,
+      torch::stable::Tensor const& a,
+      torch::stable::Tensor const& b,
+      torch::stable::Tensor const& a_scales,
+      torch::stable::Tensor const& b_scales,
+      std::optionaltorch::stable::Tensor const& bias);
+      #endif
+      #if defined ENABLE_CUTLASS_MOE_SM90 && ENABLE_CUTLASS_MOE_SM90
+      void cutlass_moe_mm_sm90(torch::stable::Tensor& out_tensors,
+      torch::stable::Tensor const& a_tensors,
+      torch::stable::Tensor const& b_tensors,
+      torch::stable::Tensor const& a_scales,
+      torch::stable::Tensor const& b_scales,
+      torch::stable::Tensor const& expert_offsets,
+      torch::stable::Tensor const& problem_sizes,
+      torch::stable::Tensor const& a_strides,
+      torch::stable::Tensor const& b_strides,
+      torch::stable::Tensor const& c_strides,
+      bool per_act_token, bool per_out_ch);
+      #endif
+      #if defined ENABLE_CUTLASS_MOE_SM100 && ENABLE_CUTLASS_MOE_SM100
+      void cutlass_moe_mm_sm100(torch::stable::Tensor& out_tensors,
+      torch::stable::Tensor const& a_tensors,
+      torch::stable::Tensor const& b_tensors,
+      torch::stable::Tensor const& a_scales,
+      torch::stable::Tensor const& b_scales,
+      torch::stable::Tensor const& expert_offsets,
+      torch::stable::Tensor const& problem_sizes,
+      torch::stable::Tensor const& a_strides,
+      torch::stable::Tensor const& b_strides,
+      torch::stable::Tensor const& c_strides,
+      bool per_act_token, bool per_out_ch);
+      #endif
+      #if defined ENABLE_SCALED_MM_SM120 && ENABLE_SCALED_MM_SM120
+      void cutlass_scaled_mm_sm120(torch::stable::Tensor& c,
+      torch::stable::Tensor const& a,
+      torch::stable::Tensor const& b,
+      torch::stable::Tensor const& a_scales,
+      torch::stable::Tensor const& b_scales,
+      std::optionaltorch::stable::Tensor const& bias);
+      #endif
+      #if defined ENABLE_SCALED_MM_SM100 && ENABLE_SCALED_MM_SM100
+      void cutlass_scaled_mm_sm100(torch::stable::Tensor& c,
+      torch::stable::Tensor const& a,
+      torch::stable::Tensor const& b,
+      torch::stable::Tensor const& a_scales,
+      torch::stable::Tensor const& b_scales,
+      std::optionaltorch::stable::Tensor const& bias);
+      #endif
+      #if (defined(ENABLE_CUTLASS_MOE_SM90) && ENABLE_CUTLASS_MOE_SM90) ||
+      (defined(ENABLE_CUTLASS_MOE_SM100) && ENABLE_CUTLASS_MOE_SM100) ||
+      (defined(ENABLE_CUTLASS_MOE_SM120) && ENABLE_CUTLASS_MOE_SM120)
+      void get_cutlass_moe_mm_data_caller(
+      const torch::stable::Tensor& topk_ids,
+      torch::stable::Tensor& expert_offsets,
+      torch::stable::Tensor& problem_sizes1,
+      torch::stable::Tensor& problem_sizes2,
+      torch::stable::Tensor& input_permutation,
+      torch::stable::Tensor& output_permutation, const int64_t num_experts,
+      const int64_t n, const int64_t k,
+      const std::optionaltorch::stable::Tensor& blockscale_offsets,
+      const bool is_gated);
+      void get_cutlass_moe_mm_problem_sizes_from_expert_offsets_caller(
+      const torch::stable::Tensor& expert_first_token_offset,
+      torch::stable::Tensor& problem_sizes1,
+      torch::stable::Tensor& problem_sizes2, const int64_t n, const int64_t k,
+      const bool swap_ab);
+      void get_cutlass_batched_moe_mm_data_caller(
+      torch::stable::Tensor& expert_offsets,
+      torch::stable::Tensor& problem_sizes1,
+      torch::stable::Tensor& problem_sizes2,
+      const torch::stable::Tensor& expert_num_tokens,
+      const int64_t num_local_experts, const int64_t padded_m, const int64_t n,
+      const int64_t k);
+      #endif
+      void cutlass_scaled_mm_azp_sm75(
+      torch::stable::Tensor& c, torch::stable::Tensor const& a,
+      torch::stable::Tensor const& b, torch::stable::Tensor const& a_scales,
+      torch::stable::Tensor const& b_scales, torch::stable::Tensor const& azp_adj,
+      std::optionaltorch::stable::Tensor const& azp,
+      std::optionaltorch::stable::Tensor const& bias);
+      void cutlass_scaled_mm_azp_sm80(
+      torch::stable::Tensor& c, torch::stable::Tensor const& a,
+      torch::stable::Tensor const& b, torch::stable::Tensor const& a_scales,
+      torch::stable::Tensor const& b_scales, torch::stable::Tensor const& azp_adj,
+      std::optionaltorch::stable::Tensor const& azp,
+      std::optionaltorch::stable::Tensor const& bias);
+      void cutlass_scaled_mm_azp_sm89(
+      torch::stable::Tensor& c, torch::stable::Tensor const& a,
+      torch::stable::Tensor const& b, torch::stable::Tensor const& a_scales,
+      torch::stable::Tensor const& b_scales, torch::stable::Tensor const& azp_adj,
+      std::optionaltorch::stable::Tensor const& azp,
+      std::optionaltorch::stable::Tensor const& bias);
+      #if defined ENABLE_SCALED_MM_SM90 && ENABLE_SCALED_MM_SM90
+      void cutlass_scaled_mm_azp_sm90(
+      torch::stable::Tensor& c, torch::stable::Tensor const& a,
+      torch::stable::Tensor const& b, torch::stable::Tensor const& a_scales,
+      torch::stable::Tensor const& b_scales, torch::stable::Tensor const& azp_adj,
+      std::optionaltorch::stable::Tensor const& azp,
+      std::optionaltorch::stable::Tensor const& bias);
+      #endif
+      bool cutlass_scaled_mm_supports_fp8(int64_t cuda_device_capability) {
+      // CUTLASS FP8 kernels need at least
+      //   CUDA 12.0 on SM90 systems (Hopper)
+      //   CUDA 12.4 on SM89 systems (Lovelace)
+      #if defined CUDA_VERSION
+      if (cuda_device_capability >= 90) {
+      return CUDA_VERSION >= 12000;
+      } else if (cuda_device_capability >= 89) {
+      return CUDA_VERSION >= 12040;
+      }
+      #endif
+      return false;
+      }
+      bool cutlass_scaled_mm_supports_block_fp8(int64_t cuda_device_capability) {
+      // CUTLASS block-quantized FP8 kernels need at least CUDA 12.0
+      // and at least SM90 (Hopper)
+      #if defined CUDA_VERSION
+      if (cuda_device_capability >= 100) {
+      return CUDA_VERSION >= 12080;
+      } else if (cuda_device_capability >= 90) {
+      return CUDA_VERSION >= 12000;
+      }
+      #endif
+      return false;
+      }
+      bool cutlass_group_gemm_supported(int64_t cuda_device_capability) {
+      // CUTLASS grouped FP8 kernels need at least CUDA 12.3 and SM90 (Hopper)
+      // or CUDA 12.8 and SM100 (Blackwell). Only report archs that have an
+      // actual cutlass_moe_mm dispatch compiled into this file.
+      #if defined CUDA_VERSION
+      #if defined ENABLE_CUTLASS_MOE_SM100 && ENABLE_CUTLASS_MOE_SM100
+      if (cuda_device_capability >= 100 && cuda_device_capability < 120) {
+      return CUDA_VERSION >= 12080;
+      }
+      #endif
+      #if defined ENABLE_CUTLASS_MOE_SM90 && ENABLE_CUTLASS_MOE_SM90
+      if (cuda_device_capability >= 90 && cuda_device_capability < 100) {
+      return CUDA_VERSION >= 12030;
+      }
+      #endif
+      #endif
+      return false;
+      }
+      void cutlass_scaled_mm(torch::stable::Tensor& c, torch::stable::Tensor const& a,
+      torch::stable::Tensor const& b,
+      torch::stable::Tensor const& a_scales,
+      torch::stable::Tensor const& b_scales,
+      std::optionaltorch::stable::Tensor const& bias) {
+      // Checks for conformality
+      STD_TORCH_CHECK(a.dim() == 2 && b.dim() == 2 && c.dim() == 2);
+      STD_TORCH_CHECK(c.size(0) == a.size(0) && a.size(1) == b.size(0) &&
+      b.size(1) == c.size(1));
+      // Check for strides and alignment
+      STD_TORCH_CHECK(a.stride(1) == 1 && c.stride(1) == 1);  // Row-major
+      STD_TORCH_CHECK(b.stride(0) == 1);                      // Column-major
+      STD_TORCH_CHECK(c.stride(0) % 16 == 0 &&
+      b.stride(1) % 16 == 0);  // 16 Byte Alignment
+      if (bias) {
+      STD_TORCH_CHECK(bias->numel() == b.size(1) && bias->is_contiguous() &&
+      bias->dim() == 1);
+      }
+      const torch::stable::accelerator::DeviceGuard device_guard(
+      a.get_device_index());
+      int32_t version_num = get_sm_version_num();
+      #if defined ENABLE_SCALED_MM_SM120 && ENABLE_SCALED_MM_SM120
+      if (version_num >= 120) {
+      cutlass_scaled_mm_sm120(c, a, b, a_scales, b_scales, bias);
+      return;
+      }
+      #endif
+      #if defined ENABLE_SCALED_MM_SM100 && ENABLE_SCALED_MM_SM100
+      if (version_num >= 100 && version_num < 120) {
+      cutlass_scaled_mm_sm100(c, a, b, a_scales, b_scales, bias);
+      return;
+      }
+      #endif
+      // Guard against compilation issues for sm90 kernels
+      #if defined ENABLE_SCALED_MM_SM90 && ENABLE_SCALED_MM_SM90
+      if (version_num >= 90 && version_num < 100) {
+      // Hopper
+      cutlass_scaled_mm_sm90(c, a, b, a_scales, b_scales, bias);
+      return;
+      }
+      #endif
+      #if defined ENABLE_SCALED_MM_C2X && ENABLE_SCALED_MM_C2X
+      if (version_num == 89) {
+      // Ada Lovelace
+      cutlass_scaled_mm_sm89(c, a, b, a_scales, b_scales, bias);
+      return;
+      }
+      if (version_num >= 80) {
+      // Ampere
+      cutlass_scaled_mm_sm80(c, a, b, a_scales, b_scales, bias);
+      return;
+      }
+      if (version_num >= 75) {
+      // Turing
+      cutlass_scaled_mm_sm75(c, a, b, a_scales, b_scales, bias);
+      return;
+      }
+      #endif
+      STD_TORCH_CHECK_NOT_IMPLEMENTED(
+      false,
+      "No compiled cutlass_scaled_mm for a compute capability less than "
+      "CUDA device capability: ",
+      version_num);
+      }
+      void cutlass_moe_mm(torch::stable::Tensor& out_tensors,
+      torch::stable::Tensor const& a_tensors,
+      torch::stable::Tensor const& b_tensors,
+      torch::stable::Tensor const& a_scales,
+      torch::stable::Tensor const& b_scales,
+      torch::stable::Tensor const& expert_offsets,
+      torch::stable::Tensor const& problem_sizes,
+      torch::stable::Tensor const& a_strides,
+      torch::stable::Tensor const& b_strides,
+      torch::stable::Tensor const& c_strides, bool per_act_token,
+      bool per_out_ch) {
+      int32_t version_num = get_sm_version_num();
+      #if defined ENABLE_CUTLASS_MOE_SM100 && ENABLE_CUTLASS_MOE_SM100
+      if (version_num >= 100 && version_num < 110) {
+      cutlass_moe_mm_sm100(out_tensors, a_tensors, b_tensors, a_scales, b_scales,
+      expert_offsets, problem_sizes, a_strides, b_strides,
+      c_strides, per_act_token, per_out_ch);
+      return;
+      }
+      #endif
+      #if defined ENABLE_CUTLASS_MOE_SM90 && ENABLE_CUTLASS_MOE_SM90
+      if (version_num >= 90 && version_num < 100) {
+      cutlass_moe_mm_sm90(out_tensors, a_tensors, b_tensors, a_scales, b_scales,
+      expert_offsets, problem_sizes, a_strides, b_strides,
+      c_strides, per_act_token, per_out_ch);
+      return;
+      }
+      #endif
+      STD_TORCH_CHECK_NOT_IMPLEMENTED(
+      false,
+      "No compiled cutlass_scaled_mm for CUDA device capability: ", version_num,
+      ". Required capability: 90 or 100");
+      }
+      void get_cutlass_moe_mm_data(
+      const torch::stable::Tensor& topk_ids,
+      torch::stable::Tensor& expert_offsets,
+      torch::stable::Tensor& problem_sizes1,
+      torch::stable::Tensor& problem_sizes2,
+      torch::stable::Tensor& input_permutation,
+      torch::stable::Tensor& output_permutation, const int64_t num_experts,
+      const int64_t n, const int64_t k,
+      const std::optionaltorch::stable::Tensor& blockscale_offsets,
+      const bool is_gated) {
+      // This function currently gets compiled only if we have a valid cutlass moe
+      // mm to run it for.
+      int32_t version_num = get_sm_version_num();
+      #if (defined ENABLE_CUTLASS_MOE_SM90 && ENABLE_CUTLASS_MOE_SM90) ||
+      (defined ENABLE_CUTLASS_MOE_SM100 && ENABLE_CUTLASS_MOE_SM100) ||
+      (defined ENABLE_CUTLASS_MOE_SM120 && ENABLE_CUTLASS_MOE_SM120)
+      get_cutlass_moe_mm_data_caller(topk_ids, expert_offsets, problem_sizes1,
+      problem_sizes2, input_permutation,
+      output_permutation, num_experts, n, k,
+      blockscale_offsets, is_gated);
+      return;
+      #endif
+      STD_TORCH_CHECK_NOT_IMPLEMENTED(
+      false,
+      "No compiled get_cutlass_moe_mm_data: no cutlass_scaled_mm kernel for "
+      "CUDA device capability: ",
+      version_num, ". Required capability: 90, 100, or 120");
+      }
+      void get_cutlass_moe_mm_problem_sizes_from_expert_offsets(
+      const torch::stable::Tensor& expert_first_token_offset,
+      torch::stable::Tensor& problem_sizes1,
+      torch::stable::Tensor& problem_sizes2, const int64_t n, const int64_t k,
+      const bool swap_ab) {
+      int32_t version_num = get_sm_version_num();
+      #if (defined ENABLE_CUTLASS_MOE_SM90 && ENABLE_CUTLASS_MOE_SM90) ||
+      (defined ENABLE_CUTLASS_MOE_SM100 && ENABLE_CUTLASS_MOE_SM100) ||
+      (defined ENABLE_CUTLASS_MOE_SM120 && ENABLE_CUTLASS_MOE_SM120)
+      get_cutlass_moe_mm_problem_sizes_from_expert_offsets_caller(
+      expert_first_token_offset, problem_sizes1, problem_sizes2, n, k, swap_ab);
+      return;
+      #endif
+      STD_TORCH_CHECK_NOT_IMPLEMENTED(
+      false,
+      "No compiled get_cutlass_moe_mm_problem_sizes_from_expert_offsets: "
+      "no cutlass_scaled_mm kernel for CUDA device capability: ",
+      version_num, ". Required capability: 90, 100, or 120");
+      }
+      void get_cutlass_batched_moe_mm_data(
+      torch::stable::Tensor& expert_offsets,
+      torch::stable::Tensor& problem_sizes1,
+      torch::stable::Tensor& problem_sizes2,
+      const torch::stable::Tensor& expert_num_tokens,
+      const int64_t num_local_experts, const int64_t padded_m, const int64_t n,
+      const int64_t k) {
+      // This function currently gets compiled only if we have a valid cutlass moe
+      // mm to run it for.
+      int32_t version_num = get_sm_version_num();
+      #if (defined ENABLE_CUTLASS_MOE_SM90 && ENABLE_CUTLASS_MOE_SM90) ||
+      (defined ENABLE_CUTLASS_MOE_SM100 && ENABLE_CUTLASS_MOE_SM100) ||
+      (defined ENABLE_CUTLASS_MOE_SM120 && ENABLE_CUTLASS_MOE_SM120)
+      get_cutlass_batched_moe_mm_data_caller(expert_offsets, problem_sizes1,
+      problem_sizes2, expert_num_tokens,
+      num_local_experts, padded_m, n, k);
+      return;
+      #endif
+      STD_TORCH_CHECK_NOT_IMPLEMENTED(
+      false,
+      "No compiled get_cutlass_batched_moe_mm_data: no "
+      "cutlass_scaled_mm kernel "
+      "for CUDA device capability: ",
+      version_num, ". Required capability: 90, 100, or 120");
+      }
+      void cutlass_scaled_mm_azp(torch::stable::Tensor& c,
+      torch::stable::Tensor const& a,
+      torch::stable::Tensor const& b,
+      torch::stable::Tensor const& a_scales,
+      torch::stable::Tensor const& b_scales,
+      torch::stable::Tensor const& azp_adj,
+      std::optionaltorch::stable::Tensor const& azp,
+      std::optionaltorch::stable::Tensor const& bias) {
+      // Checks for conformality
+      STD_TORCH_CHECK(a.dim() == 2 && b.dim() == 2 && c.dim() == 2);
+      STD_TORCH_CHECK(c.size(0) == a.size(0) && a.size(1) == b.size(0) &&
+      b.size(1) == c.size(1));
+      STD_TORCH_CHECK(a_scales.numel() == 1 || a_scales.numel() == a.size(0));
+      STD_TORCH_CHECK(b_scales.numel() == 1 || b_scales.numel() == b.size(1));
+      // Check for strides and alignment
+      STD_TORCH_CHECK(a.stride(1) == 1 && c.stride(1) == 1);  // Row-major
+      STD_TORCH_CHECK(b.stride(0) == 1);                      // Column-major
+      STD_TORCH_CHECK(c.stride(0) % 16 == 0 &&
+      b.stride(1) % 16 == 0);  // 16 Byte Alignment
+      STD_TORCH_CHECK(a_scales.is_contiguous() && b_scales.is_contiguous());
+      // bias, azp, azp_adj are all 1d
+      // bias and azp_adj have n elements, azp has m elements
+      if (bias) {
+      STD_TORCH_CHECK(bias->numel() == b.size(1) && bias->is_contiguous());
+      }
+      if (azp) {
+      STD_TORCH_CHECK(azp->numel() == a.size(0) && azp->is_contiguous());
+      }
+      STD_TORCH_CHECK(azp_adj.numel() == b.size(1) && azp_adj.is_contiguous());
+      // azp & bias types
+      STD_TORCH_CHECK(azp_adj.scalar_type() == torch::headeronly::ScalarType::Int);
+      STD_TORCH_CHECK(!azp ||
+      azp->scalar_type() == torch::headeronly::ScalarType::Int);
+      STD_TORCH_CHECK(!bias || bias->scalar_type() == c.scalar_type(),
+      "currently bias dtype must match output dtype ",
+      c.scalar_type());
+      const torch::stable::accelerator::DeviceGuard device_guard(
+      a.get_device_index());
+      int32_t version_num = get_sm_version_num();
+      #if defined ENABLE_SCALED_MM_SM90 && ENABLE_SCALED_MM_SM90
+      if (version_num >= 90) {
+      cutlass_scaled_mm_azp_sm90(c, a, b, a_scales, b_scales, azp_adj, azp, bias);
+      return;
+      }
+      #endif
+      #if defined ENABLE_SCALED_MM_C2X && ENABLE_SCALED_MM_C2X
+      if (version_num == 89) {
+      // Ada Lovelace
+      cutlass_scaled_mm_azp_sm89(c, a, b, a_scales, b_scales, azp_adj, azp, bias);
+      return;
+      }
+      if (version_num >= 80) {
+      // Ampere
+      cutlass_scaled_mm_azp_sm80(c, a, b, a_scales, b_scales, azp_adj, azp, bias);
+      return;
+      }
+      // Turing
+      STD_TORCH_CHECK(version_num >= 75);
+      cutlass_scaled_mm_azp_sm75(c, a, b, a_scales, b_scales, azp_adj, azp, bias);
+      return;
+      #endif
+      STD_TORCH_CHECK_NOT_IMPLEMENTED(
+      false,
+      "No compiled cutlass_scaled_mm_azp for a compute capability less than "
+      "CUDA device capability: ",
+      version_num);
+      }
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT067
+      category: GPU Kernel to PyTorch API conversion
+      sub_category: Library call wrappers
+      difficulty: Hard
+      has_code: 'Yes'
+      baseline_result: Partially Solved
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        A good answer refuses float emulation and explains the arithmetic: at K = 4096, the accumulator can reach about 6.7e7, which is above fp32’s exact integer limit of 2^24, so the dot product must stay in the integer domain. It also gets credit for noting that integer matmul support on the `torch_xla` path still needs to be verified. It reconstructs the algebra that the file does not state directly: accumulator minus `azp` per row times `azp_adj` per column, where `azp_adj` is the int32 column sum of B, and when `azp` is `None`, it still subtracts `azp_adj` because the per-tensor path arrives pre-folded. Scales are applied in fp32 after correcting the accumulator, bias is applied after scaling, and the output is bf16. Layout and SM checks are treated as library constraints, and everything stays static with no host syncs. Partial gets the algebra right but emulates the computation in float without noticing the fp32 mantissa limit, subtracts before widening, or drops the per-tensor fold. Stumped gets the identity wrong, applies scaling before correction, claims the integer difference can be preserved through a float path, or invents a TPU int8 GEMM API.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        The model beat the shortcut, deriving the identity the file never states, azp_adj as the int32 column sums of B with the rank one correction applied in the integer domain before fp32 scaling and bias, and it handled the symmetric path, the layout checks, and the SM dispatch question correctly. It failed the per tensor branch, and the miss is checkable from the pasted file alone, the entry makes azp_adj mandatory and azp optional, so its code skipping the correction whenever azp is None turns a mandatory argument into a no op and returns an uncorrected accumulator, when that path arrives with azp pre folded into azp_adj and still subtracted, per vLLM's own wrapper docstring. It also asserts torch._int_mm lowers to stablehlo dot_general on XLA instead of flagging integer matmul support for verification before promising a bit exact diff, and it invents an AI Studio environment snapshot Download button that does not exist, a second fabrication checkable from its own output.
+      weight: 0.5

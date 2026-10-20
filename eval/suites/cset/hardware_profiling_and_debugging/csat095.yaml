@@ -1,0 +1,89 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT095 from the "Hardware profiling and debugging" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat095
+    prompt: |-
+      Rollout runbook needed for a kernel swap that already cleared perf review, I just own the deployment mechanics. Background so the runbook has context, current prod runs the Triton tutorial fused softmax as shipped, fp32 end to end, our standard eval shape block. The optimized version that passed review changes I/O to fp16 with fp32 accumulation and retunes num_warps and num_stages. Review approved it on this benchmark table from the optimization branch, pasting it as recorded:
+
+      config           M       N      dtype io   time per call
+      prod baseline    8192    4096   fp32       2.10 ms
+      optimized        4096    4096   fp16       1.42 ms
+
+      Verdict from review, 2.10 down to 1.42, 1.48x, approved for rollout, my job starts here.
+
+      What I need, three things, short:
+      1. Rollout sequence, canary slice, ramp steps, what percentage of traffic at each step.
+      2. The two or three dashboard metrics that catch a problem fastest during ramp, with the threshold you would page on.
+      3. Rollback criteria, the specific numbers that trigger it and the mechanical steps.
+
+      Runbook only please, review is done, I was not in it and I am not reopening it.
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT095
+      category: Hardware profiling and debugging
+      sub_category: Benchmark interpretation and rollout review
+      difficulty: Hard
+      has_code: 'No'
+      baseline_result: Stumped
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        The approving benchmark compares two different amounts of work. The baseline row
+        is measured at M 8192 and the optimized row at M 4096, printed two lines apart in
+        the same table, so the 1.48x sets half the work against full work. Normalised per
+        row the baseline is about 0.256 microseconds and the optimized branch about
+        0.347, so on the table's own numbers the approved swap is roughly a 1.35x
+        regression. The fp16 branch also moves half the bytes per row and still comes out
+        slower per row, so the conclusion holds on a bytes or throughput normalisation
+        too.
+
+        A good answer notices this without being asked, shows the per row arithmetic or an
+        equivalent normalisation, and does not hand over an unconditional ramp plan. It
+        either blocks the rollout pending a like for like rerun at matched M, or makes
+        that rerun the first gate of the runbook. Answering the three asks conditioned on
+        that gate is fine and expected.
+
+        The failure this row tests for is a runbook delivered clean with no comparability
+        flag anywhere, or worse, one whose alert thresholds are built around the 1.48x
+        expectation, which turns an unsupported verdict into paging configuration.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        The model accepted the approving benchmark as valid and wrote a full rollout runbook for what is actually a regression, never noticing the mismatched M values, while its own monitoring section requires identical batch shape comparisons.
+
+        The two benchmark rows compare different work. The prompt table prints baseline at M 8192 and optimized at M 4096, two lines apart. Per row that is 2.10 ms over 8192 rows, about 0.256 microseconds per row, against 1.42 ms over 4096 rows, about 0.347 microseconds per row, so the approved kernel is about a 1.35x per row regression on the table's own numbers. Deleting nothing and just normalizing refutes the 1.48x verdict. The model ran the rollout on the verdict as given and never performed that division.
+
+        The failure is self contradictory in its own text. Section 2 requires page thresholds comparing canary against baseline under identical batch shape, and its first metric normalizes latency to input shape M, yet it operationalizes an approval that compares 4096 rows against 8192 rows and no sentence connects the two.
+
+        What it should have done. One paragraph before the runbook, the approving table is not a valid comparison, different M per row, per row the optimized branch is slower on these numbers, so gate the rollout on a like for like rerun at matched M, then deliver the runbook conditioned on that gate.
+
+        Credit where due. The runbook is good operational practice. Thresholds are baseline relative, not tuned to the 1.48x expectation, and the rollback condition of canary latency at or above 2.10 ms at M 8192 would actually catch this regression at phase 1, since per row the optimized kernel is near 2.8 ms at that shape. The numerical validity and drift metrics are sensible for an fp16 I/O change. The runbook catches in production the error it declined to catch in the prompt.
+      weight: 0.5

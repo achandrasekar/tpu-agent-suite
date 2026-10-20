@@ -1,0 +1,60 @@
+{
+  "_comment": "Cell 2x2x2/131072-1024/c16 — the long-context cell. Nothing has ever been measured here. Model fields were pinned on 2026-09-09 from the GLM-5.2-FP8 model card notes; re-read them against the checkpoint's config.json before use.",
+
+  "topology": "2x2x2",
+  "workload": {"isl": 131072, "osl": 1024},
+  "concurrency": [16],
+  "ttft_budget_ms": [1000, 4000, 8000, 15000, 35000, 60000],
+
+  "_comment_budgets": "Modelled TTFT across the legal space spans 0.4 s to 322 s at this cell — three orders of magnitude, because a 128k prefill chunked at mnbt is where the sharding decision actually lands. The ladder is logarithmic to cover that; a linear one collapses to the same table five times.",
+  "_comment_concurrency": "Pinned, not swept: the cell names c16. One point per sharding per budget. Set to null to sweep the ladder and see where the knee is.",
+
+  "gpu_memory_utilization": 0.90,
+  "activation_reserve_gb": 4.0,
+  "sweep": {
+    "max_num_seqs": [16, 32, 64],
+    "max_num_batched_tokens": [128, 256, 512, 1024, 2048, 4096, 8192, 16384],
+    "prefill_schedule_interval": [1]
+  },
+
+  "_comment_sweep": "The mnbt ladder was [2048..16384] until 2026-09-10 and is now extended downward. Measured either way: widening *upward* to 131072 changes the winner not at all (518 modelled tok/s, 0 of 20 shardings then need the top rung), while the low rungs cost up to 52% — the low end is the end that discriminates. 512 and 1024 are also the per-DP dispatch ceilings at DP=16 and DP=8, so with the bound on they are what makes those DP degrees representable at all; variant.py --dispatch-bound would otherwise have to add them. Note what the model does NOT charge: kv_pool_bytes subtracts a constant activation_reserve_gb (model.py:264) whatever the chunk, so a larger mnbt costs no HBM here even though on hardware activations are ~mnbt x hidden x act_bytes per live buffer plus logits at mnbt x vocab. That is why throughput is weakly monotone in mnbt and the top rung prints on ties. Read knobs.png, not the knobs column.",
+
+  "include_pp": false,
+  "include_pcp": true,
+  "include_dcp": true,
+  "role": "unified",
+  "dispatch_bound": {"enabled": true, "topk": 8, "max_dispatch": 65536, "note": "U-260909-17 bounds topk x DP x mnbt <= 65536, giving a per-sharding mnbt ceiling of 65536/(8 x DP): DP=1 -> 8192, DP=2 -> 4096, DP=4 -> 2048, DP=8 -> 1024, DP=16 -> 512. On since 2026-09-10. topk=8 is what config.json says; the arithmetic in the source comment only closes at topk=4, which is unresolved — 8 is the tighter of the two readings and so the safe one for a shortlist, since it can only withhold a knob setting, never invent one. The wide view (--wide) prices the rungs it removes, so the cost of being wrong in this direction is printed rather than hidden. Turn it off with `variant.py --dispatch-bound off` when you want the unbounded ladder."},
+
+  "model": {
+    "name": "zai-org/GLM-5.2-FP8",
+    "hidden": 6144, "layers": 78, "dense_layers": 3,
+    "heads": 64, "kv_heads": 64, "head_dim": 192,
+    "intermediate": 12288,
+    "routed_experts": 256, "top_k": 8, "shared_experts": 1, "moe_intermediate": 2048,
+    "q_lora_rank": 2048, "kv_lora_rank": 512,
+    "qk_nope_head_dim": 192, "qk_rope_head_dim": 64, "v_head_dim": 256,
+    "index_topk": 2048,
+    "vocab": 154880, "tie_word_embeddings": false,
+    "weight_bytes": 1.0, "act_bytes": 2.0, "kv_bytes": 1.0,
+    "extra_cache_elems_per_layer": 35.538461538461537,
+
+    "numerics": {
+      "kv_cache": "fp8",
+      "attn_proj": "w8a8",
+      "attn_qk": "bf16",
+      "attn_av": "bf16",
+      "indexer_k_cache": "fp8",
+      "indexer_w_proj": "w16a16",
+      "indexer_k_q_proj": "w8a8",
+      "indexer_qk": "fp8",
+      "indexer_weighted_sum": "w16a16",
+      "expert_dispatch": "fp8",
+      "moe": "w8a8",
+      "expert_collect": "bf16"
+    }
+  },
+
+  "_comment_extra_cache": "The DSA indexer's own K cache, which is not the KV proper and was 0.0 here until 2026-09-10. Only 21 of the 78 layers build an Indexer at all — vllm@d6c2fec9f model_executor/models/deepseek_v2.py:1145 guards it with `not _skip_topk`, which at index_topk_freq=4 / index_skip_topk_offset=3 selects layers [0,1,2,6,10,...,74] and reproduces exactly the 21 'full' entries of indexer_types in config.json @ gen 1785565055944226. Each is a DeepseekV32IndexerCache with num_kv_heads=1, head_dim=128+128//128*4=132, dtype=uint8 (deepseek_v2.py:714-718) — 132 B/token/layer, i.e. 132 ELEMENTS at 1 B. model.py spreads this over all `layers`, so the field is 21*132/78 = 35.54 elements/layer, and since 2026-09-17 it is multiplied by the `indexer_k_cache` site rather than by kv_bytes — set that site to something other than a 1-byte dtype and this number stops meaning 132 B/token/layer. Worth ~6% of KV bytes/token against the MLA latent's 576. Note GLM-5.2 reaches this via deepseek_v32/__init__.py, whose non-CUDA branch imports GlmMoeDsaForCausalLM from deepseek_v2 — NOT the torchtpu deepseek_v4 indexer, whose cache is a different shape.",
+
+  "_comment_numerics": "Per-site precision, added 2026-09-17. PROVENANCE: supplied by the user as a vllm-torchtpu numerics sheet on 2026-09-17; NOT read out of the checkout, and NOT pinned in the model notes. None of these key names exists in vllm-torchtpu (grepped: attn_proj_dtype, indexer_k_cache_dtype, expert_dispatch_dtype, attn_qk_q_act_dtype all return nothing), so the sheet is an external artifact and re-deriving it means reading the call sites — quant_dtype, q_dtype, kv_cache_dtype, rhs_quant_dtype and ~500 siblings — one at a time. Treat it as a pin with a weaker source than the rest of this file until somebody does that. Two rows agree with what IS pinned: kv_cache fp8 = U-260909-18's --kv-cache-dtype=fp8, and indexer_k_cache fp8 = the uint8 above. What the sheet changes against the legacy scalars: attn_qk and attn_av drop from the fp8 MXU peak to bf16 (the old model charged every GEMM at the weight dtype's rate), and expert_dispatch drops from 2 B to 1 B on one leg of the all-to-all. The four indexer_* compute rows are accepted and priced by nothing — run.py prints them as ignored."
+}

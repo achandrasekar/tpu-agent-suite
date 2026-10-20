@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "tpu-roofline Request",
+  "description": "Input payload for the tpu-roofline agent. The caller states in `prompt` what it needs a hardware floor for: one op, a block of code, or a whole model on a slice. Everything else is optional context. The agent decides the path and returns `needs_input` when a required choice (hardware, sharding, workload) is missing.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "prompt",
+    "run_id"
+  ],
+  "properties": {
+    "prompt": {
+      "type": "string",
+      "description": "What to model, in the caller's own words: the op, code block or model, and any shapes, dtypes, hardware, sharding or workload the caller already knows."
+    },
+    "run_id": {
+      "type": "string",
+      "description": "Identifier of the active TPU agent suite run namespace."
+    },
+    "context": {
+      "type": "object",
+      "description": "Optional free-form inputs the caller already holds, for example a config path, a source file, a model id, the slice, the sharding or the workload. Keys are not fixed.",
+      "additionalProperties": true
+    },
+    "output_dir": {
+      "type": "string",
+      "description": "Optional directory for the outputs. Defaults to the run's artifacts/roofline/ directory."
+    }
+  },
+  "examples": [
+    {
+      "prompt": "Roofline of the MoE down-projection of GLM-5.2 at 8K prefill tokens on one v7x chip, fp8 weights.",
+      "run_id": "20260914T120000Z-000000000000"
+    },
+    {
+      "prompt": "Model the GLM-5.2-FP8 serving roofline on v7x 2x2x2.",
+      "run_id": "20260914T120000Z-000000000000",
+      "context": {
+        "sharding": "TP=8, EP on",
+        "workload": "ISL 8192, OSL 1024, max-num-batched-tokens 8192, 64 concurrent decodes"
+      }
+    }
+  ]
+}

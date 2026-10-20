@@ -1,0 +1,391 @@
+{
+  "questions": [
+    {
+      "name": "backend",
+      "path": "compute.backend",
+      "prompt": "Compute backend to use: 'local' (agent runs on the TPU VM), 'gce_tpu_vm' (reach a Cloud TPU VM via gcloud), 'gke_pod' (exec into an already-running TPU pod), 'gke_job' (dispatch a single-host TPU Job via kubectl), or 'gke_xpk' (multi-node cluster via xpk)",
+      "type": "string",
+      "choices": [
+        "local",
+        "gce_tpu_vm",
+        "gke_pod",
+        "gke_job",
+        "gke_xpk"
+      ]
+    },
+    {
+      "name": "tpu_name",
+      "path": "compute.params.tpu_name",
+      "when": {
+        "backend": [
+          "gce_tpu_vm"
+        ]
+      },
+      "prompt": "gce_tpu_vm only: Cloud TPU VM resource name (e.g. my-tpu-vm)",
+      "type": "string"
+    },
+    {
+      "name": "zone",
+      "path": "compute.params.zone",
+      "when": {
+        "backend": [
+          "gce_tpu_vm",
+          "gke_xpk"
+        ]
+      },
+      "prompt": "gce_tpu_vm and gke_xpk: GCP zone of compute resource (e.g. us-central1-a)",
+      "type": "string"
+    },
+    {
+      "name": "project",
+      "path": "compute.params.project",
+      "when": {
+        "backend": [
+          "gce_tpu_vm",
+          "gke_xpk"
+        ]
+      },
+      "prompt": "gce_tpu_vm and gke_xpk: GCP project ID of compute resource",
+      "type": "string"
+    },
+    {
+      "name": "namespace",
+      "path": "compute.params.namespace",
+      "when": {
+        "backend": [
+          "gke_pod",
+          "gke_job"
+        ]
+      },
+      "prompt": "gke_pod and gke_job: Kubernetes namespace to work in (empty for default; with a Kueue queue, the namespace the LocalQueue is in)",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "pod",
+      "path": "compute.params.pod",
+      "when": {
+        "backend": [
+          "gke_pod"
+        ]
+      },
+      "prompt": "gke_pod only: name of the already-running TPU pod to exec into",
+      "type": "string"
+    },
+    {
+      "name": "container",
+      "path": "compute.params.container",
+      "when": {
+        "backend": [
+          "gke_pod"
+        ]
+      },
+      "prompt": "gke_pod only (optional): container name within the pod, for multi-container pods",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "image",
+      "path": "compute.params.image",
+      "when": {
+        "backend": [
+          "gke_job"
+        ]
+      },
+      "prompt": "gke_job only: container image a dispatched Job runs (pin by digest); the default is a `nexus-tpu` image (torch 2.13.0, vLLM 0.29.0, JAX 0.11.2) with the software the agents need",
+      "type": "string",
+      "default": "us-docker.pkg.dev/tpu-nexus-767207/nexus-dev/nexus-tpu@sha256:a13cfe0129b78c7752289c1a26b4e55cd2cb4ced3373dc524cf0332e8726e7ee"
+    },
+    {
+      "name": "tpu_accelerator",
+      "path": "compute.params.tpu_accelerator",
+      "when": {
+        "backend": [
+          "gke_job"
+        ]
+      },
+      "prompt": "gke_job only: cloud.google.com/gke-tpu-accelerator node label, e.g. tpu7x or tpu-v6e-slice",
+      "type": "string"
+    },
+    {
+      "name": "tpu_topology",
+      "path": "compute.params.tpu_topology",
+      "when": {
+        "backend": [
+          "gke_job"
+        ]
+      },
+      "prompt": "gke_job only: cloud.google.com/gke-tpu-topology node label, e.g. 2x2x1 or 2x2 (single-host only)",
+      "type": "string"
+    },
+    {
+      "name": "queue",
+      "path": "compute.params.queue",
+      "when": {
+        "backend": [
+          "gke_job"
+        ]
+      },
+      "prompt": "gke_job only (optional): Kueue LocalQueue to admit through; leave empty on a cluster that schedules directly",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "priority",
+      "path": "compute.params.priority",
+      "when": {
+        "backend": [
+          "gke_job"
+        ]
+      },
+      "prompt": "gke_job only (optional): Kueue priority class, only meaningful alongside a queue",
+      "type": "string",
+      "default": "",
+      "choices": [
+        "",
+        "medium",
+        "low",
+        "very-low"
+      ]
+    },
+    {
+      "name": "declared_duration_minutes",
+      "path": "compute.params.declared_duration_minutes",
+      "when": {
+        "backend": [
+          "gke_job"
+        ]
+      },
+      "prompt": "gke_job only (optional): declared runtime in minutes for Kueue suspension enforcement",
+      "type": "integer",
+      "default": 0
+    },
+    {
+      "name": "kubeconfig",
+      "path": "compute.params.kubeconfig",
+      "when": {
+        "backend": [
+          "gke_job"
+        ]
+      },
+      "prompt": "gke_job only (optional): kubeconfig path to use instead of the ambient one",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "kube_context",
+      "path": "compute.params.kube_context",
+      "when": {
+        "backend": [
+          "gke_job",
+          "gke_pod"
+        ]
+      },
+      "prompt": "gke_job and gke_pod (optional): kubectl context every call names, so a later `kubectl config use-context` does not move this profile to another cluster",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "cluster_name",
+      "path": "compute.params.cluster_name",
+      "when": {
+        "backend": [
+          "gke_xpk"
+        ]
+      },
+      "prompt": "gke_xpk only: GKE cluster name for xpk workload creation",
+      "type": "string"
+    },
+    {
+      "name": "gcs_bucket",
+      "path": "compute.params.gcs_bucket",
+      "when": {
+        "backend": [
+          "gke_xpk"
+        ]
+      },
+      "prompt": "gke_xpk only (optional): GCS bucket URI for logs and artifacts",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "staging_bucket",
+      "path": "compute.params.staging_bucket",
+      "when": {
+        "backend": [
+          "gke_job"
+        ]
+      },
+      "prompt": "gke_job only: GCS bucket for `compute run --input/--output` staging, e.g. gs://my-staging-bucket; only needed for inputs over 900 KiB or outputs over 1 MiB. The pod reaches it either with its own Workload Identity token or through URLs a service account signs (both asked next). A lifecycle rule that deletes objects after a few days is recommended; scope it to the staging folder (e.g. gs://my-staging-bucket/staging), since onboarding keeps model checkpoints under checkpoints/ in the same bucket",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "pod_service_account",
+      "path": "compute.params.pod_service_account",
+      "when": {
+        "backend": [
+          "gke_job"
+        ]
+      },
+      "prompt": "gke_job only, and only if you set a staging bucket on a cluster with Workload Identity: Kubernetes service account the pods run as, e.g. tpu-staging-pod. The pod then reads and writes staged files with its own token, so nothing is signed and the next two questions can be left blank. It needs roles/storage.objectAdmin on the bucket, and the TPU node pool needs --workload-metadata=GKE_METADATA. Leave blank to use signed URLs",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "ml_diagnostics_cluster",
+      "path": "compute.params.ml_diagnostics_cluster",
+      "when": {
+        "backend": [
+          "gce_tpu_vm",
+          "gke_job"
+        ]
+      },
+      "prompt": "gce_tpu_vm and gke_job (optional): ML Diagnostics is a Google Cloud service that stores TPU profiles and shows them in a web dashboard. If your team has set up a cluster for it, give its name so benchmark profiles are uploaded there, e.g. projects/my-project/locations/us-central1/clusters/my-cluster. If you don't know what this is, leave it blank and profiles stay on disk",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "ml_diagnostics_gcs",
+      "path": "compute.params.ml_diagnostics_gcs",
+      "when": {
+        "backend": [
+          "gce_tpu_vm",
+          "gke_job"
+        ]
+      },
+      "prompt": "gce_tpu_vm and gke_job (optional, only with an ML Diagnostics cluster): the GCS folder that cluster reads profiles from, e.g. gs://my-bucket/profiles. Leave blank if you left the cluster blank",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "staging_service_account",
+      "path": "compute.params.staging_service_account",
+      "when": {
+        "backend": [
+          "gke_job"
+        ]
+      },
+      "prompt": "gke_job only, and only if you set a staging bucket: service account for staging to act as, e.g. stager@my-project.iam.gserviceaccount.com. Your own login can't sign the bucket URLs, so staging acts as this account instead, using your login and no key file; kubectl still runs as you. You need roles/iam.serviceAccountTokenCreator on it, and it needs roles/storage.objectAdmin on the bucket. Leave blank to use your default credentials",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "staging_service_account_key",
+      "path": "compute.params.staging_service_account_key",
+      "when": {
+        "backend": [
+          "gke_job"
+        ]
+      },
+      "prompt": "gke_job only, and only if you set a staging bucket and left the previous answer blank: path to a key file for the service account staging should use (for setups with no login, such as CI). Don't use $GOOGLE_APPLICATION_CREDENTIALS for this: kubectl reads it too and would stop running as you. Leave blank to use your default credentials",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "hf_cache_pvc",
+      "path": "compute.params.hf_cache_pvc",
+      "when": {
+        "backend": [
+          "gke_job"
+        ]
+      },
+      "prompt": "gke_job only (optional): name of a ReadWriteMany PersistentVolumeClaim in the Job namespace for a shared Hugging Face weight cache, created beforehand by a cluster admin (e.g. from a Filestore storage class). Every pod mounts it, so a model downloads once instead of into each new pod. The install checks that it exists, is ReadWriteMany and binds. Leave empty to download into each pod's /dev/shm, which shm_size_gb caps",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "compile_cache_max_age_days",
+      "path": "compute.params.compile_cache_max_age_days",
+      "when": {
+        "backend": [
+          "gke_job"
+        ]
+      },
+      "prompt": "gke_job only (optional): with hf_cache_pvc, days after which a compile-cache image folder no pod has used is removed from the shared volume. 0 keeps them",
+      "type": "integer",
+      "default": 14
+    },
+    {
+      "name": "python_interpreter",
+      "path": "compute.params.python_interpreter",
+      "when": {
+        "backend": [
+          "local",
+          "gce_tpu_vm",
+          "gke_pod",
+          "gke_job",
+          "gke_xpk"
+        ]
+      },
+      "prompt": "Python that runs your workloads on the target: the one where `import torch_tpu` works. On a TPU VM this is usually a virtualenv, e.g. `~/tpu_venv/bin/python3`; in a container, e.g. `/opt/conda/bin/python`. Leave blank to use the target's default `python3`, which often doesn't have `torch_tpu` installed",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "internal_ip",
+      "path": "compute.params.internal_ip",
+      "when": {
+        "backend": [
+          "gce_tpu_vm"
+        ]
+      },
+      "prompt": "gce_tpu_vm only: connect to the TPU VM over its internal IP instead of its public one? Say yes if you're running from inside Google Cloud on the same network as the VM (e.g. another VM in its project) and the TPU VM has no public IP or blocks SSH from the internet; that's when ssh and scp time out without it. From a laptop or workstation, say no",
+      "type": "boolean",
+      "default": false
+    },
+    {
+      "name": "xprof_interpreter",
+      "prompt": "Optional path to the Python interpreter that runs XProf analysis, when it is not the same environment as the workload (e.g. a venv holding only xprof)",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "trajectory_enabled",
+      "path": "trajectory.params.enabled",
+      "prompt": "Would you like to share session trajectories",
+      "type": "boolean",
+      "default": false
+    },
+    {
+      "name": "trajectory_sink",
+      "path": "trajectory.params.sink",
+      "prompt": "Share via 'gcs' (a bucket of your own) or 'harbor' (the hub, which renders the session as a browsable trajectory)",
+      "type": "string",
+      "choices": [
+        "gcs",
+        "harbor"
+      ],
+      "default": "gcs",
+      "when": {
+        "trajectory_enabled": [
+          true
+        ]
+      }
+    },
+    {
+      "name": "trajectory_bucket",
+      "path": "trajectory.params.bucket",
+      "prompt": "Name the bucket, e.g. gs://my-bucket. Leave blank to decline trajectory sharing after all",
+      "type": "string",
+      "when": {
+        "trajectory_sink": [
+          "gcs"
+        ]
+      },
+      "default": ""
+    },
+    {
+      "name": "trajectory_share_org",
+      "path": "trajectory.params.share_org",
+      "prompt": "Harbor organization to share uploaded sessions with, e.g. my-team. Leave blank to keep the upload private",
+      "type": "string",
+      "default": "",
+      "when": {
+        "trajectory_sink": [
+          "harbor"
+        ]
+      }
+    }
+  ]
+}

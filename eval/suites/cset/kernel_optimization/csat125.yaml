@@ -1,0 +1,173 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT125 from the "Kernel optimization" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat125
+    prompt: |-
+      I'm profiling our RecurrentGemma decoder on TPU v5p, and the Real-Gated Linear Recurrent Unit (RG-LRU) block on the critical path is eating up way more of the step time than it should. Between the two block-diagonal gate projections, the ring-initialized log-decay and gamma input scaling, the document-boundary resets, and the sequential diagonal recurrence scan, XLA breaks the block into half a dozen separate passes and transposes over the activations, which leads to forced pay of an HBM round trip on every single one.
+
+      Optimize the computation below as a fused Pallas kernel for TPU v5p. Our workload shapes are
+      B=4, S=2048, H=10, W=256, D=2560, with activations, block-diagonal gate weights and biases, recurrent parameters, and outputs in bf16, position_ids in int32, and the block-diagonal gate contractions, log-decay, gamma scaling, and recurrent state carry accumulated in f32. Because the layouts are fixed by the surrounding serving stack, don't transpose the activations to time-major outside the kernel, flatten or relayout the block-diagonal gate weights, alter the head block width, or move the channel dimension off the last axis. Make sure the output matches the reference within rtol=0.01 and atol=0.05.
+
+      # Imports
+      import jax
+      import jax.numpy as jnp
+      # Initialization
+      def get_inputs():
+          dtype = jnp.bfloat16
+          key = jax.random.key(0)
+          k1, k2, k3, k4, k5, k6 = jax.random.split(key, 6)
+          B, S, H, W = 4, 2048, 10, 256
+          D = H * W
+          w_std = (0.01 / W) ** 0.5
+          activations = jax.random.normal(k1, (B, S, D), dtype=dtype)
+          input_gate_weight = jax.random.normal(k2, (H, W, W), dtype=dtype) * w_std
+          input_gate_bias = jax.random.normal(k3, (H, W), dtype=dtype) * 0.1
+          recurrent_gate_weight = jax.random.normal(k4, (H, W, W), dtype=dtype) * w_std
+          recurrent_gate_bias = jax.random.normal(k5, (H, W), dtype=dtype) * 0.1
+          unif = jax.random.uniform(
+              k6, (D,), dtype=jnp.float32, minval=0.9**2 + 1e-8, maxval=0.999**2 + 1e-8
+          )
+          recurrent_param = jnp.log(jnp.exp(-0.5 * jnp.log(unif)) - 1.0).astype(dtype)
+          pos_row = jnp.arange(S, dtype=jnp.int32) % 512
+          position_ids = jnp.broadcast_to(pos_row[None, :], (B, S))
+          dynamic_args = [
+              activations,
+              input_gate_weight,
+              input_gate_bias,
+              recurrent_gate_weight,
+              recurrent_gate_bias,
+              recurrent_param,
+              position_ids,
+          ]
+          static_args = []
+          return dynamic_args, static_args
+      # Computation
+      def computation(
+          activations,
+          input_gate_weight,
+          input_gate_bias,
+          recurrent_gate_weight,
+          recurrent_gate_bias,
+          recurrent_param,
+          position_ids,
+      ):
+          B, S, D = activations.shape
+          H, W, _ = input_gate_weight.shape
+          reset = position_ids[:, :, None] == 0
+          act_blocks = activations.reshape(B, S, H, W)
+          ig_logits = (
+              jnp.einsum(
+                  "bshw,hwo->bsho",
+                  act_blocks,
+                  input_gate_weight,
+                  preferred_element_type=jnp.float32,
+              )
+              + input_gate_bias.astype(jnp.float32)[None, None, :, :]
+          )
+          rg_logits = (
+              jnp.einsum(
+                  "bshw,hwo->bsho",
+                  act_blocks,
+                  recurrent_gate_weight,
+                  preferred_element_type=jnp.float32,
+              )
+              + recurrent_gate_bias.astype(jnp.float32)[None, None, :, :]
+          )
+          input_gate = jax.nn.sigmoid(ig_logits.reshape(B, S, D))
+          recurrent_gate = jax.nn.sigmoid(rg_logits.reshape(B, S, D))
+          log_recurrent_gate = (
+              -8.0
+              * recurrent_gate
+              * jax.nn.softplus(recurrent_param.astype(jnp.float32))[None, None, :]
+          )
+          a = jnp.exp(log_recurrent_gate)
+          a_square = jnp.exp(2.0 * log_recurrent_gate)
+          gated_inputs = activations.astype(jnp.float32) * input_gate
+          multiplier = jnp.sqrt(jnp.maximum(1.0 - a_square, 1e-12))
+          multiplier = jnp.where(reset, 1.0, multiplier)
+          normalized_x = (gated_inputs * multiplier).astype(activations.dtype)
+          a_masked = jnp.where(reset, 0.0, a)
+          init_state = jnp.zeros((B, D), dtype=jnp.float32)
+          def scan_step(h_prev, step_inputs):
+              a_t, x_t = step_inputs
+              h_next = a_t * h_prev + x_t.astype(jnp.float32)
+              return h_next, h_next.astype(activations.dtype)
+          _, contextualized_states = jax.lax.scan(
+              scan_step,
+              init_state,
+              (jnp.swapaxes(a_masked, 0, 1), jnp.swapaxes(normalized_x, 0, 1)),
+          )
+          return jnp.swapaxes(contextualized_states, 0, 1)
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT125
+      category: Kernel optimization
+      sub_category: Sequential and recurrent
+      difficulty: Hard
+      has_code: 'Yes'
+      baseline_result: Stumped
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        Stumped:
+
+        The model is stumped whenever the kernel fails to produce a numerically valid (4, 2048, 2560) bfloat16 output. That happens if compilation crashes, such as violating hardware sublane alignment on bias buffers or relying on unsupported in kernel sequential loops, or if loading the full sequence overflows the compiler's scoped on-chip memory. It also fails if addressing errors push channel indices out of bounds, the output drifts past our 0.01 relative and 0.05 absolute tolerance or the final kernel fails to beat the baseline compiler. Anytime the model fails to compile or attempts to cheat from the specified dimensions layouts also fails the model output immediately.
+
+        Partially Solved:
+        To land here the generated model kernel has to compile cleanly, adhere to all of our set layout dimensions, and pass the tolerance gates, while still leaving performance improvement on the table. That happens when the model:
+
+        When the model tries to process the entire sequence at once without pipelining future data transfers behind compute.
+        When the model fails to declare parallel grid execution leaving the second core idle, especially on specified v5p.
+        When the model orders grid iterations so that invariant weights are repeatedly fetched instead of remaining on chip.
+        It also applies when the kernel fuses only the recurrence while leaving gate projections as separate passes.
+        When the model budgets against physical memory rather than the compiler's scoped limits.
+        When the model beats the reference code time. So, the wall speed up is strictly greater than 1.00x but the code shows more improvement is left on the table to improve this mark.
+
+        Solved:
+
+        The model must deliver a single fused kernel that parallelizes the batch and head dimensions across both cores, while sequentially stepping through time to carry the recurrent state. Activation tiles must be block indexed to match the native hardware allowing the write directly to our fixed layout without relying on transposes. Another important thing is that the model must make time the innermost grid loop, gate weights stay on-chip across the entire sequence. Once inside the kernel, the model should keep the gate projections and activations in f32, stage the decay terms in register aligned scratch space, and step through the unrolled sublane updates before writing the whole tile out at once.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        Illegal Block Shapes: The model tiled both gate bias arrays and the position IDs by squeezing the leading dimension down to a single row. On TPU v5p, the compiler has a requirement where the second to last dimension of any memory block needs to be either a multiple of 8 sublanes or match the array's full row count. So, a single squeezed row satisfies neither condition, which triggers an immediate compilation failure. This is why the TPU evaluation crashed on a build error with no timings and failed correctness before anything could be tested.
+
+        Bad Indexing: The model manually multiplied the head index by the block width for channel dimensions, because it assumed that it needed to compute raw element offsets. But Pallas expects a logical block index and applies the block width multiplication on its own, so this extra multiplication squares the stride, pushing every head after the first one out of bounds.
+
+        No time tiling: The model only tiled across batch and heads, loading the entire 2,048 step sequence at once with no time slicing or scratch space to carry recurrent state across tiles. Its 9.5 MB estimate badly undercounts the roughly ten full-sequence f32 intermediates plus double buffered inputs, weights, and outputs, which actually peak around 26.5 MB. While v5p has 64 MB of physical VMEM per core, the compiler enforces a 16 MB default scoped limit that the kernel never raises, which is pretty much a guaranteed VMEM OOM after the bugs seen earlier are addressed.
+
+        No Parallelism: Parallelism was never declared because there's no dimension_semantics, and the claim that each TensorCore handles its own slice is wrong. The model claimed each TensorCore processes batch and head slices in parallel, but failed to declare parallel grid execution in the first place. By default, grid iterations run sequentially on a single core and on dual-core chips, like v5p, only split the workload when axes are explicitly marked parallel.
+
+        Lax.scan in kernel: The model copied jax.lax.scan(scan_step, init_state, (a_masked, normalized_x)) into the kernel body unchanged. It still consumes per step inputs and stacks 2,048 per step outputs. This recurrence was exactly why we needed the custom kernel so the model fails to adapt to the Pallas control flow.
+
+        Verification Failure: The model falsely claimed that it verified the VMEM results, where it made no such profiling effort.
+
+        Bad Reset Mask: The model builds the reset mask with (pos_ids == 0)[:, None], which forces a lane to a sublane relayout then broadcasting it across 256 lanes using two full tile jnp.where calls. That's a lot of relayout and VPU work spent on one bit per timestep. Mosaic might also reject the shape cast.
+      weight: 0.5

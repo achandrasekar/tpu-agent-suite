@@ -1,0 +1,14 @@
+# Roofline answer keys for this component: one `cases` block per scenario, each a
+# self-contained prompt plus its expected values. Each expected value derives from the formulas
+# in this directory's SKILL.md. Originally a textproto eval suite bound to a proto schema that is
+# not part of this package; nothing parses the textproto grammar itself.
+
+suite_name: "gdn-attention-roofline"
+timeout_seconds: 300
+
+cases {
+  name: "qwen3.5_397b_zba_projection"
+  prompt: "Calculate the Local FLOPS (GFLOPS) and Local Memory Transfer (MB) per core for the ZBA Projection layer in Qwen3.5-397B-A17B with batch=1, seq_len=8192, hidden_dim=4096, head_v=64, head_dim_v=128, TP=8, input_dtype=fp8, weight_dtype=fp8, output_dtype=bf16."
+  expectations: "The calculated GFlops for in_proj_zba is approximately 69.8 GFLOPS."
+  expectations: "The calculated memory_transfer for in_proj_zba is approximately 54.8 MB."
+}

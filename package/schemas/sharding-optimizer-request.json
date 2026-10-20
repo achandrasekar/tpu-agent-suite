@@ -1,0 +1,202 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "sharding-optimizer-request.json",
+  "title": "tpu-sharding Optimizer Request",
+  "description": "Delegation payload from orchestrator to tpu-sharding-optimizer.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "run_id",
+    "iteration",
+    "action",
+    "state_artifact"
+  ],
+  "properties": {
+    "run_id": {
+      "type": "string",
+      "pattern": "^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}$",
+      "description": "Session run identifier namespace."
+    },
+    "iteration": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Zero-based iteration index to operate on."
+    },
+    "action": {
+      "type": "string",
+      "enum": [
+        "propose",
+        "evaluate"
+      ],
+      "description": "Operation phase: 'propose' next recipe configuration, or 'evaluate' takeaways from a completed run."
+    },
+    "mode": {
+      "type": "string",
+      "enum": [
+        "GREEDY",
+        "BROAD_SEARCH"
+      ],
+      "description": "Active search mode when action is 'propose'. 'GREEDY' branches from best_run; 'BROAD_SEARCH' invokes researcher for non-greedy exploration."
+    },
+    "state_artifact": {
+      "type": "string",
+      "description": "Relative artifact path to state.json ledger (e.g., 'state.json')."
+    },
+    "model": {
+      "type": "string",
+      "description": "Target model identifier (e.g., 'qwen3.5-397b-a17b')."
+    },
+    "model_path": {
+      "type": "string",
+      "description": "Filesystem path or repository URL to the model code."
+    },
+    "hardware_topology": {
+      "type": "string",
+      "description": "TPU generation and slice topology (e.g., 'v6e_2x2x1', 'v5e_2x2x1')."
+    },
+    "last_run_report_artifact": {
+      "type": "string",
+      "description": "Relative artifact path to the most recent run report (e.g., '1/report_1.md')."
+    },
+    "report_artifact": {
+      "type": "string",
+      "description": "Relative artifact path to updated run report during evaluate phase (e.g., '1/report_1.md')."
+    },
+    "profiling_report_artifact": {
+      "type": "string",
+      "description": "Relative artifact path to XProf analysis report (e.g., '1/tpu_profiling_report.md')."
+    },
+    "profiler_trace_path": {
+      "type": "string",
+      "description": "Path or GCS URI to captured profiler trace directory."
+    },
+    "execution_status": {
+      "type": "string",
+      "enum": [
+        "SUCCESS",
+        "PARTIAL_SUCCESS",
+        "FAIL",
+        "TIMEOUT"
+      ],
+      "description": "Physical workload execution outcome from executor during evaluate phase."
+    },
+    "execution_duration_seconds": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Elapsed execution duration in seconds."
+    },
+    "target_metric": {
+      "type": "object",
+      "description": "Primary target metric produced by the run.",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "value",
+        "unit"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "value": {
+          "type": "number"
+        },
+        "unit": {
+          "type": "string",
+          "enum": [
+            "s",
+            "%",
+            "GiB",
+            "GB",
+            "GiB/s",
+            "GB/s",
+            "TFLOPS/s/device",
+            "tok/s/dev",
+            "tok/s",
+            "req/s",
+            "samples/s",
+            "steps/s",
+            ""
+          ]
+        }
+      }
+    },
+    "related_metrics": {
+      "type": "array",
+      "description": "Tracked related metrics from the run.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "value",
+          "unit"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "value": {
+            "type": "number"
+          },
+          "unit": {
+            "type": "string",
+            "enum": [
+              "s",
+              "%",
+              "GiB",
+              "GB",
+              "GiB/s",
+              "GB/s",
+              "TFLOPS/s/device",
+              "tok/s/dev",
+              "tok/s",
+              "req/s",
+              "samples/s",
+              "steps/s",
+              ""
+            ]
+          }
+        }
+      }
+    },
+    "failure_reason": {
+      "type": "string",
+      "description": "Diagnostic reason if execution_status is FAIL or TIMEOUT."
+    },
+    "error_message": {
+      "type": "string",
+      "description": "Detailed error logs or failure message from executor."
+    }
+  },
+  "examples": [
+    {
+      "run_id": "20260921T120000Z-abcdef012345",
+      "iteration": 1,
+      "action": "propose",
+      "mode": "GREEDY",
+      "state_artifact": "state.json",
+      "model": "qwen3.5-397b-a17b",
+      "model_path": "/workspace/models/qwen3.5",
+      "hardware_topology": "v6e_2x2x1",
+      "last_run_report_artifact": "0/report_0.md"
+    },
+    {
+      "run_id": "20260921T120000Z-abcdef012345",
+      "iteration": 1,
+      "action": "evaluate",
+      "state_artifact": "state.json",
+      "model": "qwen3.5-397b-a17b",
+      "hardware_topology": "v6e_2x2x1",
+      "execution_status": "SUCCESS",
+      "execution_duration_seconds": 580.2,
+      "target_metric": {
+        "name": "mfu",
+        "value": 42.1,
+        "unit": "%"
+      },
+      "report_artifact": "1/report_1.md",
+      "profiling_report_artifact": "1/tpu_profiling_report.md"
+    }
+  ]
+}

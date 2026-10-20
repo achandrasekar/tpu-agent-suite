@@ -1,0 +1,88 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# The agent-suite arm: the whole package, on the shared tpu-nexus-cluster
+# (kubeconfig mounted, submitted directly, no Kueue queue). baseline.yaml is
+# the same config with nothing installed -- a config named `baseline` is a
+# control arm -- and a test keeps the two identical apart from job_name.
+
+job_name: torchtpu-claude-code-agent-suite
+n_attempts: 1
+n_concurrent_trials: 6
+environment:
+  mounts:
+  - type: bind
+    source: ${HOST_ADC}
+    target: /root/.config/gcloud/application_default_credentials.json
+    read_only: true
+  - type: bind
+    source: ${EVAL_KUBECONFIG}
+    target: /root/.kube/config
+    read_only: true
+verifier:
+  env:
+    VERTEXAI_PROJECT: ${VERTEXAI_PROJECT:-tpu-nexus-767207}
+    VERTEXAI_LOCATION: ${VERTEXAI_LOCATION:-global}
+    DEFAULT_MAX_RETRIES: '10'
+    INITIAL_RETRY_DELAY: '2.0'
+    MAX_RETRY_DELAY: '60.0'
+agents:
+- name: claude-code
+  model_name: anthropic/claude-opus-5-5[1m]
+  env:
+    # Pinned, not relocated: every task.toml collects artifacts from
+    # /root/.tpu-agent-suite/runs, and nothing sets HOME, so the home has
+    # to resolve there or the harness collects an empty directory and
+    # says nothing. It must stay equal to ~ for this container's user:
+    # compiled hook commands hardcode the ~/.tpu-agent-suite spelling and
+    # do not honour this variable, so a value that disagrees with ~
+    # breaks them.
+    TPU_AGENT_SUITE_HOME: /root/.tpu-agent-suite
+    COMPUTE_BACKEND: ${COMPUTE_BACKEND:-gke_job}
+    TASK_DOCKER: ${TASK_DOCKER:-us-docker.pkg.dev/tpu-nexus-767207/nexus-dev/nexus-tpu:latest}
+    GKE_TPU_ACCELERATOR: ${GKE_TPU_ACCELERATOR:-tpu-v6e-slice}
+    GKE_TPU_TOPOLOGY: ${GKE_TPU_TOPOLOGY:-2x4}
+    GKE_CLUSTER: ${GKE_CLUSTER:-tpu-nexus-cluster}
+    GKE_LOCATION: ${GKE_LOCATION:-us-central2-b}
+    GKE_PROJECT: ${GKE_PROJECT:-tpu-nexus-767207}
+    GKE_AUTH_ACCOUNT: ${GKE_AUTH_ACCOUNT:-adc}
+    # GCS staging for outputs over 1 MiB, such as a kernel run's profile
+    # trace: without a bucket the pod can write to, tpu-kernel-development
+    # stops at needs_input on gke_job. The TPU pod reaches it with
+    # GKE_POD_SERVICE_ACCOUNT's Workload Identity token: a Kubernetes service
+    # account in GKE_NAMESPACE (not a Google service account) whose principal
+    # has object access on the bucket. The task container's own credentials
+    # (HOST_ADC) upload and download, so they need object access too.
+    GKE_STAGING_BUCKET: ${GKE_STAGING_BUCKET:-}
+    GKE_POD_SERVICE_ACCOUNT: ${GKE_POD_SERVICE_ACCOUNT:-}
+    KUBECONFIG: /root/.kube/config
+    CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE: /root/.config/gcloud/application_default_credentials.json
+    CLAUDE_CODE_USE_VERTEX: '1'
+    ANTHROPIC_VERTEX_PROJECT_ID: ${VERTEXAI_PROJECT:-tpu-nexus-767207}
+    CLOUD_ML_REGION: ${VERTEXAI_LOCATION:-global}
+    ANTHROPIC_DEFAULT_OPUS_MODEL: claude-opus-5-5[1m]
+    ANTHROPIC_DEFAULT_SONNET_MODEL: claude-opus-5-5[1m]
+    CLAUDE_CODE_SUBAGENT_MODEL: claude-opus-5-5[1m]
+    CLAUDE_CODE_SUBAGENT_MODEL_FORCE: '1'
+    GOOGLE_APPLICATION_CREDENTIALS: /root/.config/gcloud/application_default_credentials.json
+    VERTEXAI_PROJECT: ${VERTEXAI_PROJECT:-tpu-nexus-767207}
+    VERTEXAI_LOCATION: ${VERTEXAI_LOCATION:-global}
+    # Hugging Face, for the onboarding datasets; unset unless exported.
+    HF_TOKEN: ${HF_TOKEN:-}
+    HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
+    HF_MODEL_URL: ${HF_MODEL_URL:-https://huggingface.co/Qwen/Qwen3-0.6B}
+    # Recorded in the trial lock, so an uploaded result names the commit it
+    # came from; run.py resolves it, empty when it cannot read git. No branch:
+    # a branch name can name the product to the baseline agent.
+    EVAL_GIT_COMMIT: ${EVAL_GIT_COMMIT:-}

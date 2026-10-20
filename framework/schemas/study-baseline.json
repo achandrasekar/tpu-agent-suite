@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Study Baseline",
+  "description": "The measurement every arm in the study is compared against. Set once, before any arm is judged, because a delta without a baseline is a number with nothing on the other side of the minus sign.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["execution_id", "metric", "profile", "fingerprint"],
+  "properties": {
+    "execution_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The execution that produced this measurement, so a later reader can locate it."
+    },
+    "metric": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "value", "replicates", "provenance"],
+      "description": "Must name the protocol's primary metric. A baseline in some other unit is not a baseline for this study.",
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "value": { "type": "number" },
+        "unit": { "type": "string" },
+        "replicates": { "type": "integer", "minimum": 1 },
+        "provenance": {
+          "type": "string",
+          "enum": ["measured", "inferred", "modeled", "projected"],
+          "description": "Checked in code: a baseline must be `measured`. Comparing every arm against a modelled number means the whole study is measuring its own prediction."
+        }
+      }
+    },
+    "profile": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Path to the profile captured alongside the baseline. Required, not optional. Without it the first round has no per-op attribution, so it cannot rank arms by headroom and falls back to guessing which layer to attack -- which is the failure the whole design exists to avoid."
+    },
+    "fingerprint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commit_sha", "config_digest", "cell"],
+      "description": "What this baseline is a baseline OF. Recorded so a later study can tell whether this one is reusable rather than re-measuring something that already exists -- an end-to-end run costs hours, so the answer matters.",
+      "properties": {
+        "commit_sha": { "type": "string", "minLength": 1 },
+        "config_digest": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Digest of the serving or training configuration. Matching on a hash is only as good as the normalisation under it, so the scheme must be stated wherever it is produced."
+        },
+        "cell": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The measurement cell, as topology and workload shape. The same sha and config on different hardware is a different baseline."
+        }
+      }
+    },
+    "adopted_from_run": {
+      "type": "string",
+      "description": "Set when this baseline was reused rather than measured by this study. An adopted baseline must be visibly adopted: a silently reused number is how a study ends up comparing against something nobody can locate."
+    }
+  },
+  "examples": [
+    {
+      "execution_id": "j-5ec5dc82",
+      "metric": {
+        "name": "output_tokens_per_s",
+        "value": 37400.38,
+        "unit": "tok/s",
+        "replicates": 3,
+        "provenance": "measured"
+      },
+      "profile": "baseline/xplane.pb",
+      "fingerprint": {
+        "commit_sha": "5791a5d8c0",
+        "config_digest": "sha256:9f2c1e",
+        "cell": "v6e-2x2x1/8192-1024/c256"
+      }
+    }
+  ]
+}

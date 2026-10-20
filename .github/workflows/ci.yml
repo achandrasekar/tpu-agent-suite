@@ -1,0 +1,274 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+name: ci
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  detect-changes:
+    name: detect-changes
+    runs-on: ubuntu-latest
+    outputs:
+      ci_modified: ${{ steps.check_changes.outputs.ci_modified }}
+    steps:
+      - name: Check for package/framework changes
+        id: check_changes
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            if (context.eventName !== 'pull_request') {
+              core.info('Push event on branch; running all CI jobs.');
+              core.setOutput('ci_modified', 'true');
+              return;
+            }
+
+            const prNumber = context.payload.pull_request.number;
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+
+            const files = await github.paginate(
+              github.rest.pulls.listFiles,
+              { owner, repo, pull_number: prNumber }
+            );
+            const filePaths = files.map(f => f.filename);
+            const hasRelevantChanges = filePaths.some(f =>
+              f.startsWith('framework/') ||
+              f.startsWith('package/') ||
+              f.startsWith('eval/') ||
+              f === 'Makefile' ||
+              f === 'cicd-requirements.txt' ||
+              f === '.coveragerc' ||
+              f.startsWith('.github/workflows/ci.yml')
+            );
+
+            core.info(`PR #${prNumber} modified files: ${filePaths.length}`);
+            core.info(`Relevant modifications detected: ${hasRelevantChanges}`);
+            core.setOutput('ci_modified', hasRelevantChanges ? 'true' : 'false');
+
+  # Structural + enforced verification for package structure
+  verify:
+    name: verify
+    needs: detect-changes
+    if: needs.detect-changes.outputs.ci_modified == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+      - name: Set up Python
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: pip install -r cicd-requirements.txt
+      - name: Verify package
+        run: make verify
+      - name: Verify experimental package
+        run: make verify-experimental
+      # A knowledge base change on a PR must come with a log.md entry.
+      - name: Knowledge base log entry
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: make validate-kb KB_BASE="origin/$BASE_REF"
+
+  # Framework and package unit tests
+  test:
+    name: test
+    needs: detect-changes
+    if: needs.detect-changes.outputs.ci_modified == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Set up Python
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
+        with:
+          python-version: '3.12'
+      - name: Install test dependencies
+        run: pip install -r cicd-requirements.txt
+      - name: Framework tests
+        run: make test-framework
+      # `if: always()` so a framework failure does not hide the package results.
+      - name: Package tests
+        if: always()
+        run: make test-package
+      # The eval task's verdict rules: three of them disqualify a result the
+      # numbers alone would accept, and no evaluation run has ever exercised
+      # them, so these tests are the only thing holding those paths.
+      - name: Eval tests
+        if: always()
+        run: make test-eval
+      # The index's resolve and search suites; an index entry that took `v6e-8`
+      # from the v6e page went unnoticed while they ran only locally.
+      - name: Knowledge base index tests
+        if: always()
+        run: make test-knowledge-base
+
+  build:
+    name: build
+    needs: detect-changes
+    if: needs.detect-changes.outputs.ci_modified == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Set up Python
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: pip install -r cicd-requirements.txt
+      - name: Build all harness distributions
+        run: make build
+
+  coverage:
+    name: coverage
+    needs: detect-changes
+    if: needs.detect-changes.outputs.ci_modified == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+      - name: Set up Python
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
+        with:
+          python-version: '3.12'
+      - name: Install coverage tooling
+        run: pip install -r cicd-requirements.txt
+      - name: Coverage floor
+        run: make coverage
+      - name: Publish coverage to run summary
+        if: always()
+        run: |
+          {
+            echo '## Framework coverage'
+            echo
+            echo '```'
+            python3 -m coverage report --rcfile=.coveragerc || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Coverage of changed lines
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: make coverage-diff DIFF_BASE="origin/$BASE_REF"
+
+  # Package content linting checks enforced by ci-gate.
+  lint:
+    name: lint
+    needs: detect-changes
+    if: needs.detect-changes.outputs.ci_modified == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Set up Python
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: pip install -r cicd-requirements.txt
+      - name: Content lint (annotations)
+        run: python3 framework/compiler.py lint package --output-format github
+      - name: Publish findings to run summary
+        if: always()
+        run: |
+          {
+            echo '## Content lint'
+            echo
+            echo '```'
+            python3 framework/compiler.py lint package || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Gating job: this is the single status check to require in GitHub Rulesets.
+  # It enforces that verify, test, build, coverage, and lint must pass.
+  # Non-code/package PRs pass cleanly and immediately.
+  ci-gate:
+    name: ci-gate
+    runs-on: ubuntu-latest
+    needs: [detect-changes, verify, test, build, coverage, lint]
+    if: always()
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - name: Evaluate CI Gate
+        env:
+          DETECT_CHANGES_RESULT: ${{ needs.detect-changes.result }}
+          CI_MODIFIED: ${{ needs.detect-changes.outputs.ci_modified }}
+          VERIFY_RESULT: ${{ needs.verify.result }}
+          TEST_RESULT: ${{ needs.test.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          COVERAGE_RESULT: ${{ needs.coverage.result }}
+          LINT_RESULT: ${{ needs.lint.result }}
+        run: |
+          # 1. If change detection failed, fail the gate
+          if [[ "$DETECT_CHANGES_RESULT" != "success" ]]; then
+            echo "Change detection failed or was cancelled."
+            exit 1
+          fi
+
+          # 2. If no relevant files modified, pass immediately
+          if [[ "$CI_MODIFIED" != "true" ]]; then
+            echo "No relevant files modified. CI gate passed."
+            exit 0
+          fi
+
+          # 3. Ensure all required checks succeeded
+          FAILED=()
+          for job in verify test build coverage lint; do
+            result=""
+            case $job in
+              verify) result="$VERIFY_RESULT" ;;
+              test) result="$TEST_RESULT" ;;
+              build) result="$BUILD_RESULT" ;;
+              coverage) result="$COVERAGE_RESULT" ;;
+              lint) result="$LINT_RESULT" ;;
+            esac
+
+            if [[ "$result" != "success" ]]; then
+              echo "Required job '$job' did not succeed (status: $result)"
+              FAILED+=("$job")
+            else
+              echo "Required job '$job' passed"
+            fi
+          done
+
+          if [ ${#FAILED[@]} -gt 0 ]; then
+            echo ""
+            echo "CI gate failed. The following required checks must pass: ${FAILED[*]}"
+            exit 1
+          fi
+
+          echo "All required CI checks passed successfully"
+
+  # Temporary alias job for zero-downtime transition while GitHub Ruleset 20877680
+  # is updated from nexus-gate to ci-gate. Remove once ruleset requires ci-gate.
+  nexus-gate:
+    name: nexus-gate
+    runs-on: ubuntu-latest
+    needs: [ci-gate]
+    if: always()
+    steps:
+      - run: test "${{ needs.ci-gate.result }}" = "success"

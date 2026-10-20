@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "sharding-executor-request.json",
+  "title": "tpu-sharding Executor Request",
+  "description": "Delegation payload from orchestrator to tpu-sharding-executor.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "run_id",
+    "iteration",
+    "backend"
+  ],
+  "properties": {
+    "run_id": {
+      "type": "string",
+      "pattern": "^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}$",
+      "description": "Session run identifier namespace."
+    },
+    "iteration": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Zero-based iteration index to execute."
+    },
+    "configuration_payload": {
+      "type": "string",
+      "description": "Baseline configuration parameters or shorthand for initial recipe generation in Run 0."
+    },
+    "recipe_artifact": {
+      "type": "string",
+      "description": "Relative artifact path to recipe script or configuration to execute (e.g., '1/recipe_1.sh')."
+    },
+    "backend": {
+      "type": "string",
+      "description": "Compute execution backend (e.g., 'k8s', 'slurm', 'local')."
+    },
+    "model": {
+      "type": "string",
+      "description": "Target model identifier (e.g., 'qwen3.5-397b-a17b')."
+    },
+    "hardware_topology": {
+      "type": "string",
+      "description": "TPU generation and slice topology (e.g., 'v6e_2x2x1', 'v5e_2x2x1')."
+    },
+    "execution_timeout_seconds": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 3600,
+      "description": "Per-run execution timeout in seconds (default: 3600)."
+    },
+    "cluster_cell": {
+      "type": "string",
+      "description": "Optional cluster cell or resource allocation pool name."
+    }
+  },
+  "examples": [
+    {
+      "run_id": "20260921T120000Z-abcdef012345",
+      "iteration": 0,
+      "configuration_payload": "Baseline sharding configuration with FSDP",
+      "backend": "k8s",
+      "model": "qwen3.5-397b-a17b",
+      "hardware_topology": "v6e_2x2x1",
+      "execution_timeout_seconds": 3600,
+      "cluster_cell": "us-central1-a"
+    },
+    {
+      "run_id": "20260921T120000Z-abcdef012345",
+      "iteration": 1,
+      "recipe_artifact": "1/recipe_1.sh",
+      "backend": "k8s",
+      "model": "qwen3.5-397b-a17b",
+      "hardware_topology": "v6e_2x2x1",
+      "execution_timeout_seconds": 3600,
+      "cluster_cell": "us-central1-a"
+    }
+  ]
+}

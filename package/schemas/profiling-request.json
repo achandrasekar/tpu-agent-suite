@@ -1,0 +1,197 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "profiling-request.json",
+  "title": "tpu-diagnostics Request",
+  "description": "Input payload for the tpu-diagnostics agent. A caller names existing profiles to read (`traces`), a workload to capture (`workload`), a running server to capture (`server`), or several -- read the given traces and capture a new one, as in a before/after comparison. The validator has no conditional keywords, so the agent itself returns `invalid_input` when none is given. Nothing here names an XProf subcommand or an XProf field: those change between nightlies, and the agent reads them from the skill that ships with the pinned wheel.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "prompt",
+    "run_id"
+  ],
+  "properties": {
+    "prompt": {
+      "type": "string",
+      "description": "What to find out, in the caller's words. The agent still reads this for anything the typed fields below do not capture, such as an extra report section or what to compare."
+    },
+    "run_id": {
+      "type": "string",
+      "pattern": "^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}$",
+      "description": "Session run id, assigned at session start and passed verbatim. Required: the report lands under this run's artifact root and the result carries the value, and a subagent never sees SessionStart, so the delegation is its only source. Started directly the agent allocates its own, but then nothing delegates to it and this contract does not apply."
+    },
+    "traces": {
+      "type": "array",
+      "description": "Existing profiles to read, in the order the result should list them. Each is read as given and never replaced by a capture: an empty or partial one fails the call.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Where the profile is, local or `gs://`: a logdir (newest session auto-discovered, e.g. `<profile_dir>/<phase>` from a phased vLLM capture), a phased profile root holding `<phase>/plugins/profile/` subdirectories, a run directory under `plugins/profile/`, or one `.xplane.pb`."
+          },
+          "session_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The session to read within `path`, when it is a logdir holding more than one. Omit to read the newest."
+          },
+          "label": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The caller's name for this trace (e.g. 'baseline', 'run A'), echoed in the result so a comparison reads back without matching paths."
+          }
+        }
+      }
+    },
+    "workload": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Path to a runnable script to capture a profile from. When present it is always captured, in addition to any `traces`. It must construct its own inputs and warm itself up: a kernel definition is not a workload."
+    },
+    "server": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "job_id",
+        "port"
+      ],
+      "description": "A deployment that is already serving, captured where it runs through its own profiler endpoints and never restarted. Only a server started with its profiler armed can be captured this way -- the onboarding recipe arms it on every vLLM server, at no cost until the first `/start_profile` -- and one that was not comes back `needs_input` rather than restarted, because a restart can lose the slice on a preemptible cluster and discards the baseline the caller may still be comparing against. The agent never stops a server given here.",
+      "properties": {
+        "job_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The serving job's id, as `submit` printed it: what the agent forwards the port of and fetches the profile from."
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "description": "The port the server listens on inside the job."
+        },
+        "files_port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "description": "The port the onboarding launcher serves the profile directory on inside the job, so a trace can be fetched while the server runs: the GKE job backend's `job artifacts` cannot read a running pod's files. Omit for the launcher's default, 8790."
+        },
+        "profiler_dir": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Where the server's profiler writes, relative to the job's working directory. Omit when the server was started by the onboarding launcher, which writes to 'artifacts/vllm_profile'."
+        },
+        "load": {
+          "type": "string",
+          "description": "The traffic to send between `/start_profile` and `/stop_profile`: a benchmark command, or the request shape and concurrency in prose. Omit for a handful of requests shaped like the workload."
+        },
+        "serving_config": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "deployments_json"
+          ],
+          "description": "The configuration the server was launched with, copied from the onboarding result's `output_files` as the paths it returned -- the same object tpu-kernel-development's request takes as `serving_config`. The agent reads both files before it captures: they hold the launch flags it follows to trace a kernel to its file (e.g. the attention backend), the tensor parallelism that says how many devices a complete capture covers, and the maximum context and sequence count the load has to stay within. Read only; the server is never restarted from them. Omit when the server was not launched by tpu-model-onboarding, and say in the `prompt` how it was launched instead.",
+          "properties": {
+            "deployments_json": {
+              "type": "string",
+              "minLength": 1,
+              "description": "The onboarding result's `output_files.deployments_json`, verbatim."
+            },
+            "launch_recipe": {
+              "type": "string",
+              "minLength": 1,
+              "description": "The onboarding result's `output_files.launch_recipe`, verbatim, when it returned one."
+            }
+          }
+        },
+        "image": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The container image the serving job runs, when it is not the compute profile's `image`: for example, a server that tpu-model-onboarding did not launch, or one submitted with `--image`. tpu-diagnostics runs its kernel-introspection job on this image beside the server, and records it as where the copied kernel came from. Omit when the server runs the compute profile's image, as every server tpu-model-onboarding launches does."
+        }
+      }
+    },
+    "workload_source": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Path to the workload's source, so time can be attributed to its lines."
+    },
+    "report_path": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Where to write the report, under the run's artifacts. Defaults to `<artifacts>/tpu-diagnostics/report.md`."
+    },
+    "fields": {
+      "type": "array",
+      "description": "Metric names to return for every trace, spelled as the caller will read them back from each trace's `metrics` (e.g. 'duty_cycle_percent'). Deliberately an open list: callers ask for different quantities, and the tools that produce them change between XProf versions. The agent returns only what it is asked for.",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "top_ops": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "How many HLO ops by device time the report should list per trace. They go in the report in the tool's own shape, not in the result."
+    }
+  },
+  "examples": [
+    {
+      "prompt": "Analyse the XProf profile of sharding run 3 and write the report.",
+      "run_id": "20260921T120000Z-abcdef012345",
+      "traces": [
+        {
+          "path": "/runs/20260921T120000Z-abcdef012345/artifacts/3/tensorboard",
+          "session_id": "2026_09_21_12_30_00"
+        }
+      ],
+      "report_path": "/runs/20260921T120000Z-abcdef012345/artifacts/3/tpu_profiling_report.md",
+      "fields": [
+        "duty_cycle_percent",
+        "mxu_utilization_percent",
+        "roofline_utilization",
+        "peak_hbm_gib",
+        "tc_idle_ms_average",
+        "sc_idle_ms_average",
+        "tc_infeed_ms_average"
+      ],
+      "top_ops": 30
+    },
+    {
+      "prompt": "Which run has the shorter step, by how much, and what dominates device time in the slower one?",
+      "run_id": "20260921T120000Z-abcdef012345",
+      "traces": [
+        {
+          "path": "/workspace/profiles/run-a",
+          "label": "A"
+        },
+        {
+          "path": "/workspace/profiles/run-b",
+          "label": "B"
+        }
+      ],
+      "fields": [
+        "device_type",
+        "step_time_ms"
+      ],
+      "top_ops": 1
+    },
+    {
+      "prompt": "Profile the running Qwen3-32B server at batch 8 decode and rank the hot ops with their fusion context.",
+      "run_id": "20260921T120000Z-abcdef012345",
+      "server": {
+        "job_id": "qwen3-32b-serve-7f3a",
+        "port": 8000,
+        "load": "8 concurrent requests, 128 input tokens, 512 output tokens",
+        "serving_config": {
+          "deployments_json": "/runs/20260921T120000Z-abcdef012345/artifacts/tpu-model-onboarding/inference/deployments.json",
+          "launch_recipe": "/runs/20260921T120000Z-abcdef012345/artifacts/tpu-model-onboarding/inference/launch_vllm.sh"
+        }
+      },
+      "top_ops": 10
+    }
+  ]
+}

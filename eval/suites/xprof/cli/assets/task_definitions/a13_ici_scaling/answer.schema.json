@@ -1,0 +1,53 @@
+{
+  "task": "a13_ici_scaling",
+  "title": "Decompose multi-device time budget and diagnose interconnect boundness",
+  "answer_file": "answer.json",
+  "pass_threshold": 12,
+  "fields": {
+    "dominant_scaled_component": {
+      "type": "enum",
+      "values": [
+        "ici",
+        "compute",
+        "hbm",
+        "barrier"
+      ],
+      "weight": 3
+    },
+    "scaled_ici_time_ms": {
+      "type": "number",
+      "tol_rel": 0.02,
+      "weight": 3
+    },
+    "scaled_compute_time_ms": {
+      "type": "number",
+      "tol_rel": 0.02,
+      "weight": 3
+    },
+    "ici_to_compute_ratio": {
+      "type": "number",
+      "tol_rel": 0.05,
+      "weight": 3
+    },
+    "limiting_factor": {
+      "type": "enum",
+      "values": [
+        "interconnect",
+        "compute",
+        "memory_bandwidth",
+        "host_cpu"
+      ],
+      "weight": 3
+    },
+    "recommended_axis": {
+      "type": "enum",
+      "values": [
+        "sharding",
+        "fusion",
+        "batching",
+        "recomputation"
+      ],
+      "weight": 2
+    }
+  }
+}

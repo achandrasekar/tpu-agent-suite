@@ -1,0 +1,62 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT079 from the "TPU Knowledge Q&A" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat079
+    prompt: |-
+      I need a cost line in our overlap plan confirmed before it ships, the
+      redesign work is already scheduled. Setup, one ring of 16 chips on v5e,
+      bf16 all reduce. We measured three sizes warm, 512KB at 11.7 microseconds,
+      2MB at 46.5, 8MB at 186. Clean straight line, 23.3 microseconds per MB.
+      Today the backward pass does one bucketed 8MB all reduce, 186 microseconds,
+      badly overlapped. The plan splits it into 96 per layer all reduces of about
+      85KB each so every one can hide behind its own layer's compute. The sheet
+      prices that with the line, 96 times about 2 microseconds is 195, so it says
+      splitting costs us basically nothing over the bucket even before overlap,
+      and separately it prices a future 32MB bucket at 745 using the same line.
+      Confirm both numbers or correct them, and if the split plan is wrong, tell
+      me what bucket size we should use instead.
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT079
+      category: TPU Knowledge Q&A
+      sub_category: Roofline and performance modelling
+      difficulty: Hard
+      has_code: 'No'
+      baseline_result: Partially Solved
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        A good answer confirms the 32MB number and rejects the split number by importing the floor the data cannot show, roughly one microsecond per hop times X over 2, about 8.3 microseconds on a 16 ring, cost is the max of floor and line, crossover near 360KB. So 85KB costs about 8.3 not 2, the split prices near 800 microseconds, about 4x the bucket, while 745 for 32MB stands.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        The model confirmed the 32MB price, rejected the split price by naming the through the origin extrapolation, and imported a latency floor unprompted, but anchored the floor on the 512KB point as the knee when its own arithmetic puts that point on the bandwidth line, then inflated it to 11 to 12 microseconds with invented per hop physics. The book's dispatch framing gives about 8.3 on a 16 ring with the crossover near 360KB, so every priced number rides the wrong anchor, 85KB at 11.7 not 8.3, the split at 1120 not about 800, and half MB buckets wrongly called marginal. Two more fabrications are checkable from its own output, it claims a full report saved to overlap_analysis.md with tools off, and its 30 serialized steps never square with its 11 to 12 floor at any per hop latency it names, which shows the anchor was reverse engineered from the data point rather than derived.
+      weight: 0.5

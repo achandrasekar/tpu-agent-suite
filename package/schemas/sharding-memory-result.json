@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "sharding-memory-result.json",
+  "title": "tpu-sharding Memory Contributor Result",
+  "description": "Deliverable from tpu-sharding-memory-contributor.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "run_id",
+    "status",
+    "summary"
+  ],
+  "properties": {
+    "run_id": {
+      "type": "string",
+      "pattern": "^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}$",
+      "description": "Session run identifier namespace."
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "completed",
+        "duplicate",
+        "invalid_input",
+        "needs_input",
+        "failed"
+      ],
+      "description": "Outcome of memory ingestion."
+    },
+    "summary": {
+      "type": "string",
+      "description": "Prose confirmation of the ingestion or deduplication action."
+    },
+    "entry_id": {
+      "type": "string",
+      "description": "Identifier or title of the newly created or updated memory entry."
+    },
+    "failure_reason": {
+      "type": "string",
+      "description": "Explanation if ingestion failed."
+    },
+    "error_message": {
+      "type": "string",
+      "description": "Detailed error diagnostic or traceback if status is failed."
+    }
+  },
+  "examples": [
+    {
+      "run_id": "20260921T120000Z-abcdef012345",
+      "status": "completed",
+      "summary": "Successfully ingested rule for Qwen3.5-397B ep=8 on v6e_2x2x1 with tags [SHARDING, MOE].",
+      "entry_id": "qwen35-397b-v6e-ep8-collective-opt"
+    }
+  ]
+}

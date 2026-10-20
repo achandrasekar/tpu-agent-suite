@@ -1,0 +1,56 @@
+{
+  "task": "a3_headroom",
+  "title": "How much is left on the table?",
+  "answer_file": "answer.json",
+  "pass_threshold": 10,
+  "fields": {
+    "measured_flop_rate_gflops": {
+      "type": "number",
+      "tol_rel": 0.01,
+      "weight": 1
+    },
+    "optimal_flop_rate_gflops": {
+      "type": "number",
+      "tol_rel": 0.01,
+      "weight": 1
+    },
+    "max_speedup_at_current_ai": {
+      "type": "number",
+      "tol_rel": 0.02,
+      "weight": 3,
+      "grounded": false
+    },
+    "peak_memory_usage_gib": {
+      "type": "number",
+      "tol_rel": 0.01,
+      "weight": 1
+    },
+    "memory_capacity_gib": {
+      "type": "number",
+      "tol_rel": 0.01,
+      "weight": 1
+    },
+    "hbm_free_gib": {
+      "type": "number",
+      "tol_abs": 0.1,
+      "weight": 1
+    },
+    "limiting_resource": {
+      "type": "enum",
+      "weight": 2,
+      "grounded": false,
+      "values": [
+        "hbm_bandwidth",
+        "compute",
+        "memory_capacity",
+        "interconnect",
+        "host"
+      ]
+    },
+    "would_larger_batch_fit": {
+      "type": "bool",
+      "weight": 1,
+      "grounded": false
+    }
+  }
+}

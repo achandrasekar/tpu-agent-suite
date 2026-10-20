@@ -1,0 +1,69 @@
+# Example environment configuration for Claude Code Sandbox.
+#
+# INSTRUCTIONS:
+#   Fill this file up with your target cluster/environment values and rename
+#   (or copy) it to eval/env.txt for a working environment inside the sandbox:
+#
+#     cp eval/env_example.txt eval/env.txt
+#     # Then edit eval/env.txt with your configuration.
+#
+# When sandbox.sh starts, it sources eval/env.txt on the host and writes the
+# resolved values into the container's environment file, which every bash shell
+# sources. The file itself is not copied into the container. Values are expanded
+# on the host, so $HOME is your home directory, not /root.
+
+# ==============================================================================
+# 1. Claude Code & Vertex AI Configuration
+# ==============================================================================
+# Tells Claude Code that it is running inside an isolated sandbox,
+# unlocking --dangerously-skip-permissions.
+export IS_SANDBOX=1
+
+# Instruct Claude Code to route through Google Cloud Vertex AI
+export CLAUDE_CODE_USE_VERTEX=1
+export ANTHROPIC_VERTEX_PROJECT_ID="tpu-nexus-767207"
+export CLOUD_ML_REGION="global"
+export ANTHROPIC_VERTEX_BASE_URL="https://aiplatform.googleapis.com/v1"
+
+# Path inside the container where ADC credentials are bind-mounted
+export GOOGLE_APPLICATION_CREDENTIALS="/root/.config/gcloud/adc.json"
+
+# ==============================================================================
+# 2. Kubernetes / GKE Cluster Configuration
+# ==============================================================================
+# No KUBECONFIG here: the sandbox mounts your kubeconfig and sets it itself.
+
+# Cluster coordinates
+export GKE_PROJECT="cloud-tpu-shared-capacity"
+export GKE_LOCATION="us-central1"
+export GKE_CLUSTER="bodaborg-tpu7x-nap"
+
+# Namespace and Kueue Queue (namespace determines quota)
+export GKE_NAMESPACE="priority-dev"
+export GKE_QUEUE="default"
+
+# Optional: GCS staging for inputs over 900 KiB and outputs over 1 MiB, such as
+# a kernel run's profile trace. With GKE_POD_SERVICE_ACCOUNT the pod moves them
+# with its own Workload Identity token; that Kubernetes service account needs
+# roles/storage.objectAdmin on the bucket (docs/install.md, "On a cluster with
+# Workload Identity"). Use a dedicated bucket that holds nothing else: every
+# agent under test can read and write it. An exported empty value is a value,
+# not a fallback to a config's default, so don't export them empty.
+# export GKE_STAGING_BUCKET="gs://<bucket>"
+# export GKE_POD_SERVICE_ACCOUNT="<kubernetes service account in GKE_NAMESPACE>"
+
+# ==============================================================================
+# 3. TPU Hardware & Workload Docker Image
+# ==============================================================================
+# TPU accelerator type and topology selector labels for pod scheduling
+export GKE_TPU_ACCELERATOR="tpu7x"
+export GKE_TPU_TOPOLOGY="2x2x1"
+
+# run.py only. bodaborg-tpu7x-nap allows its IP endpoint from authorized
+# networks alone; from a host outside them (a GCE VM in another project, say)
+# the API times out. Its DNS endpoint is gated by IAM instead, so set this to
+# mint the run's kubeconfig against it.
+# export GKE_DNS_ENDPOINT=1
+
+# The Docker image containing PyTorch and torch_tpu to run on the TPU node
+export TASK_DOCKER="us-docker.pkg.dev/tpu-nexus-767207/nexus-dev/nexus-tpu:latest"

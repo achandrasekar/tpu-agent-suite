@@ -1,0 +1,227 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT147 from the "GPU Kernel to PyTorch API conversion" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat147
+    prompt: |-
+      I am porting this MXFP$ quantizer to TPU. Can you rewrite it in standard PyTorch for OpenXLA while preserving its outputs and keeping the computation on device?
+      @triton.jit
+      def _compute_quant_and_scale(src_tensor, valid_src_mask):
+      BLOCK_SIZE_OUT_DIM: tl.constexpr = src_tensor.shape[0]
+      BLOCK_SIZE_QUANT_DIM: tl.constexpr = src_tensor.shape[1]
+      BLOCK_SIZE_QUANT_MX_SCALE: tl.constexpr = src_tensor.shape[1] // 32
+      # Explicit cast to fp32 since most ops are not supported on bfloat16. We
+      # avoid needless conversions to and from bf16
+      f32_tensor = src_tensor.to(tl.float32)
+      abs_tensor = tl.abs(f32_tensor)
+      abs_tensor = tl.where(
+          valid_src_mask, abs_tensor, -1.0
+      )  # Don't consider padding tensors in scale computation
+      abs_tensor = tl.reshape(
+          abs_tensor, [BLOCK_SIZE_OUT_DIM, BLOCK_SIZE_QUANT_MX_SCALE, 32]
+      )
+      max_val = tl.max(abs_tensor, axis=2, keep_dims=True)
+      # Round-to-nearest-even block scale (OCP MX spec), matching hardware/aiter
+      # MXFP4 quantizers: compute 2 ** (floor(log2(rounding(max_abs(v)))) - max_exp).
+      max_val = max_val.to(tl.int32, bitcast=True)
+      max_val = (max_val + 0x200000).to(tl.uint32, bitcast=True) & 0x7F800000
+      max_val = max_val.to(tl.float32, bitcast=True)
+      # Add epsilon to prevent log2(0) = -inf when max_val is zero (all-zero input block)
+      eps = tl.where(max_val == 0.0, 2 ** (-126), 0.0)
+      scale_e8m0_unbiased = tl.log2(max_val + eps).floor() - 2
+      scale_e8m0_unbiased = tl.clamp(scale_e8m0_unbiased, min=-127, max=127)
+      dequant_scale_rounded = tl.exp2(scale_e8m0_unbiased)
+      dequant_scale_exponent = dequant_scale_rounded.to(tl.uint32, bitcast=True)
+
+      dequant_scale_rounded = dequant_scale_exponent.to(tl.float32, bitcast=True)
+      quant_scale = tl.where(dequant_scale_rounded == 0, 0, 1.0 / dequant_scale_rounded)
+
+      f32_tensor = tl.reshape(
+          f32_tensor, [BLOCK_SIZE_OUT_DIM, BLOCK_SIZE_QUANT_MX_SCALE, 32]
+      )
+      quant_tensor = f32_tensor * quant_scale
+
+      # Reshape the tensors after scaling
+      quant_tensor = quant_tensor.reshape([BLOCK_SIZE_OUT_DIM, BLOCK_SIZE_QUANT_DIM])
+      # Set the invalid portions of the tensor to 0. This will ensure that any
+      # padding tensors are 0 in the mx format.
+      quant_tensor = tl.where(valid_src_mask, quant_tensor, 0)
+      dequant_scale_exponent = dequant_scale_exponent.reshape(
+          [BLOCK_SIZE_OUT_DIM, BLOCK_SIZE_QUANT_MX_SCALE]
+      )
+
+      # First, we simply extract the exponent part of the scales and store the result
+      dequant_scale_exponent = (dequant_scale_exponent >> 23).to(tl.uint8)
+      # Now we must convert the tensor to packed e2m1 (mxfp4).
+      quant_tensor = quant_tensor.to(tl.uint32, bitcast=True)
+      signs = quant_tensor & 0x80000000
+      exponents = (quant_tensor >> 23) & 0xFF
+      mantissas = quant_tensor & 0x7FFFFF
+
+      # 0.25 <= x < 0.75 maps to 0.5, a denormal number
+      E8_BIAS = 127
+      E2_BIAS = 1
+      # Move implicit bit 1 at the beginning to mantissa for denormals. Bits
+      # shifted out are OR-reduced into the LSB as a sticky bit, so the
+      # round-to-even logic below can tell an exact tie from a value that is
+      # merely close to one.
+      adjusted_exponents = tl.core.sub(E8_BIAS, exponents + 1, sanitize_overflow=False)
+      folded_mantissas = 0x400000 | (mantissas >> 1)
+      denormal_mantissas = folded_mantissas >> adjusted_exponents
+      denormal_mantissas |= (
+          (denormal_mantissas << adjusted_exponents) != folded_mantissas
+      ).to(tl.uint32)
+      mantissas = tl.where(exponents < E8_BIAS, denormal_mantissas, mantissas)
+
+      # For normal numbers, we change the bias from 127 to 1, and for subnormals,
+      # we keep exponent as 0.
+      exponents = tl.maximum(exponents, E8_BIAS - E2_BIAS) - (E8_BIAS - E2_BIAS)
+
+      # Combine sign, exponent, and mantissa, rounding to nearest with ties
+      # broken to even (OCP MX spec, matching hardware/aiter MXFP4
+      # quantizers) via the standard "add a rounding bias, then truncate"
+      # trick: the bias's LSB is the kept mantissa bit, so an exact tie
+      # rounds to whichever candidate is even, while any lower (sticky) bit
+      # being set always rounds up.
+      rounding_bias = ((mantissas >> 22) & 1) + 0x1FFFFF
+      rounded_mantissa = (mantissas + rounding_bias) >> 22  # in {0, 1, 2}
+      e2m1_tmp = tl.minimum((exponents << 1) + rounded_mantissa, 0x7)
+      e2m1_value = ((signs >> 28) | e2m1_tmp).to(tl.uint8)
+
+      e2m1_value = tl.reshape(
+          e2m1_value, [BLOCK_SIZE_OUT_DIM, BLOCK_SIZE_QUANT_DIM // 2, 2]
+      )
+      evens, odds = tl.split(e2m1_value)
+      out_tensor = evens | (odds << 4)
+
+      return out_tensor, dequant_scale_exponent
+      @triton.jit
+      def _downcast_to_mxfp(
+      mx_tensor_ptr,
+      stride_mxt_outer,
+      stride_mxt_quant: tl.constexpr,
+      mx_scale_ptr,
+      stride_mx_scale_outer,
+      stride_mx_scale_quant,
+      src_ptr,
+      stride_src_outer,
+      stride_src_quant,
+      outer_dim,
+      quant_dim,
+      BLOCK_SIZE_OUT_DIM: tl.constexpr,
+      BLOCK_SIZE_QUANT_DIM: tl.constexpr,
+      ):
+      tl.static_assert(
+      stride_mxt_quant == 1, f"Output stride, {stride_mxt_quant=} must be 1."
+      )
+      tl.static_assert(
+      BLOCK_SIZE_QUANT_DIM % 32 == 0,
+      f"{BLOCK_SIZE_QUANT_DIM=} must be a multiple of 32",
+      )
+      # uint8 signifies two fp4 e2m1 values packed into a single byte
+      tl.static_assert(
+          mx_tensor_ptr.dtype.element_ty == tl.uint8,
+          f"Invalid {mx_tensor_ptr.dtype.element_ty=}. Must be uint8.",
+      )
+
+      src_dtype: tl.constexpr = src_ptr.dtype.element_ty
+      tl.static_assert(
+          mx_scale_ptr.dtype.element_ty == tl.uint8,
+          f"{mx_scale_ptr.dtype.element_ty=} must be uint8",
+      )
+      tl.static_assert(
+          (src_dtype == tl.bfloat16) or (src_dtype == tl.float16),
+          f"{src_dtype=} must be bfloat16 or float16",
+      )
+
+      outer_block = tl.program_id(0).to(tl.int64)
+      quant_block = tl.program_id(1).to(tl.int64)
+
+      BLOCK_SIZE_QUANT_MX_SCALE: tl.constexpr = BLOCK_SIZE_QUANT_DIM // 32
+      BLOCK_SIZE_QUANT_MX_TENSOR: tl.constexpr = BLOCK_SIZE_QUANT_DIM // 2
+
+      start_src_quant = quant_block * BLOCK_SIZE_QUANT_DIM
+      start_mx_scale_quant = quant_block * BLOCK_SIZE_QUANT_MX_SCALE
+      start_mx_quant = quant_block * BLOCK_SIZE_QUANT_MX_TENSOR
+      start_out = outer_block * BLOCK_SIZE_OUT_DIM
+
+      src_ptr += start_src_quant * stride_src_quant + start_out * stride_src_outer
+      mx_scale_ptr += (
+          start_mx_scale_quant * stride_mx_scale_quant + start_out * stride_mx_scale_outer
+      )
+      mx_tensor_ptr += start_mx_quant * stride_mxt_quant + start_out * stride_mxt_outer
+
+      offs_src_quant = tl.arange(0, BLOCK_SIZE_QUANT_DIM)[None, :].to(tl.int64)
+      offs_mxt_quant = tl.arange(0, BLOCK_SIZE_QUANT_MX_TENSOR)[None, :].to(tl.int64)
+      offs_scale_quant = tl.arange(0, BLOCK_SIZE_QUANT_MX_SCALE)[None, :].to(tl.int64)
+      offs_outer = tl.arange(0, BLOCK_SIZE_OUT_DIM)[:, None].to(tl.int64)
+
+      mask_src_quant = start_src_quant + offs_src_quant < quant_dim
+      mask_n = start_out + offs_outer < outer_dim
+      full_mask_src = mask_src_quant and mask_n
+
+      mask_mxt_quant = start_mx_quant + offs_mxt_quant < tl.cdiv(quant_dim, 2)
+      full_mask_mxt = mask_mxt_quant and mask_n
+
+      scale_mask_k = start_mx_scale_quant + offs_scale_quant < tl.cdiv(quant_dim, 32)
+      full_scale_mask = scale_mask_k and mask_n
+
+      src_tensor_offsets = (
+          offs_src_quant * stride_src_quant + offs_outer * stride_src_outer
+      )
+      mx_scale_offsets = (
+          offs_scale_quant * stride_mx_scale_quant + offs_outer * stride_mx_scale_outer
+      )
+      mx_tensor_offsets = (
+          offs_mxt_quant * stride_mxt_quant + offs_outer * stride_mxt_outer
+      )
+      src_tensor = tl.load(src_ptr + src_tensor_offsets, mask=full_mask_src)
+
+      out_tensor, scale_tensor = _compute_quant_and_scale(src_tensor, full_mask_src)
+
+      tl.store(mx_scale_ptr + mx_scale_offsets, scale_tensor, mask=full_scale_mask)
+      tl.store(mx_tensor_ptr + mx_tensor_offsets, out_tensor, mask=full_mask_mxt)
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT147
+      category: GPU Kernel to PyTorch API conversion
+      sub_category: Low precision handling in OpenXLA
+      difficulty: Moderate
+      has_code: 'Yes'
+      baseline_result: Partially Solved
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        The PyTorch conversion should reproduce the original kernel's packed uint8 values and uint8 scale codes for supported FP16/BF16 inputs, including noncontiguous tensors and partial final groups. This requires calculating a separate scale for each group of 32 values within a row using the source's FP32 arithmetic, with scale code 0 for all-zero groups. Quantization should then preserve round-to-nearest with ties to even, saturation, and sign bits, including negative zero, before packaging each pair with the earlier value in the low four bits and the next in the high four bits. For incomplete groups, padding should be masked so it cannot affect valid results, and only the required bytes and scales should be returned. For a supported input width K, each row must return (K+1)//2 packed uint8 bytes and (K+31)// 32 unint8 scale codes. Throughout this process, tensor computation should execute through OpenXLA without CPU transfers or fallback.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        The response closely follows the source's block-level scale calculation, rounding, sign handling, and nibble packing. However, it requires the input width to be divisible by 32, whereas the source applies that restriction to the processing tile and uses masking to support partial final groups. The translation therefore excludes inputs supported by the original kernel. The response also presents native XLA lowering for dtype views and torch.exp2 as guaranteed. That claim is not established by the supplied code alone and should be treated as pending verification in the target PyTorch/XLA version.
+      weight: 0.5

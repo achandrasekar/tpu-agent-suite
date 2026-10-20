@@ -1,0 +1,62 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT025 from the "TPU Knowledge Q&A" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat025
+    prompt: |-
+      I am training on TPU v6e with PyTorch/XLA.
+      x[mask] gives me a bounded dynamic tensor of all valid tokens and works without recompiling every batch as long as I keep its real length inside XLA.
+      The next operation requires the valid tokens to be packed in their original order into complete groups of 128. I must drop only the final incomplete group.
+      I currently do this:
+      valid_tokens = x[mask]
+      n = valid_tokens.shape[0]
+      grouped_len = (n // 128) * 128
+      grouped = valid_tokens[:grouped_len]
+      This causes a graph evaluation and then many recompilations because grouped_len changes between batches.
+      I cannot replace the packed tokens with a mask over the original padded tensor because that changes which tokens are grouped together.
+      I also cannot change the downstream operation to accept dummy groups. It requires an exactly sized packed tensor, and the number of valid tokens is only known after a TPU-side computation.
+      Why is bounded dynamic shape support not enough for this operation? Is there any way to keep the exact packed-token behavior without turning the real token count into a Python integer? If not, where should I move the grouping decision so I only compile a small fixed number of graphs?
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT025
+      category: TPU Knowledge Q&A
+      sub_category: PyTorch API code and OpenXLA behaviour
+      difficulty: Hard
+      has_code: 'Yes'
+      baseline_result: Partially Solved
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        The model must avoid dynamic loops and host-device synchronizations (.item()). It should use torch.arange to create a static boolean mask and mask invalid blocks with -inf prior to global_max reduction. Crucially, the model must account for XLA's select evaluation behavior (which evaluates both branches of a torch.where). To prevent inf/NaN numerical poisoning on the TPU, the model must mask the operands safely before performing unbounded mathematical operations like torch.exp, rather than computing the exponential first and masking the result afterward.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        Model understood the recompilation issue, but its bucketing fix changes the required behavior. A smaller bucket drops valid full groups, while a larger bucket needs padding. The request requires keeping every complete group and dropping only the final incomplete group.
+      weight: 0.5

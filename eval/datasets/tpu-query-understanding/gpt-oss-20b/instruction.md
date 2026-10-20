@@ -1,0 +1,1 @@
+Do tpu-model-onboarding for gpt oss 20b model. Check your env for details on locating TPUs as well as libraries for this task. I do not want to use torch_xla, given it is no longer a supported solution for TPUs

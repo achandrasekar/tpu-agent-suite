@@ -1,0 +1,117 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT112 from the "Kernel optimization" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat112
+    prompt: |-
+      Optimize the computation below into a fast Pallas kernel for TPU7x. q,k,v, and g have shape (2,256,8,128); beta has shape (2,256,8); initial_state has shape (2,8,128,128). All tensors are float32. Preserve the function signature, input layouts, and behavior. Match the reference with rtol=1e-4 and atol=1e-5.
+
+      import jax
+      import jax.numpy as jnp
+
+      def get_inputs():
+        keys = jax.random.split(jax.random.key(42), 6)
+        shape = (2,256,8,128)
+        q = jax.random.normal(keys[0],shape,dtype=jnp.float32)
+        k = jax.random.normal(keys[1],shape,dtype=jnp.float32)
+        q = q/jnp.linalg.norm(q,axis=-1,keepdims=True)
+        k = k/jnp.linalg.norm(k,axis=-1,keepdims=True)
+        v = jax.random.normal(keys[2],shape,dtype=jnp.float32)
+        g = -jax.random.uniform(keys[3],shape,dtype=jnp.float32,minval=0.001,maxval=0.05)
+        beta = jax.nn.sigmoid(jax.random.normal(keys[4],shape[:3],dtype=jnp.float32))
+        initial_state = 0.1 * jax.random.normal(keys[5],(2,8,128,128),dtype=jnp.float32)
+        return [q,k,v,g,beta,initial_state],[]
+
+      def computation(q,k,v,g,beta,initial_state):
+        orig_dtype, acc_dt = v.dtype, jnp.float32
+        B,T,H,K,V = *q.shape,v.shape[-1]
+        scale = K**-0.5
+        output_final_state = True
+
+      # [B, T, H, K] -> [B, H, T, K], cast to acc_dt
+        q, k, v, g = (jnp.transpose(x, (0, 2, 1, 3)).astype(acc_dt) for x in (q, k, v, g))
+        # q: [B, H, T, K]   k: [B, H, T, K]   v: [B, H, T, V]   g: [B, H, T, K]
+
+        # [B, T, H] -> [B, H, T]
+        beta = jnp.transpose(beta, (0, 2, 1)).astype(acc_dt)  # [B, H, T]
+
+        q = q * scale  # [B, H, T, K]
+
+        S = jnp.zeros((B, H, K, V), dtype=acc_dt)  # [B, H, K, V] hidden state
+        if initial_state is not None:
+            S += initial_state.astype(acc_dt)  # [B, H, K, V]
+        o = jnp.zeros((B, H, T, V), dtype=acc_dt)  # [B, H, T, V] output buffer
+
+        for i in range(T):
+            q_i = q[:, :, i]  # [B, H, K]
+            k_i = k[:, :, i]  # [B, H, K]
+            v_i = v[:, :, i]  # [B, H, V]
+            g_i = g[:, :, i]  # [B, H, K]
+            b_i = beta[:, :, i]  # [B, H]
+
+            # 1. Decay the state
+            # exp(g_i): [B, H, K] -> [B, H, K, 1] via broadcast
+            S = S * jnp.exp(g_i)[..., None]  # [B, H, K, V]
+
+            # 2. Delta rule update
+            # k_i[..., None]: [B, H, K, 1],  k_i[..., None] * S: [B, H, K, V]
+            v_predicted = (k_i[..., None] * S).sum(-2)  # [B, H, V]
+            residual = v_i - v_predicted  # [B, H, V]
+
+            # b_i[..., None] * k_i: [B, H, K],  einsum -> [B, H, K, V]
+            S = S + jnp.einsum("bhk,bhv->bhkv", b_i[..., None] * k_i, residual)  # [B, H, K, V]
+
+            # 3. Compute output: einsum [B,H,K] x [B,H,K,V] -> [B, H, V]
+            o = o.at[:, :, i].set(jnp.einsum("bhk,bhkv->bhv", q_i, S))  # [B, H, V]
+
+        final_state = S if output_final_state else None  # [B, H, K, V] or None
+        # [B, H, T, V] -> [B, T, H, V], cast back to orig_dtype
+        return jnp.transpose(o, (0, 2, 1, 3)).astype(orig_dtype), final_state
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT112
+      category: Kernel optimization
+      sub_category: Sequential and recurrent
+      difficulty: Hard
+      has_code: 'Yes'
+      baseline_result: Stumped
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        The expected TPU7x  Pallas implementation fuses state decay, key-state reduction, beta weighted update, and output projection, keeping the FP32 recurrent state on chip across all 256 timesteps and using bounded, pipelined tiles to limit intermediate memory traffic. It uses legal TPU block layouts, sufficient precision for reductions and dot products, and parallel execution of independent batch/head work while preserving temporal dependencies; an equivalent chunked formulation is also acceptable.
+
+        It also preserves the function signature and input layouts, uses the supplied initial state, applies exp(g) separately to each key channel before prediction and update, and computes each output from the updated state with queries scaled by 128**-0.5, returning FP32 output (2, 256,8,128). It compiles and executes on TPU7x, matches both returned tensors within rtol=1e-4 and atol=1e-5, and delivers a meaningful latency improvement over the compiled JAX reference.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        The model’s Pallas kernel fails TPU block-shape validation. It attempts to isolate each head using a (1,256,1,128) block for q shaped (2,256,8,128), but the second to last block dimension is 1, which is neither divisible by 8 nor equal to the full head dimension of 8. The same invalid block shape is used for k,v,g, and the output, while beta’s (1,256,1) block also violates the trailing dimension requirement. JAX raises a ValueError before execution, so correctness of both returned tensors and speedup could not be evaluated.
+
+        The loop also dynamically indexes preloaded arrays such as exp_g, k_slice, and q_scaled, introducing dynamic_slice operations that may cause a further TPU lowering failure after the block shapes are corrected. The full-sequence serial recurrence and absence of explicit parallel grid annotations may additionally limit throughput and multicore utilization, although compilation failed before these effects could be measured.
+      weight: 0.5

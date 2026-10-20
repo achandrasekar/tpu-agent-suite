@@ -1,0 +1,4 @@
+pyyaml
+tpu-info
+coverage
+diff-cover

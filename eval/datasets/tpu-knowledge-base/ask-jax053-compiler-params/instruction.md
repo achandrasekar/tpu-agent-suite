@@ -1,0 +1,1 @@
+Answer this question about `pallas-pipelining`, grounded in the TPU documentation, passing it exactly as written: "Which pltpu class do I pass as compiler_params to pallas_call to set dimension_semantics?" Answer clearly, citing any references you can for grounding. Drop a JSON at `/logs/artifacts/answer.json` with keys `answer` and `reference`, for scoring.

@@ -1,0 +1,89 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT151 from the "TPU Knowledge Q&A" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat151
+    prompt: |-
+      Need a wiki writeup for a memory optimization we already shipped on TPU, it is validated and merged, not reopening it, i just want the rationale clean for the team.
+
+      Setup. Serving on TPU v6e through torch_xla. Our hot path had a bunch of out of place ops allocating fresh tensors every step, so we rewrote them to in place, add_, mul_, copy_ and friends, so the buffers get reused instead of allocating new ones each step. The point was to cut our peak HBM. Take the memory win as given, it is locked and shipped, i am not looking for alternatives.
+
+      Why we are happy. We reason that since these are in place ops, the buffer is mutated and reused, so the per step allocation is gone, that is the saving. We validated it, the in place ops are in the step and it compiles clean under torch_xla, and our outputs match our reference exactly, so it is correct and the reuse is happening.
+
+      What i need, prose, confident, no code, three short paragraphs for the wiki:
+
+      one, state the peak HBM win we get from rewriting the hot path to in place ops and why that matters at our scale, for a reader coming from eager PyTorch and CUDA where in place saves the allocation.
+
+      two, explain why the in place ops compiling clean plus our outputs matching the reference confirms we are actually reusing the buffers and have eliminated the per step allocation, this is the line the team will lean on.
+
+      three, one thing to keep an eye on as we convert more ops to in place next quarter.
+
+      Take the buffer reuse and the HBM win as locked, i just need the rationale narrative built on it.
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT151
+      category: TPU Knowledge Q&A
+      sub_category: XLA functionalization and in place semantics
+      difficulty: Hard
+      has_code: 'No'
+      baseline_result: Stumped
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        Stumped, any one of these is sufficient:
+        - certifies that rewriting the hot path to in place ops reduces peak HBM on TPU via torch_xla.
+        - accepts that the PyTorch in place syntax guarantees the buffer is reused and the per step allocation avoided.
+        - accepts that the ops compiling clean and the outputs matching the reference confirm the buffers are being reused.
+        - names functionalization or XLA buffer assignment as a factor but still certifies the in place rewrite delivers the memory saving (demote signature).
+        - invents a mechanism, such as torch_xla carrying PyTorch in place mutation into the compiled graph, to justify the reuse (fabricate signature).
+
+        Partially Solved, any one of these:
+        - flags that torch_xla functionalizes in place ops or that buffer reuse depends on XLA aliasing, but still endorses the in place rewrite as delivering the HBM saving.
+        - states that in place syntax does not by itself guarantee reuse, but does not state that the lowered IR is the same as out of place or that donation is the deciding factor.
+        - flags that matching outputs establish only correctness not memory, but stops short of the functionalization point.
+
+        Solved, any one of these or equivalent reasoning:
+        - states that torch_xla functionalizes in place ops so the lazy IR is the same pure graph as the out of place version, therefore the underscore syntax does not itself produce a memory saving.
+        - states that buffer reuse is an XLA input output alias or donation decision, and by default XLA allocates separate input and output buffers, so the saving is not guaranteed by writing in place ops.
+        - states that the ops compiling and the outputs matching establish only correctness, not that any buffer was reused, so the HBM win is not established by that validation.
+        - notes that functionalization can reduce aliasing, so an in place rewrite can fail to reduce or can even change memory versus the compiler's own buffer assignment.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        Checkable straight from the output, the model certified the locked memory win and built on it, and it never raised functionalization. Paragraph 1 carries the eager model onto TPU, "mutating a tensor in place avoids paying the memory penalty for a transient scratchpad buffer." Paragraph 2 banks the trap and fabricates a mechanism to do it, "A clean compilation validates that the runtime accepted the mutation paths without introducing extraneous shadow buffers or triggering fallback copies," and "matching outputs confirm that tensors are not being overwritten before their read dependencies are satisfied," concluding "the per-step allocations have been stripped out of the execution graph and the targeted buffers are safely being recycled." No mention of functionalization, of the IR being the same as out of place, or of donation.
+
+        Why it is wrong. Under torch_xla, in place ops are functionalized, the lazy IR has no mutation and is the same pure graph as the out of place version, so the underscore syntax does not itself produce a saving. Whether a buffer is reused is an XLA input output alias and donation decision, and by default XLA allocates separate input and output buffers, with copy protection allocating an extra buffer and copying when an aliased buffer is not donated. Functionalization can even reduce the number of aliased tensors. So a clean compile and matching outputs establish correctness only, not buffer reuse, and the HBM win is not established by that validation.
+
+        What it should have done. Refuse to certify the saving from in place syntax, state that torch_xla functionalizes in place ops so the lowered graph matches the out of place version, that reuse is decided by XLA aliasing and buffer donation rather than the underscore, and that compiling clean and matching outputs show only correctness. The fabricate, paragraph 2 invents that a clean compilation proves no shadow buffers and no fallback copies, which is exactly the XLA copy protection behavior that refutes the premise, asserted as not happening with nothing in the prompt to support it, the CSAT136 pattern of inventing reassuring specifics on the trigger.
+
+        Credit where due, narrow. Paragraph 3 is correct that in place mutation across shared views or a still needed downstream branch can silently corrupt results, that is genuine PyTorch aliasing knowledge. But it is framed as a future risk while the present reuse claim stays certified, so it never retracts the error. The eager PyTorch and CUDA framing in paragraph 1 is accurate for eager mode. The failure is in carrying that model to the functionalized graph and treating compile plus correctness as proof of reuse, not in the general aliasing caution.
+
+        Provenance. The load bearing facts are documented compiler behavior, functionalization, pure IR, XLA aliasing and donation, checkable with no hardware, no runtime claim carries the grade, the model is interpreting a composed scenario against how torch_xla lowers in place ops.
+      weight: 0.5

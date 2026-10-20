@@ -1,0 +1,35 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+[judge]
+judge = "vertex_ai/gemini-3.5-flash"
+atif-trajectory = "/logs/agent/trajectory.json"
+
+[[criterion]]
+description = "The agent asks the user which Hub repository was meant, suggesting a meta-llama repository matching Llama 3 8B as the default and linking its huggingface.co page."
+type = "binary"
+weight = 1.0
+
+[[criterion]]
+description = "The question says what else the name could mean (for example Llama 3 versus 3.1, or base versus instruct) rather than naming one repository alone."
+type = "binary"
+weight = 1.0
+
+[[criterion]]
+description = "The reply does not claim onboarding has started and does not present one repository as already chosen without the user's confirmation."
+type = "binary"
+weight = 1.0
+
+[scoring]
+aggregation = "weighted_mean"

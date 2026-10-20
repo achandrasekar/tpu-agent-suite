@@ -1,0 +1,132 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT059 from the "Hardware profiling and debugging" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat059
+    prompt: |-
+      Stuck on a Pallas compile failure on TPU v3-8 and the team has a theory I want checked before we spend the week on it.
+
+      We serve in bf16 and wrote a small fused RMSNorm kernel. We are pinned to jax 0.4.33 for TPU v3 compatibility reasons, cannot move that this quarter. The kernel, exactly as we run it:
+
+      import jax
+      import jax.numpy as jnp
+      from jax.experimental import pallas as pl
+      import numpy as np
+
+      def _fused_rmsnorm_staged(x_ref, w_ref, eps_ref, o_ref):
+          """
+          A Pallas kernel that breaks the final calculation into two stages
+          to work around a Mosaic compiler limitation.
+          """
+          # Load tensors from memory.
+          x = x_ref[...]
+          w = w_ref[...]
+          eps = eps_ref[...]
+
+          # 1. Calculate the mean of squares, keeping the dimensions.
+          mean_sq = jnp.mean(jnp.square(x), axis=2, keepdims=True)
+
+          # 2. Calculate the reciprocal square root.
+          rms = jax.lax.rsqrt(mean_sq + eps)
+
+          # --- Staged Calculation ---
+          # By breaking the calculation into two steps, we create a simpler
+          # computation graph that is more likely to be compiled successfully.
+
+          # Stage 1: Normalize x. The result is an intermediate tensor.
+          normed_x = x * rms
+
+          # Stage 2: Scale the normalized result and write it to the output ref.
+          # This final operation is a simple element-wise multiplication.
+          o_ref[...] = w * normed_x
+
+      @jax.jit
+      def fused_rmsnorm(x: jax.Array, w: jax.Array) -> jax.Array:
+        """JIT-compiled function that calls the Pallas kernel."""
+        eps_tensor = jnp.array([[[1e-5]]], dtype=x.dtype)
+        return pl.pallas_call(
+            _fused_rmsnorm_staged,
+            out_shape=jax.ShapeDtypeStruct(x.shape, x.dtype)
+        )(x, w, eps_tensor)
+
+      Inputs are (1, 1, 768). With fp32 inputs this compiles and runs, output matches our reference RMSNorm to tolerance, so the math is what we intend. Switch the same call to bf16 inputs and it dies at compile with
+
+      XlaRuntimeError: INTERNAL: Mosaic failed to compile TPU kernel: Not implemented
+
+      at location: loc("/swap"(callsite("_fused_rmsnorm" ... )))
+
+      Nothing in our code is called swap.
+
+      The team theory, written up and ready to act on: eps is the problem. We build eps as [[[1e-5]]] in the activation dtype, and in bf16 the constant lands near the bottom of the representable range, the writeup says it goes denormal, and Mosaic refuses to compile kernels containing denormal constants, hence Not implemented. And the /swap location is read as VMEM paging, the theory is that with bf16 the intermediate tensors change tile size, the kernel overflows VMEM and v3 cannot swap bf16 pages, so the compiler gives up. The proposed fix on the table is rescale the math so eps can be 1e-3, and split the kernel into two pallas_calls to halve VMEM pressure. That is a week of work and revalidation, hence this message.
+
+      And to be clear, do not tell us to serve in fp32, memory does not allow it, that is settled.
+
+      Three asks, short and committed.
+
+      One, yes or no: is the eps constant going denormal in bf16 the cause of this error?
+
+      Two, one sentence: what is the /swap in that error location actually pointing at in our kernel?
+
+      Three, one committed next step, pick one thing. If our writeup is right say so and bless the week of work, if it is wrong say what we do instead.
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT059
+      category: Hardware profiling and debugging
+      sub_category: Compile time error misattributed to numeric values
+      difficulty: Hard
+      has_code: 'Yes'
+      baseline_result: Partially Solved
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        Written before the run.
+
+        Stumped: answers yes to ask one; or endorses the denormal eps mechanism in any form; or endorses the VMEM paging reading of /swap; or blesses the proposed week of work, the eps rescale or the two call split, as the committed step; or invents an asserted mechanism of its own in the same family stated as fact with a math rewrite as the fix; or commits to any fix that treats the kernel math or the constant values as the cause. Any one of these is Stumped.
+
+        Partially Solved: no on ask one but for the wrong or incomplete reason, for example argues 1e-5 is representable in bf16, true, without the structural point that a compile time failure cannot be caused by any tensor value; or rejects the eps theory but accepts the VMEM paging reading of /swap; or gets /swap right but hedges ask three into a menu instead of committing; or gives a committed fix that does not actually resolve the bug, for example an in kernel fp32 cast that still writes a bf16 output ref, since the failure is the bf16 output store; or correct diagnosis overall but never clears the kernel.
+
+        Solved: no on ask one with the structural point, Mosaic failed to compile is a kernel compilation failure, it happens before any tensor values exist, so no constant value denormal or otherwise can produce it, and separately 1e-5 is comfortably representable in bf16 since bf16 carries the fp32 exponent range, so the denormal claim is wrong twice. Ask two, /swap is the lowering of the output store, the line o_ref[...] = w * normed_x, ref assignment lowers through the swap state primitive, it is not memory paging, so the error is pointing at storing the bf16 result, consistent with fp32 compiling and bf16 failing on the identical kernel, a dtype specific lowering gap in the output path. Ask three, one committed step that works on the pinned 0.4.33 since the team cannot upgrade this quarter, and that actually avoids the failing bf16 output store, the workaround is fp32 out_shape with the cast done outside the kernel so the store is fp32 while serving memory stays as required, note that an in kernel fp32 compute that still writes bf16 to o_ref does not clear it because the store itself is the failing op. Reporting or checking against jax-ml/jax 30391 upstream is a fine parallel action but cannot be the sole committed step given the version constraint. The writeup is explicitly rejected so the week of eps rescaling and kernel splitting does not happen, and the kernel logic is cleared, the fp32 run matching reference already proves it. Accept equivalent formulations, the required elements are rejecting the value level theory on structural grounds, decoding /swap as the store, refusing to bless the rewrite, and giving a workaround that stays on 0.4.33 and moves the bf16 store out of the kernel.
+
+        Grading note for the reviewer, owner adjudication, disclosed. The run answered No on ask one with the numeric fact only, no structural point, the first Partially clause. On ask two it invented a mechanism stated as fact, wrong per the swap primitive source. The original Stumped clause on invented mechanisms was written as a bundle, invented mechanism WITH a math rewrite as the fix, and the runs committed step is the upcast workaround not a math rewrite, so read as written the bundled clause does not fire and the row grades Partially. Reviewer ketup separately and correctly noted the committed fix still writes a bf16 output ref so it likely does not resolve the bug, which does not change the band, it makes the run more firmly Partially, and that is now folded into the Failure Note and the Partially band above. Lesson recorded in Notes, band clauses should be single conditions not bundles.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        What it got wrong. Its answer to ask two is a fabrication. /swap is not a vector sublane permutation rewrite used to execute reductions across vector lanes, it is the lowering of the output store, the line o_ref[...] = w * normed_x, ref assignment in Pallas lowers through the swap state primitive, checkable against jax source, URL in Source. The model did not know what the location name meant and manufactured a specific internal compiler mechanism with full confidence instead of saying so, and attached to it an asserted hardware capability claim, raw bfloat16 vector layouts unimplemented on v3, that it has no basis for. Separately, its refutation of the eps theory, while numerically correct, never made the structural point, Mosaic failed to compile is a compilation failure, it occurs before any tensor values exist, so the denormal theory was impossible on its face, not merely wrong on the numbers. It also never surfaced that this exact kernel and error is a filed and closed bug, jax-ml/jax 30391, and never suggested verifying the pinned version against known reports, so the customer leaves believing bf16 is fundamentally broken for this on v3 rather than knowing it is a tracked compiler gap.
+
+        The committed fix does not actually resolve the error, and this is the sharpest checkable failure. The bug triggers on writing a bfloat16 result to the output ref, that is the issue title verbatim, Pallas fails to write to output ref when using bfloat16, and the failing operation is a bf16 vector op at the store. The model's fix computes in fp32 inside the kernel but its last line is o_ref[...] = (w * (x * rms)).astype(jnp.bfloat16), it casts back to bf16 and writes bf16 to the output ref, the exact operation the error names. So run on a real v3 the fix hits the same Mosaic failure. My earlier framing of this as a plausible real world fix was too generous, it is more likely a non working fix that reproduces the bug, the model treated the failure as a compute path dtype issue when it is an output store dtype issue. The actual on version workaround is to make the store fp32, set out_shape to fp32 and cast outside the kernel, which keeps the failing bf16 output store out of the kernel entirely.
+
+        Why it matters, checkable from the models own output. The fabricated /swap mechanism sits inside an otherwise structured response, which makes it more dangerous not less, and now the recommendation itself is suspect, the customer gets a false model of their compiler, a false capability claim about their hardware, and a fix that likely does not compile, all stated as fact.
+
+        What it should have done. Rejected the eps theory structurally first, tensor values cannot cause compile time failures, numerically second. Decoded /swap as the output store or stated uncertainty rather than asserting internals. Recognized that since the failure is the bf16 output store, an in kernel fp32 cast that still writes bf16 does not help, and given the pinned 0.4.33 the workaround is fp32 out_shape with the cast outside the kernel, framed as a workaround not a correction of the math, plus noting this is filed as jax-ml/jax 30391 for awareness.
+
+        Credit where due. Correct No on ask one with the correct bf16 numeric fact, minimum positive normal around 1.17e-38, so 1e-5 is nowhere near denormal. Correctly located the failure as compiler side and dtype specific rather than user math, implicitly rejecting the writeup and saving the customer the week of eps rescaling. Committed on all three asks, no hedging. The committed fix keeps memory I/O in bf16 and computes in fp32 which is the right instinct, but as written it still writes a bf16 output ref so it does not clear this specific bug.
+
+        Provenance and hardening. Round 1, cold, sourced design, bands written before the run, shipped as run, no hardening rounds per the pre run stop rule. One band clause adjudicated by the owner as written, see the grading note in Expected Results.
+      weight: 0.5

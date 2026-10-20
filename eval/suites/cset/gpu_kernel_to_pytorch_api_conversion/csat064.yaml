@@ -1,0 +1,189 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT064 from the "GPU Kernel to PyTorch API conversion" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat064
+    prompt: |-
+      convert the following code to pure PyTorch code and 1 to 1 map the cross-block atomics:
+
+      import torch
+      import triton
+      import triton.language as tl
+
+      @triton.jit
+      def _cross_entropy_bwd_triton(
+          hidden_ptr, lm_head_ptr, targets_ptr, lse_ptr,
+          hidden_grad_ptr, lm_head_grad_ptr,
+          seq_locks_ptr, vocab_locks_ptr, eps,
+          SEQ_LEN, HIDDEN_DIM, VOCAB_SIZE,
+          BLOCK_SEQ: tl.constexpr, BLOCK_DIM: tl.constexpr, BLOCK_VOCAB: tl.constexpr
+      ):
+          pid_seq, pid_vocab = tl.program_id(0), tl.program_id(1)
+          offset_seq = pid_seq * BLOCK_SEQ + tl.arange(0, BLOCK_SEQ)
+          offset_vocab = pid_vocab * BLOCK_VOCAB + tl.arange(0, BLOCK_VOCAB)
+          mask_seq = offset_seq < SEQ_LEN
+          mask_vocab = offset_vocab < VOCAB_SIZE
+
+          logits = tl.zeros((BLOCK_SEQ, BLOCK_VOCAB), dtype=tl.float32)
+
+          for dim_block in tl.range(0, HIDDEN_DIM, BLOCK_DIM):
+              offset_dim = dim_block + tl.arange(0, BLOCK_DIM)
+              mask_dim = offset_dim < HIDDEN_DIM
+
+              offset_hidden = offset_seq[:, None] * HIDDEN_DIM + offset_dim[None, :]
+              mask_hidden = mask_seq[:, None] & mask_dim[None, :]
+              hidden = tl.load(hidden_ptr + offset_hidden, mask=mask_hidden, other=0.0)
+
+              offset_lm_head = offset_vocab[:, None] * HIDDEN_DIM + offset_dim[None, :]
+              mask_lm_head = mask_vocab[:, None] & mask_dim[None, :]
+              lm_head = tl.load(lm_head_ptr + offset_lm_head, mask=mask_lm_head, other=0.0)
+
+              logits += tl.dot(hidden, tl.trans(lm_head))
+
+          logits = tl.where(mask_seq[:, None] & mask_vocab[None, :], logits, float('-inf'))
+          lse = tl.load(lse_ptr + offset_seq, mask=mask_seq, other=0.0)
+          softmax = tl.exp(logits - lse[:, None])
+
+          # one-hot targets
+          targets = tl.load(targets_ptr + offset_seq, mask=mask_seq, other=VOCAB_SIZE)
+          is_target = targets[:, None] == offset_vocab[None, :]
+
+          gradient = softmax - tl.where(is_target, 1.0, 0.0)
+          gradient = gradient / SEQ_LEN
+          gradient = tl.where(mask_seq[:, None] & mask_vocab[None, :], gradient, 0.0)
+
+          # Implement gradient filtering
+          if tl.max(tl.max(tl.abs(gradient), axis=1), axis=0) < eps:
+              return
+
+          for dim_block in tl.range(0, HIDDEN_DIM, BLOCK_DIM):
+              offset_dim = dim_block + tl.arange(0, BLOCK_DIM)
+              mask_dim = offset_dim < HIDDEN_DIM
+
+              offset_lm_head = offset_vocab[:, None] * HIDDEN_DIM + offset_dim[None, :]
+              mask_lm_head = mask_vocab[:, None] & mask_dim[None, :]
+              lm_head = tl.load(lm_head_ptr + offset_lm_head, mask=mask_lm_head, other=0.0)
+
+              offset_hidden_grad = offset_seq[:, None] * HIDDEN_DIM + offset_dim[None, :]
+              mask_hidden_grad = mask_seq[:, None] & mask_dim[None, :]
+              hidden_partial_grad = tl.dot(gradient, lm_head)
+
+              offset_hidden = offset_seq[:, None] * HIDDEN_DIM + offset_dim[None, :]
+              mask_hidden = mask_seq[:, None] & mask_dim[None, :]
+              hidden = tl.load(hidden_ptr + offset_hidden, mask=mask_hidden, other=0.0)
+
+              offset_lm_head_grad = offset_vocab[:, None] * HIDDEN_DIM + offset_dim[None, :]
+              mask_lm_head_grad = mask_vocab[:, None] & mask_dim[None, :]
+              lm_head_partial_grad = tl.dot(tl.trans(gradient), hidden)
+
+              # ==========================================
+              # CROSS-BLOCK ATOMICS:
+              # Different program IDs concurrently collide on identical global memory
+              # ==========================================
+              tl.atomic_add(hidden_grad_ptr + offset_hidden_grad, hidden_partial_grad, mask=mask_hidden_grad)
+              tl.atomic_add(lm_head_grad_ptr + offset_lm_head_grad, lm_head_partial_grad, mask=mask_lm_head_grad)
+
+      def _cross_entropy_bwd(hidden, lm_head, targets, lse, eps=10**-12):
+          (SEQ_LEN, HIDDEN_DIM), VOCAB_SIZE = hidden.shape, lm_head.shape[0]
+          hidden_grad = torch.zeros_like(hidden)
+          lm_head_grad = torch.zeros_like(lm_head)
+
+          BLOCK_SEQ, BLOCK_DIM, BLOCK_VOCAB = 32, 64, 32
+          grid = (triton.cdiv(SEQ_LEN, BLOCK_SEQ), triton.cdiv(VOCAB_SIZE, BLOCK_VOCAB))
+          seq_locks = torch.zeros(triton.cdiv(SEQ_LEN, BLOCK_SEQ), device=hidden.device, dtype=torch.int32)
+          vocab_locks = torch.zeros(triton.cdiv(VOCAB_SIZE, BLOCK_VOCAB), device=hidden.device, dtype=torch.int32)
+
+          _cross_entropy_bwd_triton[grid](
+              hidden, lm_head, targets, lse,
+              hidden_grad, lm_head_grad, seq_locks, vocab_locks, eps,
+              SEQ_LEN, HIDDEN_DIM, VOCAB_SIZE,
+              BLOCK_SEQ, BLOCK_DIM, BLOCK_VOCAB
+          )
+          return hidden_grad, lm_head_grad
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT064
+      category: GPU Kernel to PyTorch API conversion
+      sub_category: Cross-block atomics mapping
+      difficulty: Moderate
+      has_code: 'Yes'
+      baseline_result: Stumped
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        Solved: one committed implementation correctly implements a pure PyTorch version and directly maps tl.atomic_add to PyTorch hardware-atomic equivalents (torch.Tensor.index_add_ or scatter_add_), not generic Python += slice updates. The model should also add a preservation tile level early exit logic torch.max(torch.abs(gradient)) < eps) and preserve the O(BLOCK_SEQ * BLOCK_VOCAB) memory bounds without materializing the full tensors in HBM.
+
+        Partially Solved: at least one solution is correct in mathematical calculations and directly maps the cross-block atomics.
+
+        Stumped: no offered solution is correct for direct map of the cross-block atomics.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        The model provided 2 solutions. However, both do not meet the prompt requirement:
+
+        1. 1-to-1 Block-Level PyTorch Implementation:
+        It does not meet the prompt's requirement because:
+
+        Failure to Implement True 1-to-1 Atomic Semantics:
+
+        Issue: The implementation uses standard in-place tensor slice addition:
+
+        hidden_grad[seq_start:seq_end, dim_block:dim_end] += hidden_partial_grad
+        lm_head_grad[vocab_start:vocab_end, dim_block:dim_end] += lm_head_partial_grad
+
+        In-place slicing (+=) is a non-atomic read-modify-write operation serialized by Python control flow. It does not map 1-to-1 to hardware atomics (tl.atomic_add / CUDA atomicAdd).
+
+        2. High-Level Vectorized Pure PyTorch Equivalent
+
+        It does not meet the prompt's requirement too because:
+
+        a) Total Omission of Cross-Block Atomics (Direct Prompt Violation):
+
+        Issue: The model completely eliminated the grid, program IDs (pid_seq, pid_vocab), and block-level accumulation, replacing everything with high-level matrix multiplications:
+
+        hidden_grad = torch.matmul(grad_logits, lm_head)
+        lm_head_grad = torch.matmul(grad_logits.T, hidden)
+
+        It answered with the high-level mathematical reduction rather than adhering to the explicit instruction to "1 to 1 map the cross-block atomics." There is zero mapping or representation of atomic memory updates.
+
+        b) Algorithmic Discrepancy on Gradient Filtering (eps):
+
+        Issue: The code replaced a block-level tile skip with element-wise threshold truncation:
+
+        grad_logits = torch.where(torch.abs(grad_logits) >= eps, grad_logits, torch.zeros_like(grad_logits))
+
+        The original Triton kernel executes an early exit per tile (if tl.max(...) < eps: return). In Triton, if any single element in the 32 * 32 tile meets the threshold, the entire tile (including elements < eps) is retained. The vectorized code zeros out sub-eps elements individually, altering the mathematical outcome when eps > 0.
+
+        c) Violation of Constant-Memory Architectural Intent:
+
+        Issue: Materializes full [S, V] tensors simultaneously (logits, softmax, one_hot, grad_logits).
+
+        The entire purpose of the Triton kernel was to operate in O(BLOCK_SEQ * BLOCK_VOCAB) SRAM to prevent Out-Of-Memory (OOM) errors on large vocabulary sizes ( >= 128K ). This implementation immediately triggers GPU memory exhaustion.
+      weight: 0.5

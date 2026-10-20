@@ -1,0 +1,35 @@
+{
+  "task": "a5_shape_attribution",
+  "title": "Which op dominates, and which line of my code produced it?",
+  "answer_file": "answer.json",
+  "pass_threshold": 12,
+  "fields": {
+    "top_op_name": {
+      "type": "string",
+      "weight": 3
+    },
+    "self_time_ms": {
+      "type": "number",
+      "tol_rel": 0.01,
+      "weight": 2
+    },
+    "occurrences": {
+      "type": "number",
+      "tol_abs": 0,
+      "weight": 2
+    },
+    "source_file_basename": {
+      "type": "string",
+      "weight": 3
+    },
+    "source_line": {
+      "type": "number",
+      "tol_abs": 0,
+      "weight": 3
+    },
+    "category": {
+      "type": "string",
+      "weight": 1
+    }
+  }
+}

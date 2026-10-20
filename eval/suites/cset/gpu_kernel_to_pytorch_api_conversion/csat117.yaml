@@ -1,0 +1,75 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT117 from the "GPU Kernel to PyTorch API conversion" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat117
+    prompt: |-
+      We are porting an attention dot-product reduction from an NVIDIA CUDA extension to idiomatic PyTorch for OpenXLA execution on TPU v6e. The CUDA device function below computes an intra-thread-group dot product between query and key vectors using warp-level butterfly reduction primitives (__shfl_xor_sync) across sub-warp thread groups.
+
+      Convert this kernel logic into an idiomatic, vectorized PyTorch function that compiles cleanly under torch_xla without manual shuffle emulation, dynamic tensor slicing, or graph unrolling.
+
+      Shapes are query (16, 32, 128) and key (16, 32, 512, 128), bf16, targeting TPU v6e.
+
+      template<int THREAD_GROUP_SIZE, typename Vec, int N>
+      inline __device__ float qk_dot_(const Vec (&q)[N], const Vec (&k)[N]) {
+          using A_vec = typename FloatVec<Vec>::Type;
+          A_vec qk_vec = mul<A_vec, Vec, Vec>(q[0], k[0]);
+          #pragma unroll
+          for (int ii = 1; ii < N; ++ii) {
+              qk_vec = fma(q[ii], k[ii], qk_vec);
+          }
+          float qk = sum(qk_vec);
+          #pragma unroll
+          for (int mask = THREAD_GROUP_SIZE / 2; mask >= 1; mask /= 2) {
+              qk += __shfl_xor_sync(uint32_t(-1), qk, mask);
+          }
+          return qk;
+      }
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT117
+      category: GPU Kernel to PyTorch API conversion
+      sub_category: Warp Primitives to PyTorch/OpenXLA
+      difficulty: Hard
+      has_code: 'Yes'
+      baseline_result: Partially Solved
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        Solved: Recognizes that the CUDA warp butterfly reduction tree (__shfl_xor_sync across THREAD_GROUP_SIZE) is a GPU SIMT micro-architectural artifact for summing dot products across warp registers. On TPU v6e, this operation collapses into a standard vectorized tensor contraction (e.g. torch.matmul(query.unsqueeze(-2), key.transpose(-1, -2)).squeeze(-2) or torch.einsum('b h d, b h s d -> b h s', query, key)), accumulating in float32 and casting to bf16. Explicitly warns against attempting to simulate warp shuffle trees with iterative Python loops or dynamic slice step masking (which trigger graph unrolling and non-contiguous stride copies in XLA).
+
+        Partially Solved: Replaces the kernel with a vectorized contraction (matmul/einsum), but fails to explain why warp-level butterfly shuffles are unnecessary on TPU vector architectures, or omits fp32 intermediate accumulation before bf16 output.
+
+        Stumped: Attempts to literally transpile the warp butterfly reduction into PyTorch by writing a Python loop with bitwise XOR index permutations or dynamic tensor slices (e.g. while mask >= 1: qk = qk + roll/slice), introducing graph breaks and massive compilation overhead.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        The baseline model correctly recognized that CUDA warp-level butterfly shuffles (__shfl_xor_sync) and register FMA loops collapse into native vectorized tensor contractions (torch.einsum / torch.matmul) in OpenXLA. However, it failed to perform explicit intermediate accumulation in float32 in PyTorch before casting to bfloat16, erroneously claiming that native hardware MXU accumulation eliminates the need for precision handling in the PyTorch graph.
+      weight: 0.5

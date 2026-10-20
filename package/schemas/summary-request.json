@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "summary-request.json",
+  "title": "Summary request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "prompt",
+    "run_id"
+  ],
+  "properties": {
+    "prompt": {
+      "type": "string",
+      "description": "What the caller needs summarized, in its own words, including the paths it wants read. Required, and the only required field: the kernel-worker dispatches this stage with prose naming file paths, and a schema that does not declare `prompt` has it stripped as routing metadata before validation, leaving an empty payload that can never conform."
+    },
+    "run_id": {
+      "type": "string",
+      "pattern": "^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}$",
+      "description": "Session run id, passed verbatim. Required: the report may be written as an artifact under the run, and a subagent never sees SessionStart, so the delegation is its only source for the value."
+    },
+    "output_path": {
+      "type": "string",
+      "description": "Where to write the report, when the caller wants one on disk. Absent means the report travels back in `summary` alone."
+    }
+  },
+  "examples": [
+    {
+      "prompt": "Analyze the reference kernel at work/flash.cu for /runs/20260914T120000Z-000000000000/artifacts/tpu-kernel-development/k01 (state file: /runs/20260914T120000Z-000000000000/artifacts/tpu-kernel-development/k01/state.json).",
+      "run_id": "20260914T120000Z-000000000000"
+    }
+  ]
+}

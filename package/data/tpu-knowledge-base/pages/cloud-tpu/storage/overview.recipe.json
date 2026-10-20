@@ -1,0 +1,7 @@
+{
+  "query": "Explain storage choices for TPU workloads: boot and attached disks, Cloud Storage and filesystem access, shared dataset storage and multi-host considerations. Explain tradeoffs, without copying per-generation support matrices.",
+  "authoring_request": "Cloud TPU/GKE: simple queries based on GCP pages for content that will not change often",
+  "source_ids": [
+    "cloud-tpu-storage-options"
+  ]
+}

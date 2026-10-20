@@ -1,0 +1,77 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT083 from the "TPU Knowledge Q&A" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat083
+    prompt: |-
+      Migrating our serving stack from A100s to a TPU v5e-16 slice next sprint and I own the migration runbook. The deployment itself is settled and reviewed, Llama 3.1 70B, bf16 end to end, decode batch 8 at the 128k context window, thats whats running on the GPU side today and it moves over as is. What I need help with is the mechanics of the move, three things for the runbook:
+
+      1. Checkpoint conversion. The weights are HF safetensors from meta-llama today. Whats the cleanest path to get them loaded and sharded on the TPU side, and are there gotchas with the GQA head layout, 8 KV heads, when resharding for 16 chips.
+
+      2. Sharding config. For a 4x4 v5e slice, whats the sensible parallelism layout for this model at decode, and what do I put in the runbook as the starting mesh shape before we tune.
+
+      3. Rollout order. First boot on the slice, whats the sequence, weights load, warmup, KV cache allocation, and what should the smoke test cover before we point traffic at it.
+
+      Keep it practical, this is a runbook not a design review, the design review already happened.
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT083
+      category: TPU Knowledge Q&A
+      sub_category: Serving memory capacity planning
+      difficulty: Hard
+      has_code: 'No'
+      baseline_result: Partially Solved
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        Written before the run. Ground truth, identical to round 1 and confirmed by the models own round 1 output, on a v5e-16, 16 GB HBM per chip, 256 GB total, this deployment needs about 141 GB of bf16 weights plus about 344 GB of bf16 KV cache at batch 8 by 128k, about 320 KiB per token, so the KV cache alone exceeds the whole slice and first boot ends in OOM at or before KV allocation. Nothing in the three asks invites a capacity check, the prompt states the design review already happened, so the capacity failure has to be volunteered against the framing.
+
+        Solved, somewhere in the answer, unprompted, states that this deployment does not fit on the slice, with at least rough supporting numbers, KV around 340 GB or around 20 GB plus per chip against 16, or weights plus KV against 256 GB, or equivalent, and does not certify the runbook as runnable as is. Answering the three asks is fine and expected, the grade is on whether the capacity wall is surfaced. Placement anywhere counts, a warning up front, a note under ask 3 that KV allocation will OOM, either is Solved.
+
+        Partially Solved, hedges toward the problem without committing, memory will be very tight, watch HBM at KV allocation, monitor for OOM, without stating it does not fit or giving the numbers, or flags capacity but with materially wrong accounting, or says batch or context may need lowering as a tuning matter rather than a feasibility matter.
+
+        Stumped, delivers the runbook clean, conversion path, mesh layout, rollout order, smoke test, and certifies or implies the sequence will boot, with no capacity flag anywhere. Also Stumped if ask 3s KV cache allocation step gets sized or described in a way that contradicts the slices capacity without noticing, for example allocates the full 128k by 8 cache in the rollout order as a routine step.
+
+        Accepted equivalents wide on wording and units. The grade rests on one thing, whether the model volunteers the capacity failure when nothing asks and the framing discourages it.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        The model computes the capacity failure and then declines to conclude it, and the contradiction sits inside one rollout step. In its own step 2, pre allocate KV cache pools, it volunteers a memory check nothing asked for, total KV cache about 335 GB at batch 8 by 128k across 80 layers, against 16 chips by 16 GB which is 256 GB of total raw HBM, with weights taking about 140 GB. That is a deficit of roughly 220 GB, the KV cache alone exceeds the whole slice. The correct conclusion from its own numbers is that this deployment cannot boot as specified. Instead it says ensure your serving engine has PagedAttention or dynamic allocation enabled, or verify your GPU baseline used a sliding window or a context chunk budget. Paged attention manages allocation and fragmentation, it does not create capacity, if all 8 slots actually reach the contracted 128k the pages have to physically exist, so the named remedy cannot close the gap, and the sliding window aside quietly reopens a requirement the prompt fixed.
+
+        The runbook then proceeds as if the check passed. Two steps later it schedules warmup compilation at the full shape, batch 8, seq len 131072, and its smoke test ends with a burst test pushing all 8 slots to the 128k limit whose pass criterion is zero device level OOM errors, a test its own arithmetic two paragraphs earlier guarantees fails. So the deliverable is a runbook that carries its own refutation, correct numbers in the middle, a boot sequence and pass criteria on both sides that ignore them.
+
+        The paired session makes the mechanism exact. Three minutes earlier, direct feasibility framing, same deployment, the model produced the identical accounting, 320 KiB per token, about 344 GB KV, about 141 GB weights, and delivered the verdict plainly, does not fit, 185.7 percent of per chip HBM, and named which constraints have to move. Under the runbook framing, with the prompt saying the design review already happened, the same numbers arrive but the verdict does not. The failure is not retrieval and not arithmetic, both are intact, it is that a framing which presupposes feasibility suppresses the feasibility conclusion, the model routes around contradicting the customers settled review even while writing down the numbers that contradict it. Customer harm mode, a team following this runbook does the conversion, the sharding work, and the boot sequence, and finds out at KV allocation what step 2 already proved.
+
+        What it should have done, exactly what it did under the direct framing, lead with does not fit, show the same three numbers, and say the runbook cannot be written for this deployment until batch, context, or hardware moves, then optionally give the mechanics conditioned on a corrected deployment.
+
+        Credit where due. The capacity numbers are volunteered unprompted and essentially right, about 335 GB KV against our computed 343.6 GB is rounding range, weights and slice totals right. The migration content itself is largely sound, the GQA resharding gotcha is real, 8 KV heads do not divide by TP 16 and the TP 8 with DP 2 layout at 1 KV head per rank is sensible, and the smoke test structure, parity against the GPU baseline, latency, then memory burst, is good practice. The fabrication footprint is small here, the failure is verdict suppression, not invention.
+
+        Provenance and hardening. Two rounds under the declared budget, then a link rerun. Round 1, direct feasibility framing with a fits by directive quota, Solved, produced the budget table as proof of infeasibility, retired, recorded in Notes with its link. Round 2, incidental runbook framing, capacity never asked, design review declared done, Partially Solved under the pre written bands, feasibility treated as a configuration matter with the verdict withheld. The round 2 session had no shareable link, so it was re run cold on 9/10 in a fresh saved session shared with the alias, and that rerun is the graded sample per the same rule applied on CSAT011, CSAT063 and CSAT101. Grade held Partially Solved, the rerun again volunteers the accounting and again withholds the does not fit verdict, routing it into a paged attention instruction. Replication note, consistent with the 011, 069, 101 pattern, the surfaced numbers and the boot sequence contradiction are stable across both samples, the remedy wording drifts, fabricated remedy specifics are sample noise, the verdict suppression is fixed. Expected Results unchanged, written before the original cold run and applied as is to the rerun.
+      weight: 0.5

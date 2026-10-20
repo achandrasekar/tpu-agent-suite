@@ -1,0 +1,1 @@
+Answer this question about `vllm-engine-args`, grounded in the TPU documentation, passing it exactly as written: "What does vLLM's --block-size engine argument set?" Answer clearly, citing any references you can for grounding. Drop a JSON at `/logs/artifacts/answer.json` with keys `answer` and `reference`, for scoring.

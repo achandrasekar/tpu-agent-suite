@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Standard Portable Native Tools Catalog",
+  "description": "Standard harness native tools catalog for TPU agent suite packages.",
+  "native_tools": [
+    {
+      "name": "read",
+      "visibility": "external",
+      "action_level": { "effect": "read", "scope": "workspace", "approval": "never" },
+      "description": "Read file contents within workspace."
+    },
+    {
+      "name": "write",
+      "visibility": "external",
+      "action_level": { "effect": "write", "scope": "workspace", "approval": "on-demand" },
+      "description": "Create or write file contents within workspace."
+    },
+    {
+      "name": "edit",
+      "visibility": "external",
+      "action_level": { "effect": "write", "scope": "workspace", "approval": "on-demand" },
+      "description": "Edit existing file contents within workspace."
+    },
+    {
+      "name": "search",
+      "visibility": "external",
+      "action_level": { "effect": "read", "scope": "workspace", "approval": "never" },
+      "description": "Search workspace files via grep or pattern matching."
+    },
+    {
+      "name": "shell",
+      "visibility": "external",
+      "action_level": { "effect": "execute", "scope": "host", "approval": "on-demand" },
+      "description": "Execute shell commands on host system."
+    },
+    {
+      "name": "ask",
+      "visibility": "external",
+      "action_level": { "effect": "read", "scope": "session", "approval": "never" },
+      "description": "Put a question to the user and wait for the answer. Skills only: an agent's caller is blocked on its result, so a question an agent asks reaches nobody."
+    },
+    {
+      "name": "web_search",
+      "visibility": "external",
+      "action_level": { "effect": "read", "scope": "session", "approval": "never" },
+      "description": "Search the web for information."
+    },
+    {
+      "name": "web_fetch",
+      "visibility": "external",
+      "action_level": { "effect": "read", "scope": "session", "approval": "never" },
+      "description": "Fetch content from web URLs."
+    }
+  ]
+}

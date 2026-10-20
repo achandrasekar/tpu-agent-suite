@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "sharding-request.json",
+  "title": "tpu-sharding Request",
+  "description": "Input payload for the tpu-sharding orchestrator agent.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "prompt"
+  ],
+  "properties": {
+    "prompt": {
+      "type": "string",
+      "description": "High-level user instructions or shorthand specifications (e.g., 'ep=8, tp=2, bf16')."
+    },
+    "run_id": {
+      "type": "string",
+      "pattern": "^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}$",
+      "description": "Session run identifier, assigned at session start and passed verbatim."
+    },
+    "model": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Target model identifier (e.g., 'qwen3.5-397b-a17b', 'gemma4-31b')."
+    },
+    "model_path": {
+      "type": "string",
+      "description": "Filesystem path or repository URL to the model code."
+    },
+    "task_type": {
+      "type": "string",
+      "enum": [
+        "inference",
+        "training"
+      ],
+      "description": "Workload type."
+    },
+    "hardware_topology": {
+      "type": "string",
+      "minLength": 1,
+      "description": "TPU generation and 3D slice topology (e.g., 'v6e_2x2x1', 'v5e_2x2x1', 'v6e_4x4x4')."
+    },
+    "target_metric": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Primary metric to optimize (e.g., 'maximize_mfu', 'minimize_ttft')."
+    },
+    "related_metrics_to_track": {
+      "type": "array",
+      "description": "Additional metrics to track during optimization.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "optimization_constraints": {
+      "type": "string",
+      "description": "Hard optimization constraints and bounds (e.g., 'Sequence length must be fixed at 2048.', 'batch_size between 64 and 256')."
+    },
+    "execution_timeout_seconds": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 3600,
+      "description": "Per-run execution timeout in seconds (default: 3600). Applies to each individual execution attempt, not total loop duration."
+    },
+    "loop_budget_runs": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Maximum number of optimization experiment runs/iterations (e.g., 5). Omit for indefinite exploration."
+    },
+    "backend": {
+      "type": "string",
+      "description": "Execution backend (e.g., 'k8s', 'slurm', 'local'). Inherited from environment if omitted."
+    },
+    "gcp_project": {
+      "type": "string",
+      "description": "Google Cloud project ID hosting compute resources."
+    },
+    "zone": {
+      "type": "string",
+      "description": "Google Cloud zone (e.g., 'us-central1-a')."
+    },
+    "cluster_cell": {
+      "type": "string",
+      "description": "Cluster cell or resource allocation pool name."
+    }
+  },
+  "examples": [
+    {
+      "prompt": "Optimize sharding for Qwen3.5-397B training on v6e_2x2x1 to maximize MFU.",
+      "model": "qwen3.5-397b-a17b",
+      "model_path": "/workspace/models/qwen3.5",
+      "task_type": "training",
+      "hardware_topology": "v6e_2x2x1",
+      "target_metric": "maximize_mfu",
+      "related_metrics_to_track": [
+        "step_time",
+        "mfu",
+        "token_throughput"
+      ],
+      "optimization_constraints": "Sequence length must be fixed at 2048.",
+      "execution_timeout_seconds": 3600,
+      "loop_budget_runs": 5,
+      "gcp_project": "my-tpu-project",
+      "zone": "us-central1-a",
+      "run_id": "20260921T120000Z-abcdef012345"
+    }
+  ]
+}

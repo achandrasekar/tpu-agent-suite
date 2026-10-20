@@ -1,0 +1,9 @@
+# wikify working state (never shipped; the dist copy excludes these too)
+.cache/
+.wikify/
+# agent-skill installs (the skill lives at user level; never committed or shipped)
+.agents/
+.claude/
+# pinned source checkouts: private code never enters git or the dist
+raw/code/*
+!raw/code/.keep

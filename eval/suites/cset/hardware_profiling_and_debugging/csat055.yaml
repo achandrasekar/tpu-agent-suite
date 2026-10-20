@@ -1,0 +1,134 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT055 from the "Hardware profiling and debugging" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat055
+    prompt: |-
+      I am trying to implement a multi-head attention tiling operation on TPU using
+      Pallas, but my kernel is failing to compile. I am working with f32 tensors. The
+      shape of my input x is (1, 8, 256, 128). Inside my kernel, q is tiled as
+      (block_q, block_d) and k/v are tiled as (block_k, block_d).
+
+      I use pl.dot(q, k, trans_b=True) to achieve q@k.T, but whenever I set block_k to
+      something small like 16, it throws a compiler error. In this case, q evaluates
+      to a vector of 256x128xf32 and k is a vector of 16x128xf32, yielding a result
+      of 256x16xf32.
+
+      I suspect the issue is either my use of trans_b=True during the pl.dot, and
+      maybe I should manually transpose the k block using jnp.transpose before passing
+      it to pl.dot. Alternatively, does Mosaic need me to uncomment the
+      dimension_semantics=("parallel", ...) block in my pallas_call so it knows how to
+      unroll the matrix dimensions?
+
+      import os import functools import time import jax.experimental.pallas as pl
+      import jax import jax.numpy as jnp
+
+      @jax.jit def naive(q, k, v): temp = jnp.einsum('...hnd,...hmd->...hnm', q, k) #
+      temp = flax.linen.softmax(temp) return jnp.einsum('...hnm,...hmd->...hnd', temp,
+      v)
+
+      def mul_kernel(q_ref, k_ref, v_ref, out_ref, block_q, block_k, block_d):
+      seq_length = k_ref.shape[0] q = q_ref[...]
+
+      acc = jnp.zeros((block_q, block_d), dtype=q_ref.dtype)
+
+      def loop_body(start_idx, carry):
+          acc = carry
+          k = pl.load(k_ref, (pl.dslice(start_idx * block_k, block_k), pl.dslice(0,block_d)))
+          kv = pl.dot(q, k, trans_b=True,trans_a=False)
+          v = pl.load(v_ref, (pl.dslice(start_idx * block_k, block_k), pl.dslice(None)))
+          kv = kv @ v
+          acc += kv
+          return acc
+
+      upper = seq_length // block_k
+      acc = jax.lax.fori_loop(0, upper, loop_body, acc)
+      # pl.store(out_ref, (pl.dslice(pid * block_q, block_q), pl.dslice(None)), q)
+      out_ref[...] = acc
+
+      @jax.jit def matrix_mul(q, k, v, block_q=256, block_k=16): print(q.shape)
+
+      batch_size, heads, n, d = q.shape
+
+      block_q = min(block_q, n)
+      block_k = min(block_k, n)
+      kernel = functools.partial(mul_kernel, block_q=block_q, block_k=block_k, block_d=d)
+      return pl.pallas_call(
+          kernel,
+          interpret=False,
+          grid=(n // block_q, batch_size, heads),
+          out_shape=jax.ShapeDtypeStruct(x.shape, x.dtype),
+          in_specs=[
+              pl.BlockSpec(lambda _, b, h: (b, h, _, 0), (None, None, block_q, d)),
+              pl.BlockSpec(lambda _, b, h: (b, h, 0, 0), (None, None, n, d)),
+              pl.BlockSpec(lambda _, b, h: (b, h, 0, 0), (None, None, n, d)),
+          ],
+          out_specs=pl.BlockSpec(lambda _, b, h: (b, h, _, 0), (None, None, block_q, d)),
+
+          # dimension_semantics=("parallel", "parallel", "parallel", "parallel"),
+          # mosaic_params=dict(
+          #     dimension_semantics=("parallel", "parallel", "parallel", "parallel")
+          # ),
+
+      )(q, k, v)
+
+      shape = (1, 8, 1024 * 16, 32)
+
+      shape = (1, 8, 256, 128) key = jax.random.PRNGKey(42) x = jax.random.normal(key,
+      shape, dtype=jnp.float32)
+
+      res = matrix_mul(x, x, x, )
+
+      This fails to compile with:
+      jax._src.source_info_util.JaxStackTraceBeforeTransformation: RuntimeError:
+      Internal TPU kernel compiler error: unsupported operand shapes or layouts
+
+      The MLIR operation involved: %26 = "tpu.matmul"(%23, %25, %17) {transpose_lhs =
+      false, transpose_rhs = true} : (vector<256x128xf32>, vector<16x128xf32>,
+      vector<256x16xf32>) -> vector<256x16xf32>
+
+      What is the issue here, and how do I fix it?
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT055
+      category: Hardware profiling and debugging
+      sub_category: Shape and Tiling Violation
+      difficulty: Moderate
+      has_code: 'Yes'
+      baseline_result: Partially Solved
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        TPU MXUs strictly require contracting and minor dimensions to be multiples of 128 or 256, meaning block_k=16 physically cannot map to the vector registers. But a correct and thorough model cannot stop there and it needs to debug the entire script. It should explicitly warn us that their full-sequence BlockSpec is a massive VMEM OOM risk and recommend streaming blocks from HBM instead. It also needs to point out the x.shape closure bug, correct the backward pl.BlockSpec arguments so block_shape comes first, and swap out the deprecated pl.load calls for standard Python reference slicing (e.g., k_ref[start:end, :]).
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        The model diagnosed the primary block_k=16 MXU alignment issue, but it completely failed on the functional execution of the kernel. It failed to warn us that their production shape d=32 violates the exact same (8, 128) trailing dimension hardware constraint. it blindly validated the BlockSpec((None, None, n, d)) memory mapping. Staging the entire sequence length into the TPU's limited vector memory like that is a guaranteed VMEM OOM crash. The model also pulled a "silent fix" on the x.shape closure bug without actually explaining it to the us. The model also hallucinated valid API signatures by copying the backward (index_map, block_shape) arguments in BlockSpec, and it kept the deprecated pl.load syntax with broken pl.dslice(None) arguments instead of just telling the us to use modern reference slicing.
+      weight: 0.5

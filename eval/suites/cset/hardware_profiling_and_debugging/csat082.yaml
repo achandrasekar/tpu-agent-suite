@@ -1,0 +1,60 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT082 from the "Hardware profiling and debugging" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat082
+    prompt: 'We hit a TPU performance regression in TorchPrime on v6e-4 after moving
+      from torch_xla 2.6 stable to the Feb.17 nightly build, and the profile is pointing
+      somewhere unexpected. Step time increased from 3.002 s to 3.499 s, and Mixtral
+      shows a similar regression. The investigation points to FlashAttention: on Mixtral
+      8x7B, roughly 30 ms per attention call is showing up around the handling of
+      two auxiliary FlashAttention outputs, even though the operation being performed
+      there is only selecting the first element along the last dimension. The PyTorch
+      expression itself does not obviously explain that cost. What single implementation
+      fault best explains this regression, including why this small output-handling
+      operation becomes expensive, what the smallest correction is, and what lowering
+      or profiling check would decisively confirm the diagnosis?'
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT082
+      category: Hardware profiling and debugging
+      sub_category: Memory bound and insufficient fusion
+      difficulty: Hard
+      has_code: 'No'
+      baseline_result: Stumped
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        A strong answer should identify that the [...,0] indexing on the extra FlashAttention outputs is being handled incorrectly. The indexing removes one tensor dimension, and the resulting as_strided_copy has size and stride arrays with one fewer entry than the original tensor has dimensions. PyTorch/XLA does not recognize this case as a simple slice and falls back to aten::take. The smallest safe fix is to update the as_strided_copy handling so cases like this use slice and squeeze, while keeping the existing fallback for cases where that is not safe. A decisive check should confirm that this indexing no longer uses or increments xla::take, then rerun the affected TorchPrime workloads and confirm that performance recovers. The referenced merged solution is linked.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        The response correctly focused on the extra FlashAttention outputs, but it did not identify the actual cause of the slowdown. It explains the problem as being caused by the 128 wide tensor layout, strided memory access, layout copies, and expanding the saved values again during the backward pass. The merged fix shows that the real problem is how v[...,0] is handled by PyTorch/XLA.  That indexing becomes an as_strided_copy where the size and stride arrays have one fewer entry than the original tensor has dimensions. The PyTorch/XLA lowering in that build does not recognize this case as a simple slice, so it falls back to the more expensive aten::take path. The respose therefore proposes the wrong fix by keeping the saved values in 4D form and removing the backward expansion. It also makes unsupported claims about 128 times bandwith waste and the exact cause of the roughly 30 ms cost.
+      weight: 0.5

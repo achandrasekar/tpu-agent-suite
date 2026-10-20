@@ -1,0 +1,60 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+schema_version = "1.4"
+
+[task]
+name = "torchtpu/xprof-attention-kernel-tuning"
+version = "1.0.0"
+description = """Make a slow attention layer faster on one TPU chip and \
+justify it from profiles. The agent is given one JAX implementation and a way \
+to run it on hardware; nothing names a kernel, a library or a tile size. \
+Scoring reads the traces, never the prose: how much faster it got, whether a \
+custom-call kernel appeared, whether it stayed inside its profiling budget, \
+whether the result it kept still computes the original at the original \
+precision on a single device, whether it tried more than one configuration and \
+kept the fastest, whether its cited figure matches a trace, and whether its \
+profiling flags reached the backend in time. The instruction names no agent or \
+skill, so one prompt stays valid for both arms of the A/B."""
+authors = [{ name = "TorchTPU Team" }]
+keywords = ["xprof", "pallas", "kernel", "profiling", "tpu7x", "llo"]
+
+[environment]
+os = "linux"
+cpus = 2
+memory_mb = 65536
+storage_mb = 20480
+workdir = "/workspace"
+# No `docker_image`: Harbor builds `environment/Dockerfile` by convention when
+# the field is absent, which is how the torchtpu-onboarding datasets work. The
+# task used to pre-build and pin a local tag, and that is precisely what broke
+# it -- the runner built one tag while this file named another, so six runs were
+# scored against a 35-hour-old image that still contained the answer. With no
+# tag to disagree about, the failure mode does not exist.
+
+[agent]
+# Open-ended, so the capture count is the agent's to choose: observed runs take
+# 4 to 11, each a separate Kueue admission on a shared queue with a pip install
+# of jax[tpu] in the workload image. hello-tpu allows 7200 s for one capture.
+timeout_sec = 7200.0
+network_mode = "public"
+
+[verifier]
+# The verifier re-runs the xprof CLI against every captured session, and the
+# agent chooses how many, so it needs more than the 60 s a table-scraping
+# verifier would.
+timeout_sec = 300.0
+
+[metadata]
+category = "evaluation"

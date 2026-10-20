@@ -1,0 +1,116 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT011 from the "Hardware profiling and debugging" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat011
+    prompt: |-
+      Porting a small reduction kernel to Pallas for TPU v6e and it will not compile. It ran fine as plain JAX, the moment I moved the per row reduction into the kernel it broke, and I do not see why, the shapes are all clean multiples of 128.
+
+      Mosaic failed to compile TPU kernel:
+      Cannot lower reductions to scalar. Reduce to one element vector instead, using keepdims=True.
+
+      The kernel takes a block of rows and, for each row, sums the elements past a per row start index and writes the masked row sum. Reduced from a larger normalization pass, the masking is real, some rows contribute a partial and some contribute nothing.
+
+      import jax
+      import jax.numpy as jnp
+      from jax.experimental import pallas as pl
+
+      def row_reduce_kernel(x_ref, start_ref, o_ref):
+          start = start_ref[0]
+          n = x_ref.shape[1]
+          col = jnp.arange(n)
+          total = jnp.zeros((), jnp.int32)
+          for i in range(x_ref.shape[0]):
+              row = x_ref[i, :].astype(jnp.float32)
+              masked = jnp.where(col >= start, row, 0.0)
+              total = total + jnp.sum(masked)
+              o_ref[i] = total
+
+      def run(x, starts):
+          m, n = x.shape
+          return pl.pallas_call(
+              row_reduce_kernel,
+              grid=(m // 256,),
+              in_specs=[
+                  pl.BlockSpec((256, n), lambda i: (i, 0)),
+                  pl.BlockSpec((1,), lambda i: (i,)),
+              ],
+              out_specs=pl.BlockSpec((256,), lambda i: (i,)),
+              out_shape=jax.ShapeDtypeStruct((m,), jnp.float32),
+          )(x, starts)
+
+      x = jnp.ones((4096, 3072), jnp.bfloat16)
+      starts = jnp.full((16,), 100, jnp.int32)
+      print(run(x, starts))
+
+      Every dim is a multiple of 128 so it is not a tiling thing. What do I actually need to change to get this compiling and correct?
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT011
+      category: Hardware profiling and debugging
+      sub_category: Pallas API misuse
+      difficulty: Hard
+      has_code: 'Yes'
+      baseline_result: Partially Solved
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        Written before the run. Two separate problems, one of them named outright by the error string, plus a misleading clue that is not the cause.
+
+        First, the scalar reduction. jnp.sum(masked) reduces to a rank 0 scalar, which Mosaic cannot lower, per jax issue 20921 and the error text in the prompt. The fix is keepdims=True on the reduction, or an equivalent one element vector reduction that avoids the scalar. Credit for applying keepdims or an equivalent even if the explanation of why Mosaic rejects the scalar differs from the issue's wording.
+
+        Second, the int32 accumulator. total is jnp.zeros((), jnp.int32) and float row sums are added into it, truncating every partial to int and corrupting the masked sums. The fix is a float32 accumulator. This is checkable by inspection and would be silently wrong even after the compile error is fixed. Credit for noticing the float masking and division are otherwise correct.
+
+        The clean multiples of 128 and worked as plain JAX lines are misdirection, neither fault is about tile shape.
+
+        Solved: fixes the scalar reduction with keepdims or an equivalent one element vector reduction, and fixes the int32 accumulator with a float dtype, both applied in the returned code, and does not build the answer on a tiling or shape packing mechanism.
+
+        Partially Solved: fixes one of the two, for example applies keepdims and gets it compiling but leaves the int32 accumulator so the numbers are wrong, or switches the accumulator to float but does not resolve the scalar reduction, or fixes both but frames the cause as a tiling or register packing issue rather than the reduction and the dtype.
+
+        Stumped: fixes neither, builds a mechanism around the multiples of 128 or the 512 style shape clue, changes tile shapes or block specs without addressing the scalar reduction or the int accumulator, or keeps the int32 accumulator and the bare sum in its rewrite.
+
+        Equivalents wide, this is not a vocabulary test. The grade rests on the two code level fixes, keepdims or an axis reduction on the reduction and a float accumulator, both visible in the model's own output.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        Both faults were seen again, one fixed in the returned code and one routed around, the same clause as the prior sample, so the grade holds.
+
+        Problem one, the scalar reduction, solved. The run diagnosed it correctly, jnp.sum(masked) with no axis collapses to a rank 0 scalar and Mosaic cannot lower a vector reduction into a scalar register, matching jax issue 20921 and the error text. Its recommended fix reduces along axis=1 to shape (256,), which cleanly avoids the scalar, and its keep 1D slices block gives the keepdims (1,1) variant. Checkable in its own output, the fix compiles and the scalar restriction is gone.
+
+        Problem two, the int32 accumulator, seen in prose but not fixed in a returned accumulating kernel, this is the Partially line and it repeats the prior sample. The run's own analysis explicitly notes total was initialized as a 0D int32 while accumulating float32 sums, so it spotted the truncation. But none of its code blocks deliver a corrected accumulating version. The recommended fix drops the accumulator by vectorizing to independent per row sums, o_ref[...] = jnp.sum(masked, axis=1), so int32 never appears and the running total from the original kernel is gone. The cumulative behavior is demoted to an if you actually needed a running total aside with jnp.cumsum, and the keep 1D slices block also drops the accumulation. So the int32 fault is dissolved by changing the kernel's semantics, not corrected with a float32 accumulator in place. Checkable by inspection, casting float partials to int32 before summing zeros them out, and the run never presents the original running total kernel with the dtype fixed.
+
+        The misleading line, worked fine as plain JAX and clean multiples of 128, did not catch it, the run opens by rejecting the block size and 128 alignment framing outright.
+
+        What it should have done, commit to one corrected version of the actual kernel, keep the running total the original computed, fix the reduction with keepdims or an axis reduction, and change the accumulator to float32, rather than offering a menu of options and switching the headline fix to per row sums that quietly drop the accumulation.
+
+        Credit where due, and it is substantial. It nailed the sourced scalar reduction fault and its fix, rejected the red herring cleanly, correctly identified the int32 versus float32 mismatch in its analysis, and its 2D vectorization is better engineering than the original loop. The gap is that it did not deliver a single corrected accumulating kernel with the float dtype, it routed around the accumulator and split the original semantics across variants.
+
+        Provenance and replication. Cold run 9/12 in a fresh saved session shared with the alias, attached to fill the missing link, and this run is the graded sample per the rule that the linked session and the graded output must be the same run, same as CSAT063 and CSAT101. Grade held Partially Solved, same clause both samples, the scalar reduction fixed and the int32 accumulator seen but routed around in each. Replication finding consistent with the 011 069 101 pattern, the pass fail behavior is stable across cold samples while the exact wording drifts, the fabricate or route around the quieter fault behavior is fixed. Expected Results unchanged, written before the original cold run and applied as is. First generation graded, thoughts excluded from the grade and preserved in session.
+      weight: 0.5

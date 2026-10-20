@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "sharding-memory-request.json",
+  "title": "tpu-sharding Memory Contributor Request",
+  "description": "Delegation payload to tpu-sharding-memory-contributor.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "run_id",
+    "takeaway",
+    "model",
+    "hardware_topology",
+    "source_report_path"
+  ],
+  "properties": {
+    "run_id": {
+      "type": "string",
+      "pattern": "^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}$",
+      "description": "Session run identifier namespace."
+    },
+    "takeaway": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Empirical takeaway, compiler lesson, or tuning insight to ingest."
+    },
+    "model": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Exact target model name (e.g., 'Qwen3.5-397B')."
+    },
+    "hardware_topology": {
+      "type": "string",
+      "minLength": 1,
+      "description": "TPU generation and slice topology (e.g., 'v6e_2x2x1', 'v5e_2x2x1')."
+    },
+    "source_report_path": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Relative artifact path to source run report (e.g., '0/report_0.md')."
+    },
+    "tags": {
+      "type": "array",
+      "description": "Metadata tags for categorization and retrieval (e.g., ['SHARDING', 'MAXTEXT', 'LATENCY_HIDING']).",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "examples": [
+    {
+      "run_id": "20260921T120000Z-abcdef012345",
+      "takeaway": "For Qwen3.5-397B on v6e 2x2x1 slices, setting ep=8 eliminates AllToAll bottleneck seen with ep=4.",
+      "model": "Qwen3.5-397B",
+      "hardware_topology": "v6e_2x2x1",
+      "source_report_path": "1/report_1.md",
+      "tags": [
+        "SHARDING",
+        "MOE",
+        "EXPERT_PARALLELISM"
+      ]
+    }
+  ]
+}

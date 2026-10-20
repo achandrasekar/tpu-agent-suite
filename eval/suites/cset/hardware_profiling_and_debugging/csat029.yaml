@@ -1,0 +1,102 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT029 from the "Hardware profiling and debugging" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat029
+    prompt: |-
+      I am writing a custom Pallas kernel on TPU v6e (bf16) for a Grouped-Query Attention (GQA) KV projection and normalization step.
+
+      The kernel worked fine in testing when our sequence length was 512, but as soon as we scaled sequence length to 1024 for production, compilation failed with this error:
+
+      RuntimeError: Bad StatusOr access: INVALID_ARGUMENT: Mosaic failed to compile TPU kernel: vector register allocation failed: innermost block dimension (96) is not a multiple of sublane width (128) for bfloat16 packing
+
+      Why does increasing sequence length from 512 to 1024 cause a vector register allocation failure, and how do I fix my grid and BlockSpec arithmetic to make seq_len=1024 compile?
+
+      # Imports
+      import jax
+      import jax.numpy as jnp
+      from jax.experimental import pallas as pl
+
+      # Initialization
+      def get_inputs():
+          k1, k2 = jax.random.split(jax.random.key(0))
+          # Batch=4, Heads=8, Seq=1024, Head_Dim=96
+          x = jax.random.normal(k1, (4, 8, 1024, 96), dtype=jnp.bfloat16)
+          w = jax.random.normal(k2, (96, 96), dtype=jnp.bfloat16)
+          return [x, w], {}
+
+      # Computation
+      def gqa_proj_kernel(x_ref, w_ref, o_ref):
+          # x_ref: (1, 1, 128, 96)
+          # w_ref: (96, 96)
+          x = x_ref[0, 0, ...] # (128, 96)
+          w = w_ref[...]       # (96, 96)
+
+          # Project and apply RMS scaling
+          proj = jnp.dot(x, w) # (128, 96)
+          scale = jax.lax.rsqrt(jnp.mean(jnp.square(proj.astype(jnp.float32)), axis=-1, keepdims=True) + 1e-6)
+          normed = (proj * scale.astype(jnp.bfloat16)).astype(jnp.bfloat16)
+
+          # Write to output
+          o_ref[0, 0, ...] = normed
+
+      @jax.jit
+      def computation(x, w):
+          batch, heads, seq, dim = x.shape
+          BLOCK_SEQ = 128
+          grid = (batch, heads, seq // BLOCK_SEQ)
+
+          return pl.pallas_call(
+              gqa_proj_kernel,
+              out_shape=jax.ShapeDtypeStruct(x.shape, x.dtype),
+              in_specs=[
+                  pl.BlockSpec(lambda b, h, s: (b, h, s, 0), (1, 1, BLOCK_SEQ, dim)),
+                  pl.BlockSpec(lambda b, h, s: (0, 0), (dim, dim))
+              ],
+              out_specs=pl.BlockSpec(lambda b, h, s: (0, 0, s, 0), (1, 1, BLOCK_SEQ, dim)),
+              grid=grid
+          )(x, w)
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT029
+      category: Hardware profiling and debugging
+      sub_category: Index map and grid errors
+      difficulty: Hard
+      has_code: 'Yes'
+      baseline_result: Stumped
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        The model must reject the premise that sequence length scaling caused the failure. It must diagnose that head_dim=96 violates TPU v6e VPU vector register alignment (innermost block dimensions must be divisible by 128 for bf16). It should explain that the tensor must be padded to (..., 128) in HBM. Furthermore, it must catch the silent memory-aliasing defect in out_specs where (0, 0, s, 0) causes all batches and heads to overwrite the same output buffer.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        The 3.1 Pro Preview model fell for the red herring and hallucinated a fake "1D flattening optimization" based on loop unrolling. Its proposed fix (increasing BLOCK_SEQ to 256) is completely invalid and will crash with the exact same Mosaic error, because the innermost dimension of the block shape remains 96. It failed to realize that HBM padding to 128 is strictly required for VPU sublane alignment.
+      weight: 0.5

@@ -1,0 +1,57 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT051 from the "TPU Knowledge Q&A" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat051
+    prompt: |-
+      I am training a Transformer model on a TPU v6e pod. To optimize performance, I replaced my manual `jnp.einsum` attention implementation with the official `jax.nn.dot_product_attention` API to leverage XLA's fused attention kernel.
+
+      However, immediately after making this switch, my model's training loss spikes to NaN within 20 steps. The code compiles without any errors and runs extremely fast, but when I dump the activations to debug, the outputs of `jax.nn.dot_product_attention` have near-zero cosine similarity compared to the mathematically correct outputs from my manual einsum code.
+
+      A teammate told me that the TPU v6e Matrix Multiply Unit (MXU) deprecated native `bfloat16` accumulation. They claim XLA is silently downcasting my attention logits to `float8` under the hood to fit the registers, destroying the precision. They said I must pass `precision=jax.lax.Precision.HIGHEST` to `dot_product_attention` to force it to use `float32` accumulation on the MXU.
+
+      Is my teammate correct? Why is `jax.nn.dot_product_attention` silently returning corrupted data on TPU v6e, and what is the exact fix or workaround I need to use to get mathematically correct attention outputs on this specific hardware?
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT051
+      category: TPU Knowledge Q&A
+      sub_category: Training Concerns
+      difficulty: Hard
+      has_code: 'No'
+      baseline_result: Stumped
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        The model must reject the teammate's false premise about float8 downcasting. It must identify that this is a known XLA compiler bug on TPU v6e (JAX Issue #35916) where the pattern-matcher lowers dot_product_attention into a broken fused kernel. Crucially, the model must warn the user that the teammate's workaround of passing Precision.HIGHEST will immediately crash with a TypeError, as jax.nn.dot_product_attention does not accept a precision argument. It should advise reverting to manual jnp.einsum until the bug is patched and provide the corresponding code.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        Both models failed. Gemini 3.7 Flash failed by hallucinating basic API mistakes (masking, layout) and missing the compiler defect entirely. Gemini 3.1 Pro also failed completely: it missed the TPU v6e XLA compiler bug, incorrectly blamed a missing scaling factor (even though modern JAX dot_product_attention scales by default), and critically failed to warn the user that the teammate's precision argument workaround would immediately crash with a Python TypeError, as jax.nn.dot_product_attention does not accept that argument.
+      weight: 0.5

@@ -1,0 +1,133 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# CSAT160 from the "Hardware profiling and debugging" category of the CSAT question set as a Harbor task.
+
+version: '1.0'
+suite_name: cset
+environment:
+  base_image: python:3.12-slim
+  pip_packages:
+  - google-auth
+  cpus: 2
+  memory_mb: 8192
+  storage_mb: 10240
+  workdir: /workspace
+evaluation:
+  judge_model: vertex_ai/gemini-3.8-flash
+  cases:
+  - name: csat160
+    prompt: |-
+      I'm currently profiling this vector similarity search pipeline on a TPU v4-8, and my custom Pallas nearest-neighbor kernel is flat-out crashing the Mosaic compiler during the lowering phase. We are working with 1 million 128-dimensional float32 embeddings, and I've chunked the queries by 384 and candidates by 256 to fully saturate the systolic arrays. Right now, I'm stuck between a few theories for the crash: either our DMA prefetch schedule inside PrefetchScalarGridSpec is misconfigured and starving the VPU, or our intermediate 384x256 similarity buffer is hitting a hard VMEM ceiling during double-buffering, which is forcing the compiler to reject the jnp.tile broadcast. Alternatively, there is some chatter that jnp.tile is simply broken in recent libtpu builds and requires an explicit DMA prefetch or dynamic memory workaround to actually compile.
+
+      Why is this DMA pipeline or tile allocation crashing the compiler with this internal error, and how do we rewrite this into an optimized, robust, production-level standalone kernel that runs cleanly on TPU v4-8?
+
+      Here is the minimal code excerpt:
+
+      import jax
+      from jax.experimental import pallas as pl
+      import jax.numpy as jnp
+      from jax.experimental.pallas import tpu as pltpu
+
+      def compute_knn(*, vectors, query_batch_size, cand_batch_size):
+          def kernel(query_vecs_ref, cand_bin_vecs_ref, out_ids_ref):
+              sims = jax.lax.dot_general(
+                  query_vecs_ref[:], # (q, d)
+                  cand_bin_vecs_ref[:], # (c, d)
+                  dimension_numbers=(
+                      ((1,), (1,)),
+                      ((), ())
+                  )
+              )
+              max_sims = jnp.zeros((query_batch_size, 1), dtype=jnp.float32)
+              a = jnp.zeros((query_batch_size, cand_batch_size), dtype=jnp.float32)
+              b = jnp.full((query_batch_size, cand_batch_size), jnp.float32(cand_batch_size))
+              cond = jax.lax.select(sims == max_sims, a, b)
+
+              max_idxes = jnp.min(cond, axis=1, keepdims=True).astype(jnp.int32)
+              # Dummy code, to demonstrate incorrect stack trace line.
+              max_ids = 42 + max_idxes
+              max_ids_tiled = jnp.tile(max_ids, (1, 128))
+              out_ids_ref[...] = max_ids_tiled
+
+          n, d = vectors.shape
+
+          grid_spec = pltpu.PrefetchScalarGridSpec(
+              num_scalar_prefetch=0,
+              grid=(1, 1),
+              in_specs=[
+                  pl.BlockSpec((query_batch_size, d), lambda i, j: (i, 0)),
+                  pl.BlockSpec((cand_batch_size, d), lambda i, j: (j, 0)),
+              ],
+              out_specs=pl.BlockSpec((query_batch_size, 128), lambda i, j: (i, 0)),
+          )
+
+          return pl.pallas_call(
+              kernel,
+              grid_spec=grid_spec,
+              out_shape=jax.ShapeDtypeStruct((n, 128), jnp.int32),
+          )(vectors, vectors)
+
+      The error trace is:
+        File "bug.py", line 29, in kernel
+          max_ids = 42 + max_idxes
+      jax._src.pallas.mosaic.error_handling.MosaicError: INTERNAL: Mosaic failed to compile TPU kernel: Not implemented: Lane broadcast
+    timeout_sec: 900.0
+    metadata:
+      uid: CSAT160
+      category: Hardware profiling and debugging
+      sub_category: Index map and grid errors
+      difficulty: Moderate
+      has_code: 'Yes'
+      baseline_result: Partially Solved
+    expectations:
+    - criterion: |-
+        The agent's final answer to the user agrees with this reference answer on every substantive point (diagnosis, recommendation and any code or numbers), with no contradicting or technically incorrect claims:
+
+        Stumped:
+        Chasing False Premise: The model completely falls for the false premises in the prompt. Instead of catching the traps, it goes down rabbit holes trying to tune DMA prefetch schedules in PrefetchScalarGridSpec, rework VMEM double-buffering budgets, or hack around imaginary libtpu bugs for jnp.tile.
+
+        Breaks Compiler Contracts: It spits out a kernel that immediately crashes the compiler by violating core Pallas and Mosaic API contracts. For example, it generates mismatched tensor and index-map ranks, ignores strict TPU register divisibility rules, like needing (8, 128) for 2D tiles and multiples of 128 for 1D vectors, or just straight-up hallucinates GPU-specific primitives on a TPU target.
+
+        Partially Solved:
+        Accurate Diagnosis: The model rejects all the false premises and correctly explains that TPU vector registers are structured as (sublanes, lanes) and reducing axis 1 leaves a (384, 1) tensor whose trailing dimension cannot be broadcast across 128 physical VPU lanes in 1 cycle.
+
+        Sublane Alignment: The model correctly identified the contraction transposition as the fix so that the reduction actually happens along the axis 0, which automatically preserves 128 lanes along axis 1.
+
+        Implementation Failure: The model provides correct diagnosis but fails to provide a correct implementation by containing BlockSpec rank mismatches, or crashing on an unpadded million vectors scale or contains a massive scratch to input HBM bloat.
+
+        Solved:
+        Nailing the Hardware Constraints: The model manages to perfectly identify the low-level hardware root cause and successfully calls out all the false premises in the prompt. It clearly explains how Mosaic's 2D register files and SIMD lane alignments actually dictate which broadcast patterns are supported. The model also passes trap 4 by clarifying that the stack trace pointing to 42 + max_idxes is a false alarm. The scalar addition is actually valid because it works as a sublane splat.
+
+        Lane Alignment: The model delivers a fully working, self-contained Pallas kernel. By transposing the contraction to reduce along the sublanes (axis 0), it perfectly aligns the intermediate vectors with the TPU's 128 physical lanes. Can only be tested once we have TPU access.
+
+        Clean Compiler Work: It writes valid, type-checked Pallas BlockSpec mappings where the ranks and shapes actually match and comply with strict hardware register rules, all without hallucinating any imaginary prefetch configurations.
+
+        VMEM Utilization: The model takes advantage of Pallas's sequential grid traversal to keep a running top-1 similarity score and index accumulator in place inside a fast VMEM. This allows it to write a compact N_queries tensor straight out to HBM, keeping the global memory footprint lean.
+
+        Robust Scaling: It easily handles arbitrary dataset sizes by padding the inputs to the nearest hardware tile multiple and masking OOB entries with negative infinity.
+      weight: 1.0
+    - criterion: |-
+        The agent's final answer avoids the mistakes a baseline model made on this question, described here:
+
+        Index Map Mismatch: The model tried to map a 3D output tensor out_shape = (grid_q, grid_c, q_block_size) using a 1D block shape pl.BlockSpec((q_block_size,), lambda qi, ci: (qi, ci)), where the index_map returns a 2D tuple (qi, ci). In Pallas. In JAX Pallas, the number of elements returned by your index_map must perfectly match the rank of your block_shape and the dimensions of the target tensor. Because there is a direct length mismatch here, 1D block shape vs. 2D index map for 3D tensor, this will instantly crash with a validation exception during graph tracing, before the kernel even gets a chance to get to the compiler's lowering phase.
+
+        Hardcoded Tile Divisibility: The model threw in a strict assert n_candidates % c_block_size == 0 check using a default block size of 512, completely ignoring the prompt instructions stating they are working with a million-vector dataset. The math was not considered by the model. 1 Million is not divisible by 512 or 256 or 128, the largest 2nd power that can divide a million is 64. So 1000000 modded by 512 leaves a remainder of 64 and the kernel will immediately crash with an AssertionError. The model should have padded the data to the nearest hardware-aligned multiple, like using jnp.pad to bump it up to 1,000,448, and then simply masked out those dummy candidates during the math.
+
+        Severe Memory Bloat: Instead of capturing the top 1 result in-place inside VMEM, the model flushes all intermediate data to global memory. This creates a ridiculous 30:1 scratch to input bloat ratio, 15.63 GB of temporary memory for just 512 MB of vectors, absolutely tanking performance by choking the memory bus, thrashing the cache, and causing a ton of extra HBM roundtrips.
+
+        Hallucinated MFU: The model also fails because there is no way this tiling strategy actually achieves >95% MFU with the current blocking scheme it is using. By setting q_block_size = 128, the kernel is forcing a reload of the full 512 MB candidate set ~7800 times, blowing up the HBM reads to around 4 TB. This drags the arithmetic intensity down to ~64 FLOP/byte. Since the TPU v4 roofline needs about 229 FLOP/byte to stay efficient, it is hugely memory-bound here, and the real MFU is stuck below 30%.
+
+        Bad PrefetchScalarGridSpec Semantics: The model mistakenly claims pltpu.PrefetchScalarGridSpec(num_scalar_prefetch=0, ...) enables double buffering. In reality, setting it to 0 just drops it back to a standard grid spec. Actual TPU double buffering is handled automatically under the hood by the Mosaic compiler’s VMEM allocation pipelines.
+      weight: 0.5

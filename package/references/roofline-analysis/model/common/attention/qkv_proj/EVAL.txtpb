@@ -1,0 +1,44 @@
+# Roofline answer keys for this component: one `cases` block per scenario, each a
+# self-contained prompt plus its expected values. Each expected value derives from the formulas
+# in this directory's SKILL.md. Originally a textproto eval suite bound to a proto schema that is
+# not part of this package; nothing parses the textproto grammar itself.
+suite_name: "qkv-proj-roofline"
+timeout_seconds: 300
+
+cases {
+  name: "q_proj_prefill"
+  prompt: "Calculate the memory time and compute time for the q_proj (Query Projection) of a standard transformer.\nWorkload parameters:\n- LHS (Activation): bf16 [64, 1024, 5376]\n- Number of Query Heads (H_q): 32\n- Head Dimension (D_h): 256\n- RHS (Weight): bf16 [5376, 8192]\nHardware parameters:\n- TPU: TPUv7x"
+  expectations: "The agent calculates compute time 6.4 ms"
+  expectations: "The agent calculates memory time 0.87ms"
+}
+
+cases {
+  name: "k_proj_prefill"
+  prompt: "Calculate the memory time and compute time for the k_proj (Key Projection) of a standard transformer.\nWorkload parameters:\n- LHS (Activation): bf16 [64, 1024, 5376]\n- Number of Key Heads (H_kv): 16\n- Head Dimension (D_h): 256\n- RHS (Weight): bf16 [5376, 4096]\nHardware parameters:\n- TPU: TPUv7x"
+  expectations: "The agent calculates compute time 3.23 ms"
+  expectations: "The agent calculates memory time 0.54 ms"
+}
+
+cases {
+  name: "v_proj_prefill"
+  prompt: "Calculate the memory time and compute time for the v_proj (Value Projection) of a standard transformer.\nWorkload parameters:\n- LHS (Activation): bf16 [64, 1024, 5376]\n- Number of Value Heads (H_kv): 16\n- Head Dimension (D_h): 256\n- RHS (Weight): bf16 [5376, 4096]\nHardware parameters:\n- TPU: TPUv7x"
+  expectations: "The agent calculates compute time 3.23 ms"
+  expectations: "The agent calculates memory time 0.54 ms"
+}
+
+cases {
+  name: "q_proj_prefill_tp8"
+  prompt: "Calculate the memory time and compute time for the q_proj (Query Projection) of a standard transformer.\nWorkload parameters:\n- LHS (Activation): bf16 [64, 1024, 5376]\n- Number of Query Heads (H_q): 32\n- Head Dimension (D_h): 256\n- RHS (Weight): bf16 [5376, 8192]\n- Tensor Parallelism: 8\nHardware parameters:\n- TPU: TPUv7x"
+  expectations: "The agent calculates compute time 0.8ms"
+  expectations: "The agent calculates memory time 0.29ms"
+  expectations: "there should be no collectives"
+}
+
+cases {
+  name: "k_proj_prefill_tp8_k_head=1_replicated"
+  prompt: "Calculate the memory time and compute time for the k_proj (Key Projection) of a standard transformer.\nWorkload parameters:\n- LHS (Activation): bf16 [64, 1024, 5376]\n- Number of Key Heads (H_kv): 1\n- Head Dimension (D_h): 256\n- RHS (Weight): bf16 [5376, 256]\n- Tensor Parallelism: 8\nHardware parameters:\n- TPU: TPUv7x"
+  expectations: "The agent calculates compute time 0.202 ms"
+  expectations: "The agent calculates memory time 0.23 ms"
+  expectations: "key projection head should be replicated"
+  expectations: "there should be no collectives"
+}
