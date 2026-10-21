@@ -243,6 +243,35 @@ DOCUMENT_PROFILES: dict[str, dict[str, Any]] = {
         "plugins": _agentx_session_plugins(),
         "scheduling_profiles": AGENTX_SCHEDULING_PROFILES,
     },
+    "agentx-prefix-token-session": {
+        "api_version": "llm-d.ai/v1",
+        "experimental": True,
+        "pd_only": True,
+        "source": "tpu-llmd hybrid session-affinity + prefix-cache + "
+                  "token-load + active-request scoring",
+        "plugins": _agentx_session_plugins() + [
+            {"type": "approx-prefix-cache-producer"},
+            {"type": "prefix-cache-scorer", "name": "prefix-cache"},
+            {"type": "token-load-scorer", "name": "token-load"},
+        ],
+        "scheduling_profiles": [
+            {"name": "prefill", "plugins": [
+                {"pluginRef": "prefill-filter"},
+                {"pluginRef": "session-affinity-prefill"},
+                {"pluginRef": "prefix-cache", "weight": 2.0},
+                {"pluginRef": "token-load", "weight": 2.0},
+                {"pluginRef": "active-requests", "weight": 1.0},
+                {"pluginRef": "max-score-picker"},
+            ]},
+            {"name": "decode", "plugins": [
+                {"pluginRef": "decode-filter"},
+                {"pluginRef": "session-affinity-decode"},
+                {"pluginRef": "token-load", "weight": 2.0},
+                {"pluginRef": "active-requests", "weight": 1.0},
+                {"pluginRef": "max-score-picker"},
+            ]},
+        ],
+    },
 }
 
 # Engine knobs the fleet may tune, and the vllm flag each sets. The
@@ -264,6 +293,7 @@ ENGINE_MAPPED_ONLY: tuple[str, ...] = (
     "kv_cpu_offload_bytes",      # host-DRAM prefix tier size per engine
     "hma_max_inflight_pulls",    # decode-side KV pull concurrency
     "mtp_num_speculative_tokens",
+    "expert_placement",          # TPU_EXPERT_PLACEMENT (e.g. corr_c32, corr_c64_mk2p, corr_c112_mk2p)
 )
 
 NAME_RE = re.compile(r"^[a-z0-9]([-a-z0-9]{0,38}[a-z0-9])?$")
@@ -1390,6 +1420,9 @@ def _server_deployment(name: str, role: str, recipe: dict[str, Any],
     }
     if pod_extra.get("tolerations"):
         pod_spec["tolerations"] = copy.deepcopy(pod_extra["tolerations"])
+    if pod_extra.get("image_pull_secrets"):
+        pod_spec["imagePullSecrets"] = copy.deepcopy(
+            pod_extra["image_pull_secrets"])
     if pod_extra.get("termination_grace_period_s"):
         pod_spec["terminationGracePeriodSeconds"] = int(
             pod_extra["termination_grace_period_s"])
@@ -1431,12 +1464,16 @@ def _server_deployment(name: str, role: str, recipe: dict[str, Any],
         },
     }
     if hosts == 1:
+        strategy = pod_extra.get("strategy")
+        if isinstance(strategy, str):
+            strategy = {"type": strategy}
         return {
             "apiVersion": "apps/v1",
             "kind": "Deployment",
             "metadata": metadata,
             "spec": {
                 "replicas": replicas,
+                **({"strategy": copy.deepcopy(strategy)} if strategy else {}),
                 "selector": {"matchLabels": selector},
                 "template": {
                     "metadata": {"labels": pod_labels},
@@ -1654,14 +1691,11 @@ def _document_epp_config(config: dict[str, Any]) -> dict[str, Any]:
         if isinstance(flow, dict):
             if flow.get("request_ttl"):
                 block["defaultRequestTTL"] = str(flow["request_ttl"])
-            detector = dict(flow.get("saturation_detector") or {})
-            if detector:
-                det_type = detector.pop("type", "utilization-detector")
-                block["saturationDetector"] = {"type": det_type,
-                                               **detector}
         doc["featureGates"] = list(profile.get("feature_gates") or [])
         doc["flowControl"] = block
-        plugins = copy.deepcopy(profile.get("flow_plugins") or []) + plugins
+        plugins = (copy.deepcopy(profile.get("flow_plugins") or []) +
+                   (flow_control_plugins(flow) if isinstance(flow, dict)
+                    else []) + plugins)
     elif flow and not profile.get("flow_control"):
         raise DeployError(
             f"router.profile {router['profile']!r} has no flow-control"
@@ -1861,6 +1895,11 @@ def router_images(recipe: dict[str, Any] | None) -> dict[str, str]:
     }
 
 
+def _envoy_preset() -> str:
+    return (pathlib.Path(__file__).resolve().parent /
+            "envoy_preset.yaml").read_text(encoding="utf-8")
+
+
 def router_values(name: str, config: dict[str, Any],
                   fleet: dict[str, Any] | None = None,
                   env: dict[str, Any] | None = None,
@@ -1908,9 +1947,14 @@ def router_values(name: str, config: dict[str, Any],
         epp["affinity"] = env["control_plane_affinity"]
     if env.get("control_plane_tolerations"):
         epp["tolerations"] = env["control_plane_tolerations"]
+    pd = config["topology"].get("mode") == "disaggregated"
+    envoy_cm: dict[str, Any] = {"name": proxy_configmap_name(name)}
+    if pd:
+        envoy_cm["data"] = {"envoy.yaml": _envoy_preset()}
     proxy: dict[str, Any] = {
         "proxyType": "envoy",
         "mode": router.get("proxy_mode") or "sidecar",
+        **({"failOpen": False} if pd else {}),
         "args": [
             "--service-node", "envoy-sidecar", "--log-level", "warn",
             "--concurrency", "8", "--drain-strategy", "immediate",
@@ -1925,8 +1969,7 @@ def router_values(name: str, config: dict[str, Any],
         # alone created a second ConfigMap while the pod still mounted
         # `envoy`, which was found live when the pod was rescheduled after
         # the study release that owned `envoy` was gone.
-        "presets": {"envoy": {"configMap": {
-            "name": proxy_configmap_name(name)}}},
+        "presets": {"envoy": {"configMap": envoy_cm}},
         "resources": sizing_for("proxy", env),
     }
     if router.get("proxy_replicas"):
@@ -2311,14 +2354,17 @@ def agentx_bench_script(profile: dict[str, Any], *, base_url: str,
                     f' | tr "," " "); else set --; fi')
     lines = [
         "set -euo pipefail",
-        "export PATH=/venv/bin:$PATH",
-        "uv venv --python 3.11 /venv >/dev/null",
-        f"uv pip install --python /venv/bin/python -q"
+        "export PATH=/root/aiperf-venv/bin:/venv/bin:$PATH",
+        "if [ -d /root/.cache/huggingface/hub ]; then export HF_HUB_CACHE=/root/.cache/huggingface/hub; fi",
+        "if ! command -v aiperf >/dev/null 2>&1; then",
+        "  uv venv --python 3.11 /venv >/dev/null",
+        f"  uv pip install --python /venv/bin/python -q"
         f" \"git+{pins.AIPERF_REPO}@{agentx['aiperf_ref']}\""
         " \"datasets>=4.7.0\" \"huggingface_hub[cli]>=0.25.0\" urllib3"
         " requests",
+        "fi",
         f"hf download --repo-type dataset {json.dumps(agentx['dataset'])}"
-        " >/dev/null",
+        " >/dev/null || true",
         # The EPP's agent-identity and session-affinity plugins read these
         # headers; aiperf derives them from each trajectory's correlation
         # id (qwen3.5_fp8_tpuv7_vllm-disagg-llmd.sh).
@@ -2392,6 +2438,10 @@ def agentx_bench_job(name: str, env: dict[str, Any], production: bool,
                     "restartPolicy": "Never",
                     **({"nodeSelector": dict(env["cpu_node_selector"])}
                        if env.get("cpu_node_selector") else {}),
+                    **({"imagePullSecrets": copy.deepcopy(
+                        (recipe.get("pod") or {}).get("image_pull_secrets"))}
+                       if (recipe.get("pod") or {}).get(
+                           "image_pull_secrets") else {}),
                     "containers": [{
                         "name": AGENTX_BENCH_CONTAINER,
                         "image": str(env.get("aiperf_image") or

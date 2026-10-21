@@ -65,6 +65,12 @@ def recipe_claims(recipe: dict[str, Any]) -> list[dict[str, Any]]:
     out = []
     for vol in pod.get("volumes") or []:
         pvc = vol.get("persistentVolumeClaim")
+        eph = ((vol.get("ephemeral") or {}).get("volumeClaimTemplate")
+               or {}).get("spec") or {}
+        ds = eph.get("dataSource") or {}
+        if not pvc and ds.get("kind") == "PersistentVolumeClaim" and ds.get(
+                "name"):
+            pvc = {"claimName": ds["name"], "readOnly": False}
         if not pvc:
             continue
         mount = mounts.get(vol.get("name")) or {}

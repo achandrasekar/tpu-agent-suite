@@ -94,7 +94,7 @@ def _marker(kind: str, x: float, y: float, r: float, color: str,
 
 def scatter_svg(series: list[dict[str, Any]], *, title: str,
                 x_label: str, y_label: str, log_x: bool = True,
-                log_y: bool = False, width: int = 960, height: int = 600,
+                log_y: bool = False, width: int = 1200, height: int = 680,
                 subtitle: str = "", footnote: str = "") -> str:
     """`series`: [{"name", "points": [{"x", "y", "label"?, "hollow"?,
     "on_line"?, "faded"?}], "color"?, "marker"?, "dashed"?, "width"?}].
@@ -102,7 +102,7 @@ def scatter_svg(series: list[dict[str, Any]], *, title: str,
     false (a caller drawing a Pareto frontier sets it on the frontier
     only); a `faded` point is drawn translucent and unlabelled (a
     dominated point); a hollow point is one that failed its gate."""
-    pad_l, pad_r, pad_t, pad_b = 90, 260, 70, 80
+    pad_l, pad_r, pad_t, pad_b = 95, 420, 75, 85
     plot_w = width - pad_l - pad_r
     plot_h = height - pad_t - pad_b
     xs = [p["x"] for s in series for p in s["points"]

@@ -94,6 +94,33 @@
                     "boolean",
                     "null"
                   ]
+                },
+                "kv_cpu_offload_bytes": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "hma_max_inflight_pulls": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 1
+                },
+                "mtp_num_speculative_tokens": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "expert_placement": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 }
               }
             }
@@ -164,6 +191,33 @@
                 "async_scheduling": {
                   "type": [
                     "boolean",
+                    "null"
+                  ]
+                },
+                "kv_cpu_offload_bytes": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "hma_max_inflight_pulls": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 1
+                },
+                "mtp_num_speculative_tokens": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "expert_placement": {
+                  "type": [
+                    "string",
                     "null"
                   ]
                 }
@@ -434,6 +488,21 @@
         },
         "async_scheduling": {
           "type": "boolean"
+        },
+        "kv_cpu_offload_bytes": {
+          "type": "number",
+          "minimum": 0
+        },
+        "hma_max_inflight_pulls": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "mtp_num_speculative_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "expert_placement": {
+          "type": "string"
         }
       }
     },

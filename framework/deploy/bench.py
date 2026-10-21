@@ -43,7 +43,7 @@ from . import pins, render, workload
 from .config import DeployEnv
 from .kube import DeployError, Kube
 
-DEFAULT_JOB_TIMEOUT_S = 3600
+DEFAULT_JOB_TIMEOUT_S = 7200
 POLL_S = 20
 # Where inference-perf puts TPOT; the first key found is used, and the
 # report says which so a change upstream is visible rather than silent.
@@ -944,6 +944,14 @@ def run_agentx_bench(env: DeployEnv, release_dir: pathlib.Path, *,
                 if role_hit is not None:
                     ax_block["gpu_prefix_hit_rate"] = role_hit
                     ax_block["prefix_hit_source"] = "pod-proxy-sample"
+            if ax_block.get("cpu_prefix_hit_rate") is None:
+                ext_hit = (summary["roles"].get(metrics_role) or {}).get(
+                    "external_hit_rate")
+                if ext_hit is not None:
+                    ax_block["cpu_prefix_hit_rate"] = ext_hit
+                    ax_block["prefix_hit_source"] = (
+                        ax_block.get("prefix_hit_source") or
+                        "pod-proxy-sample")
             summary["drain"] = drain
             summary["prefix_reset"] = resets
             summary["job"] = name

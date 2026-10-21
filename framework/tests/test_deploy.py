@@ -2063,8 +2063,10 @@ class AgentXLaunchRenderTest(unittest.TestCase):
                                     "program-aware-fairness": {
                                         "turnPriorityTimeWeight": 0.1}}
         tuned = render.epp_config(cfg)
-        self.assertEqual(tuned["flowControl"]["saturationDetector"]
-                         ["queueDepthThreshold"], 20)
+        self.assertNotIn("saturationDetector", tuned["flowControl"])
+        det = next(p for p in tuned["plugins"]
+                   if p["type"] == "utilization-detector")
+        self.assertEqual(det["parameters"]["queueDepthThreshold"], 20)
         fair = next(p for p in tuned["plugins"]
                     if p["type"] == "program-aware-fairness")
         self.assertEqual(fair["parameters"]["turnPriorityTimeWeight"], 0.1)

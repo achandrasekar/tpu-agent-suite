@@ -449,6 +449,19 @@
         "termination_grace_period_s": {
           "type": "integer",
           "minimum": 0
+        },
+        "strategy": {
+          "type": [
+            "string",
+            "object"
+          ],
+          "description": "Deployment strategy for single-host pools (e.g. \"Recreate\" when a node pool has no spare accelerator nodes for RollingUpdate)."
+        },
+        "image_pull_secrets": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
         }
       }
     },

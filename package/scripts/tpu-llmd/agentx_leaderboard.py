@@ -133,16 +133,33 @@ def _config_tag(report: dict[str, Any], config: dict[str, Any] | None) -> str:
             shape = f"{p}P{d}D"
         else:
             shape = f"{(topo.get('decode') or {}).get('replicas', '?')}x agg"
-        router = (config.get("router") or {}).get("profile", "")
-        router = {"agentx-turn-priority": "turn-priority",
-                  "agentx-session-affinity": "nofc"}.get(router, router)
+        router_cfg = config.get("router") or {}
+        router = router_cfg.get("profile", "")
+        router = {
+            "agentx-turn-priority": "turn-priority",
+            "agentx-session-affinity": "nofc",
+            "agentx-prefix-token-session": "prefix-token-session",
+        }.get(router, router)
+        if router_cfg.get("flow_control"):
+            router = f"{router}-retuned"
         knobs = []
+        knob_aliases = {
+            "expert_placement": "ep",
+            "hma_max_inflight_pulls": "hma",
+        }
         for role in ("prefill", "decode"):
             for k, v in ((topo.get(role) or {}).get("engine") or {}).items():
-                knobs.append(f"{role[0]}.{k}={v}")
+                knobs.append(f"{role[0]}.{knob_aliases.get(k, k)}={v}")
         for k, v in (config.get("engine") or {}).items():
-            knobs.append(f"{k}={v}")
-        return " ".join([shape, router] + knobs).strip()
+            if isinstance(v, dict):
+                for sk, sv in v.items():
+                    knobs.append(f"{k[0]}.{knob_aliases.get(sk, sk)}={sv}")
+            else:
+                knobs.append(f"{knob_aliases.get(k, k)}={v}")
+        base_tag = " ".join([shape, router] + knobs).strip()
+        if float((report.get("agentx") or {}).get("duration_s") or 0) >= 3500:
+            return f"{base_tag} (3600s)"
+        return base_tag
     rel = report.get("release") or {}
     return f"{rel.get('name', '?')} {rel.get('router_profile', '')}".strip()
 
@@ -172,7 +189,7 @@ def points_from_report(report: dict[str, Any], *, config: dict[str, Any] | None,
             "source": "study",
             "execution_id": report.get("execution_id"),
             "conc": p.get("concurrency"),
-            "chips": chips,
+            "chips": int(p.get("chips") or chips or 0),
             "total_tokens_per_s_per_chip": total,
             "output_tokens_per_s_per_chip": (
                 metrics.get("output_tokens_per_s_per_chip") or {}).get("value"),
@@ -189,6 +206,9 @@ def points_from_report(report: dict[str, Any], *, config: dict[str, Any] | None,
             "e2e_p50_s": e2e.get("p50"),
             "gpu_prefix_hit_rate": a.get("gpu_prefix_hit_rate"),
             "cpu_prefix_hit_rate": a.get("cpu_prefix_hit_rate"),
+            "decode_gpu_prefix_hit_rate": (
+                ((p.get("roles") or {}).get("decode") or {}).get(
+                    "prefix_hit_rate")),
             "ok": (rep.get("requests") or {}).get("ok"),
             # profiled requests: ok + failed (warm-ups are not measured)
             "total": ((rep.get("requests") or {}).get("ok") or 0)
@@ -215,11 +235,11 @@ def _config_for(path: pathlib.Path, report: dict[str, Any],
     if study_dir and exec_id:
         cands += sorted(pathlib.Path(study_dir).rglob(
             f"configs/{exec_id}.json"))
+    cands += [path.parent / "llmd-config.json",
+              path.parent.parent / "llmd-config.json"]
     if study_dir and name:
         cands.append(pathlib.Path(study_dir) / "releases" / name /
                      "llmd-config.json")
-    cands += [path.parent / "llmd-config.json",
-              path.parent.parent / "llmd-config.json"]
     for rel in path.parents:
         if (rel / "release.json").is_file():
             cands.append(rel / "llmd-config.json")
@@ -448,9 +468,9 @@ def markdown(points: list[dict[str, Any]], lb_points: list[dict[str, Any]],
     lines += ["## This study's points", "",
               "| configuration | conc | chips | total tok/s/chip | out tok/s/chip"
               " | tok/$ | TTFT p50 (s) | TTFT p90 (s) | TPOT p50 (ms) |"
-              f" {xk} | intvty p50 | E2E p50 (s) | GPU hit | CPU hit |"
+              f" {xk} | intvty p50 | E2E p50 (s) | GPU hit | CPU hit | Dec HBM hit |"
               " ok/total | qualifies | frontier |",
-              "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|---|"]
+              "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|---|"]
     for p in sorted(points, key=lambda p: (p["series"], p.get("conc") or 0)):
         lines.append(
             f"| {p['series']} | {p.get('conc')} | {p.get('chips')} |"
@@ -463,12 +483,13 @@ def markdown(points: list[dict[str, Any]], lb_points: list[dict[str, Any]],
             f" {_f(p.get('e2e_p50_s'), 2)} |"
             f" {_f(p.get('gpu_prefix_hit_rate'), pct=True)} |"
             f" {_f(p.get('cpu_prefix_hit_rate'), pct=True)} |"
+            f" {_f(p.get('decode_gpu_prefix_hit_rate'), pct=True)} |"
             f" {p.get('ok')}/{p.get('total')} |"
             f" {'✅' if p.get('admissible') else '❌'}"
             f"{'' if p.get('submission_valid', True) else ' (short run)'} |"
             f" {'●' if p.get('frontier') else '○'} |")
     if not points:
-        lines.append("| (no AgentX report found) | | | | | | | | | | | | | | | | |")
+        lines.append("| (no AgentX report found) | | | | | | | | | | | | | | | | | |")
     best: dict[str, dict[str, Any]] = {}
     for p in points:
         if not p.get("admissible") or p.get(
@@ -560,7 +581,7 @@ def _topology_short(key: Any) -> str:
 
 
 def render_png(svg_path: pathlib.Path, png_path: pathlib.Path,
-               size: tuple[int, int] = (1000, 640)) -> str | None:
+               size: tuple[int, int] = (1240, 720)) -> str | None:
     """Rasterise with a headless Chrome/Chromium if one is installed
     (ImageMagick's built-in SVG renderer fills stroked paths; browsers
     render these charts correctly). Returns the browser used, or None."""

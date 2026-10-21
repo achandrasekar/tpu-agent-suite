@@ -75,6 +75,7 @@ class DeployEnv:
     prometheus_url: str = ""
     prometheus_project: str = ""
     inference_perf_image: str = pins.INFERENCE_PERF_IMAGE
+    aiperf_image: str = ""
     max_chips_default: int = DEFAULT_MAX_CHIPS
     compute_backend: str = ""
     # Pod sizes for the non-accelerator parts of a release (bench Job, EPP,
@@ -131,6 +132,7 @@ class DeployEnv:
                 or ""),
             inference_perf_image=str(
                 llmd.get("inference_perf_image") or pins.INFERENCE_PERF_IMAGE),
+            aiperf_image=str(llmd.get("aiperf_image") or ""),
             max_chips_default=int(
                 llmd.get("max_chips_default") or DEFAULT_MAX_CHIPS),
             compute_backend=str(backend or ""),
