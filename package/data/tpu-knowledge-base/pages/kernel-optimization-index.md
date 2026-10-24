@@ -47,7 +47,7 @@ The reasoning in this page is **hardware-invariant**: the core thesis, the three
 3. [`briefs.md`](briefs.md) (`index.py get briefs`) — the earned rules, whole (the canonical `bench()` timing helper is its §1).
 4. The kernel's **class page** from the routing table (the `index.py get` keyword next to its link) + its **category doc distillation(s)** from the map below.
 
-The **canonical category slugs** (see the routing table in [Kernel categories](#kernel-categories--the-routing-table-which-class-page-an-author-loads)): `attention` · `gemm-conv-epilogue` · `streaming-reduction` · `grouped-ragged-indirection` · `state-carry-scan` · `dense-near-roofline` · `cross-chip-collective`. If Pallas grid/BlockSpec semantics are unfamiliar, also load pallas-grid-blockspec (`index.py get grid-blockspec`).
+The **canonical category slugs** (see the routing table in [Kernel categories](#kernel-categories--the-routing-table-which-class-page-an-author-loads)): `attention` · `gemm-conv-epilogue` · `streaming-reduction` · `grouped-ragged-indirection` · `state-carry-scan` · `dense-near-roofline` · `cross-chip-collective` · `megakernel`. If Pallas grid/BlockSpec semantics are unfamiliar, also load pallas-grid-blockspec (`index.py get grid-blockspec`).
 
 **When the catalog has a match** — load 1–2 exemplar kernel pages from the [catalog](#kernel-catalog--reuse-before-you-write-unless-authorship-is-the-point) matching the category as *structure* examples, not answers.
 
@@ -62,6 +62,7 @@ The **canonical category slugs** (see the routing table in [Kernel categories](#
 | [`attention-pallas-data-management`](attention-pallas-data-management.md) (`index.py get attention-pallas-data-management`) | paged KV cache tables, asynchronous block fetching, scalar prefetch | grouped / ragged / paged / indirection kernels |
 | tpu-hardware (`index.py get hw-tpu-v6e`) (+ mxu (`index.py get concept-mxu`), [vpu](vpu.md) (`index.py get vpu`), vmem (`index.py get concept-vmem`)) | TPU architecture background (MXU/VPU/VMEM, chip topology) | the model has no TPU background |
 | [`kernel-cross-chip-collective`](kernel-cross-chip-collective.md) (`index.py get kernel-class-cross-chip-collective`) | RDMA, DMA semaphores, collective kernel patterns | cross-chip kernels (ring attention, in-kernel collectives) |
+| [`kernel-megakernel`](kernel-megakernel.md) (`index.py get kernel-class-megakernel`) (+ Inferact tpu-megakernels (`index.py get inferact-tpu-megakernels`)) | full-model / multi-layer decode & verify megakernels, bank-ring DMA, `pool_alias` VMEM aliasing, in-kernel ICI collectives | full-model or multi-layer decode/speculative-verify fusion (`megakernel`) |
 
 ## The three sinks of lost time (and their canonical fixes)
 
@@ -108,6 +109,7 @@ Classify by **the measured bound and the op's structure, not the op's name**; th
 | **state-carry-scan** | linear recurrence / chunked scan with carried state (SSM, retention, linear attention) | [`kernel-state-carry-scan.md](kernel-state-carry-scan.md) (`index.py get kernel-state-carry-scan`) |
 | **dense-near-roofline** | one large dense contraction already near compute roofline, no epilogue | [`kernel-dense-near-roofline.md](kernel-dense-near-roofline.md) (`index.py get kernel-class-dense-near-roofline`) |
 | **cross-chip-collective** | op spans chips (ring attention, in-kernel collectives) | [`kernel-cross-chip-collective.md](kernel-cross-chip-collective.md) (`index.py get kernel-class-cross-chip-collective`) |
+| **megakernel** | full-model or multi-layer autoregressive decode / speculative tree-verification where op-by-op HBM round-trips, kernel dispatch, and host-driven collectives dominate | [`kernel-megakernel.md`](kernel-megakernel.md) (`index.py get kernel-class-megakernel`) |
 
 **Serving attention: confirm the kernel before tuning it.** A vLLM server's paged attention is bound at startup by its environment, not by `--attention-backend`: tpu-inference picks the experimental `batched_rpa` kernel or RPA v3, and sessions on the torchtpu-vllm-dev nightly-20260804 image found `batched_rpa` running. Check the startup log or the trace kernel names against `index.py get attention-kernel-dispatch` before timing or editing either one; a loop on the kernel the server doesn't call can't move end-to-end time.
 

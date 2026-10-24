@@ -100,6 +100,7 @@ compute-bound thresholds per generation: [Critical batch size](wiki/concepts/cri
 - [Kernel Grouped Ragged Indirection](wiki/kernel/kernel-grouped-ragged-indirection.md) — Grouped, ragged, MoE, and paged KV kernels.
 - [Kernel State Carry Scan](wiki/kernel/kernel-state-carry-scan.md) — State-carry and chunked scans for SSM and linear attention.
 - [Kernel Streaming Reduction](wiki/kernel/kernel-streaming-reduction.md) — Streaming reductions for norms, cross-entropy, and softmax.
+- [Kernel Megakernel](wiki/kernel/kernel-megakernel.md) — Full-model and multi-layer decode/verify megakernels with bank-ring DMA, VMEM pool aliasing, and in-kernel ICI collectives.
 - [Kernel Briefs](wiki/kernel/briefs.md) — Distilled rules for measurement, parity, and debugging.
 - [Pallas Kernel](wiki/kernel/pallas-kernel.md) — Authoring custom Pallas kernels and compiling to Mosaic.
 
@@ -138,6 +139,7 @@ compute-bound thresholds per generation: [Critical batch size](wiki/concepts/cri
 - [torchtitan repo snapshot (2026-10)](wiki/sources/2026-10-torchtitan-repo.md) - provenance record of the torchtitan re-ingest at 033f1313: the upstream rebase and new models, config remaps and re-seeds, doc scope (45 -> 56 doc-concept pages), verification, hygiene, doc-versus-code mismatches and gaps.
 - [torch_tpu repo snapshot (2026-10, release/0.1.2)](wiki/sources/2026-10-torch-tpu-repo.md) — provenance record of the torch_tpu re-ingest at the release/0.1.2 head 6d2a4575: the repo restructure, reconcile, docs scope, verification and hygiene.
 - [torchtitan repo snapshot (2026-09)](wiki/sources/2026-09-torchtitan-repo.md) - provenance record of the torchtitan ingest at 63e334d5: pin, indexing, coverage, verification, the experiments/ workaround, gaps and caveats.
+- [Inferact tpu-megakernels repo snapshot (2026-10)](wiki/sources/2026-10-inferact-tpu-megakernels.md) — provenance record of Inferact/tpu-megakernels (97dcfa1): Kimi K3 TP32, Qwen3.8-27B TP8, Muse-Spark-Open NVFP4 megakernels, pool_alias, and collectives32.
 
 ## Analyses
 - [30-Model Onboarding Learnings](wiki/analyses/30-model-onboarding-learnings.md) — Empirical rules and compilation cache receipts from onboarding 30 GPU architectures to TPU v5e/v6e.

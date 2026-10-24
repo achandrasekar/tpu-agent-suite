@@ -47,7 +47,7 @@ The reasoning in this page is **hardware-invariant**: the core thesis, the three
 3. [`kernel/briefs.md`](kernel/briefs.md) — the earned rules, whole (the canonical `bench()` timing helper is its §1).
 4. The kernel's **class page** from the routing table (`wiki/kernel/kernel-<category>.md`) + its **category doc distillation(s)** from the map below.
 
-The **canonical category slugs** (see the routing table in [Kernel categories](#kernel-categories--the-routing-table-which-class-page-an-author-loads)): `attention` · `gemm-conv-epilogue` · `streaming-reduction` · `grouped-ragged-indirection` · `state-carry-scan` · `dense-near-roofline` · `cross-chip-collective`. If Pallas grid/BlockSpec semantics are unfamiliar, also load [pallas-grid-blockspec](concepts/grid_blockspec.md).
+The **canonical category slugs** (see the routing table in [Kernel categories](#kernel-categories--the-routing-table-which-class-page-an-author-loads)): `attention` · `gemm-conv-epilogue` · `streaming-reduction` · `grouped-ragged-indirection` · `state-carry-scan` · `dense-near-roofline` · `cross-chip-collective` · `megakernel`. If Pallas grid/BlockSpec semantics are unfamiliar, also load [pallas-grid-blockspec](concepts/grid_blockspec.md).
 
 **When the catalog has a match** — load 1–2 exemplar kernel pages from the [catalog](#kernel-catalog--reuse-before-you-write-unless-authorship-is-the-point) matching the category as *structure* examples, not answers.
 
@@ -62,6 +62,7 @@ The **canonical category slugs** (see the routing table in [Kernel categories](#
 | [`attention-pallas-data-management`](kernel/attention-pallas-data-management.md) | paged KV cache tables, asynchronous block fetching, scalar prefetch | grouped / ragged / paged / indirection kernels |
 | [tpu-hardware](hardware/tpu-v6e.md) (+ [mxu](concepts/mxu.md), [vpu](concepts/vpu.md), [vmem](concepts/vmem.md)) | TPU architecture background (MXU/VPU/VMEM, chip topology) | the model has no TPU background |
 | [`kernel-cross-chip-collective`](kernel/kernel-cross-chip-collective.md) | RDMA, DMA semaphores, collective kernel patterns | cross-chip kernels (ring attention, in-kernel collectives) |
+| [`kernel-megakernel`](kernel/kernel-megakernel.md) (+ [Inferact tpu-megakernels](sources/2026-10-inferact-tpu-megakernels.md)) | full-model / multi-layer decode & verify megakernels, bank-ring DMA, `pool_alias` VMEM aliasing, in-kernel ICI collectives | full-model or multi-layer decode/speculative-verify fusion (`megakernel`) |
 
 ## The three sinks of lost time (and their canonical fixes)
 
@@ -108,6 +109,7 @@ Classify by **the measured bound and the op's structure, not the op's name**; th
 | **state-carry-scan** | linear recurrence / chunked scan with carried state (SSM, retention, linear attention) | [kernel/kernel-state-carry-scan.md](kernel/kernel-state-carry-scan.md) |
 | **dense-near-roofline** | one large dense contraction already near compute roofline, no epilogue | [kernel/kernel-dense-near-roofline.md](kernel/kernel-dense-near-roofline.md) |
 | **cross-chip-collective** | op spans chips (ring attention, in-kernel collectives) | [kernel/kernel-cross-chip-collective.md](kernel/kernel-cross-chip-collective.md) |
+| **megakernel** | full-model or multi-layer autoregressive decode / speculative tree-verification where op-by-op HBM round-trips, kernel dispatch, and host-driven collectives dominate | [kernel/kernel-megakernel.md](kernel/kernel-megakernel.md) |
 
 *already-optimal* is not a category but a terminal OUTCOME any category can reach (HLO shows fusion-complete/near-roofline): refute cheaply with the HLO as evidence.
 

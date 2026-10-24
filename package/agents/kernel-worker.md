@@ -27,9 +27,13 @@ scripts:
 - scripts/tpu-kernel-development/verify_port.py
 - scripts/tpu-kernel-development/ledger.py
 - scripts/tpu-kernel-development/apply_best_config.py
+- scripts/tpu-kernel-development/megakernel_analyzer.py
+- scripts/tpu-kernel-integrator/build_plugin.py
+- scripts/tpu-kernel-integrator/inplace_harness.py
 references:
 - references/tpu-kernel-development/general_rules.md
 - references/tpu-kernel-development/torchax-oracle-pipeline.md
+- references/tpu-kernel-development/concepts/megakernel.md
 - references/tpu-kernel-development/kernel-worker/synthesize-baseline.md
 - references/tpu-kernel-development/kernel-worker/analyze-torch-source.md
 - references/tpu-kernel-development/kernel-worker/reconcile-reference.md
@@ -1216,6 +1220,16 @@ Tokamax kernel. Skip steps 1 and 2 below and follow
         `{kernel_plan_path}`, matching the input shapes/static args defined by
         `{test_file_path}`'s `get_inputs()`, and write the complete script to
         `{optimized_kernel_path}`.
+    -   When synthesizing a full-model or multi-layer decode / speculative-verify
+        **megakernel** (or when `target_op` names a megakernel or fused decoder
+        block), read {{reference:tpu-kernel-development/concepts/megakernel.md}}
+        and run `python3 {{script:tpu-kernel-development/megakernel_analyzer.py}}`
+        to compute the Bank-Ring tile schedule (`tile_hw`), `pool_alias` VMEM
+        budget, 64-wide two-heads-per-row packing, and in-kernel ICI remote DMA
+        collective plan (`make_async_remote_copy`), and to emit the `vllm-torchtpu`
+        plugin scaffold (`op_<slug>.py` and `case_<slug>.py`) for packaging with
+        `{{script:tpu-kernel-integrator/build_plugin.py}}` and verification with
+        `{{script:tpu-kernel-integrator/inplace_harness.py}}`.
 
 ### Phase 2: Compilation & Repair Loop
 

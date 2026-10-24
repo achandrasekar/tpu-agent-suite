@@ -57,7 +57,7 @@ flowchart LR
 
 1. **Baseline Onboarding (`tpu-model-onboarding`)**: Verifies model compatibility and numerical parity, deploys the baseline server, and measures initial throughput/latency.
 2. **Empirical Profiling (`tpu-diagnostics`)**: Attaches to the running baseline server in-place with XProf to identify hot kernels and rank performance bottlenecks (`levers`).
-3. **Kernel Optimization (`tpu-kernel-development`)**: When the top lever is `kernel-block`, synthesizes and autotunes custom Pallas TPU kernels for the primary bottleneck, validating in-place parity and block-level speedup before deployment. *(Note: If profiling indicates non-kernel bottlenecks, optimization routes to serving-configuration adjustments instead).*
+3. **Kernel Optimization (`tpu-kernel-development`)**: When the top lever is `kernel-block` (or when the user asks to synthesize a full-model or multi-layer decode/verify megakernel for a new architecture), synthesizes and autotunes custom Pallas TPU kernels or full-stack megakernels (with Bank-Ring weight streaming, `pool_alias` VMEM aliasing, and in-kernel ICI collectives), validating in-place parity and block-level speedup and packaging the result into a `tpu_agent_suite_kernels` plugin for `vllm-torchtpu` serving before deployment. *(Note: If profiling indicates non-kernel bottlenecks, optimization routes to serving-configuration adjustments instead).*
 4. **Comparative Re-benchmarking**: Patches the served model with the verified kernel/wrapper, benchmarking against the live baseline to measure end-to-end throughput and latency gains.
 5. **Trace Verification (`tpu-diagnostics`)**: Captures an XProf trace on the patched server to empirically verify speedups and confirm bottleneck reduction before teardown.
 

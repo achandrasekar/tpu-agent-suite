@@ -1,6 +1,7 @@
 ---
 scripts:
 - scripts/tpu-kernel-development/search_api.py
+- scripts/tpu-kernel-development/megakernel_analyzer.py
 - scripts/tpu-knowledge-base/kb_lookup.py
 - scripts/tpu-knowledge-base/catalog.py
 - scripts/tpu-knowledge-base/kb_summarize.py
@@ -9,6 +10,7 @@ references:
 - references/tpu-kernel-development/concepts/grid_blockspec.md
 - references/tpu-kernel-development/concepts/matmul.md
 - references/tpu-kernel-development/concepts/pipelining.md
+- references/tpu-kernel-development/concepts/megakernel.md
 ---
 
 # Implement the kernel
@@ -364,9 +366,10 @@ Use `read` on the router and the pages and references named in this prompt EXTEN
 - **Debugging compilation or runtime issues with specific API calls**
 
 **Retrieval Strategy:**
-1. **Identify the kernel type first**: use the *Kernel categories → the routing table* section of the router (`kernel-optimization-index`) you opened in Step 1 to classify the kernel into exactly one of the seven categories -- `attention`, `gemm-conv-epilogue`, `streaming-reduction`, `grouped-ragged-indirection`, `state-carry-scan`, `dense-near-roofline`, `cross-chip-collective` -- then fetch the class page that row names with `python3 {{script:tpu-knowledge-base/kb_lookup.py}} <keyword>`, using the keyword the row gives, and `read` the path it prints. One primary page; at most one secondary for straddlers.
-2. **Identify specific optimizations**: Check techniques like pipelining, double buffering (`emit_pipeline`), or Megacore splitting.
-3. **Verify memory management**: Check VMEM capacity and tiling constraints against your target chip.
+1. **Identify the kernel type first**: use the *Kernel categories → the routing table* section of the router (`kernel-optimization-index`) you opened in Step 1 to classify the kernel into one of the categories -- `attention`, `gemm-conv-epilogue`, `streaming-reduction`, `grouped-ragged-indirection`, `state-carry-scan`, `dense-near-roofline`, `cross-chip-collective`, `megakernel` -- then fetch the class page that row names with `python3 {{script:tpu-knowledge-base/kb_lookup.py}} <keyword>`, using the keyword the row gives, and `read` the path it prints. One primary page; at most one secondary for straddlers.
+2. **For `megakernel` or multi-projection / full-model decode fusion**: read `{{reference:tpu-kernel-development/concepts/megakernel.md}}` and use `python3 {{script:tpu-kernel-development/megakernel_analyzer.py}}` (including `--emit-scaffold <dir>`) to emit or verify the grid-less `PrefetchScalarGridSpec` skeleton, bank-ring DMA tile schedule (`tile_hw`), `pool_alias` VMEM aliasing, and `vmem_limit_bytes` compiler params.
+3. **Identify specific optimizations**: Check techniques like pipelining, double buffering (`emit_pipeline`), bank-ring weight streaming, or Megacore splitting.
+4. **Verify memory management**: Check VMEM capacity and tiling constraints against your target chip.
 
 #### Step 4: Write the Kernel
 Use the `write` tool to write your final, optimized kernel to `{optimized_kernel_path}`.

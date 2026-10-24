@@ -3,8 +3,13 @@ name: write-tpu-kernels
 description: Designs, proves, builds, probes and optimizes custom Pallas/Mosaic TPU kernels for a block of model compute, across prefill, decode_first and decode_last, or returns an evidenced verdict that no kernel is warranted. Design-heavy (70/30 design-to-code) and delivered in two stages — stage A reaches the floor of today's decomposition, stage B moves toward the fully-fused floor — with both floors priced by the roofline-analysis skill. Builds an accuracy test (float64 oracle, native-dtype reference, fault-injection positive control) and a phase-accurate microbenchmark with paged KV-cache inputs first; learns every Pallas API from a cited upstream example via the code-reference skill; profiles the incumbent from compiled artifacts; audits implementation affordances (buffering, async writes, tail tiles, hoisted setup) as well as cost classes; searches for unit trades such as moving VPU work onto the MXU; and gates every performance attribution on a removal arm the way it gates correctness on a fault the oracle catches. Use when creating, tuning or profiling a custom JAX Pallas or Mosaic TPU kernel for attention, MoE, GEMM, norms or a fused region, or when asked to "write a kernel for", "speed up this kernel", "fuse these ops". Not for high-level JAX/Flax code, CPU/GPU-only ops, or general Python debugging.
 delegates:
 - tpu-diagnostics
+scripts:
+- scripts/tpu-kernel-development/megakernel_analyzer.py
+- scripts/tpu-kernel-integrator/build_plugin.py
+- scripts/tpu-kernel-integrator/inplace_harness.py
 references:
 - references/write-tpu-kernels/
+- references/tpu-kernel-development/concepts/megakernel.md
 ---
 
 # `write-tpu-kernels`
@@ -43,8 +48,12 @@ different problem.
    cost, what did the compiler build — are design, and are encouraged. Timing a candidate is not,
    and waits for the freeze.
 2. **Deliver in two stages.** Stage A reaches the floor of today's decomposition. Stage B moves
-   toward the floor of full fusion. Both are designed up front; A ships first, and A must not rule
-   out B.
+   toward the floor of full fusion (up to a multi-layer or full-model decode/verify megakernel — see
+   {{reference:tpu-kernel-development/concepts/megakernel.md}}, analyzed and scaffolded via
+   `{{script:tpu-kernel-development/megakernel_analyzer.py}}` and packaged for `vllm-torchtpu`
+   serving via `{{script:tpu-kernel-integrator/build_plugin.py}}` and
+   `{{script:tpu-kernel-integrator/inplace_harness.py}}`). Both are designed up front; A ships
+   first, and A must not rule out B.
 3. **Ask two questions, not one.** *What is this computation and where must it run* — the op DAG,
    the floors, the cost classes. **And** *what does a competent kernel of this shape contain* — the
    implementation affordances. The first finds the right physics; only the second finds a blocking

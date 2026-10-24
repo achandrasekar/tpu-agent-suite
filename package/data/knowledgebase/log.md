@@ -3,6 +3,13 @@
 Append-only event log. Newest entries at the top.
 Parse recent entries: `grep "^## \[" log.md | head -10`
 
+## [2026-10-24] ingest | Inferact tpu-megakernels and full-model Pallas megakernel architecture
+
+**Operation**: ingest (human-directed: ingest https://github.com/Inferact/tpu-megakernels @ 97dcfa1 and synthesize the TPU megakernel design class for full-model and multi-layer decode and speculative tree-verification)
+**Pages created**: `wiki/sources/2026-10-inferact-tpu-megakernels.md`, `wiki/kernel/kernel-megakernel.md`
+**Pages updated**: `index.md`, `wiki/kernel-optimization-index.md`, `package/data/tpu-knowledge-base/pages/kernel-megakernel.md`, `package/data/tpu-knowledge-base/pages/kernel-optimization-index.md`, `package/data/tpu-knowledge-base/index/pallas.jsonl`
+**Notes**: Captures the six architectural invariants of production Pallas TPU megakernels across Kimi K3 (TP32 + DSpark), Qwen3.8-27B (TP8 + DFlash2), and Muse-Spark-Open (NVFP4 TP8/TP16/TP32 + DSpark): grid-less `PrefetchScalarGridSpec` (`grid=()`), Global Bank-Ring HBM-to-VMEM weight streaming (`make_async_copy` with `BANK_COUNT` ping-pong slots), `pool_alias` (`tpu.aliasing_scoped_vmem` + `tpu.reinterpret_cast`) raw VMEM byte-pool reuse for heterogeneous MoE experts, in-kernel `make_async_remote_copy` ICI collectives (TP8 XOR butterfly, FP32 ReduceScatter + BF16 AllGather for speculative verify, and `collectives32` hierarchical int16 shared-exponent multi-host reduction), two-heads-per-row `[nh // 2, 128]` packing for `head_dim == 64` to eliminate 50% MXU lane waste, and in-VMEM MXFP4/NVFP4/FP8 dequantization.
+
 ## [2026-10-16] ingest | torch_tpu re-ingested at release/0.1.2 (6d2a4575)
 
 **Operation**: ingest (code repo via wikify-repo 0.4.1; human-directed: re-ingest torch_tpu at the head of `release/0.1.2`, keep the diff small where possible, ingest all project docs, and keep internal identifiers out)
